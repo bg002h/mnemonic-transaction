@@ -744,3 +744,102 @@ fn a_node_that_cannot_find_an_outpoint_does_not_discard_the_psbt_record() {
     );
     assert!(offline.contains("STATUS    UNKNOWN"), "{offline}");
 }
+
+// ── §8.2c's amount parsing ──────────────────────────────────────────────────
+
+/// **Typing what a person mistypes.** `--input-value 0:inf` PANICKED, and
+/// `0:1e30` panicked with it — the amount went through `f64` and then a
+/// saturating cast. `-5` and `NaN` did not panic, which was worse: they produced
+/// a silent nonsense value that tripped §8.2b, so the operator got a refusal
+/// about their OUTPUTS when the fault was in what they had just typed.
+#[test]
+fn a_hostile_input_value_is_refused_by_name_and_never_panics() {
+    let v = base();
+    for amount in [
+        "inf",
+        "-5",
+        "NaN",
+        "1e30",
+        "1.234567891",
+        "21000001",
+        "",
+        "0x5",
+    ] {
+        let (out, err, ok) = encode(
+            &s(&v, "raw_hex"),
+            &[
+                "--input-value",
+                &format!("0:{amount}"),
+                "--input-value",
+                "1:5.0",
+            ],
+        );
+        assert!(!ok, "{amount:?} was accepted");
+        assert!(
+            !err.contains("panicked"),
+            "{amount:?} PANICKED instead of refusing:\n{err}"
+        );
+        assert!(
+            err.contains("REFUSED — §8.2c,"),
+            "{amount:?} was refused by the wrong rule — the fault is the amount, \
+             not the transaction:\n{err}"
+        );
+        assert!(out.trim().is_empty());
+    }
+}
+
+/// The control: amounts a person actually types must pass the parser and reach
+/// §8.2b's arithmetic. Without this, refusing everything would pass the test
+/// above.
+#[test]
+fn ordinary_amounts_parse() {
+    let v = base();
+    for amount in ["5", "5.0", "0.05000000", "3.00000001", "21000000"] {
+        let (_, err, _) = encode(
+            &s(&v, "raw_hex"),
+            &[
+                "--input-value",
+                &format!("0:{amount}"),
+                "--input-value",
+                "1:5.0",
+            ],
+        );
+        assert!(
+            !err.contains("REFUSED — §8.2c,"),
+            "{amount:?} is a legitimate amount and was refused:\n{err}"
+        );
+    }
+}
+
+/// **§8.2d hashes the record; it did not check the record describes THIS
+/// outpoint.** A `non_witness_utxo` whose hash matches but which has no output
+/// at the input's `vout` does not describe the output being spent — the value
+/// then comes from `witness_utxo`, which nothing has checked, while the row said
+/// `TXID-BOUND`. An unverified number under a verified heading.
+#[test]
+fn a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound() {
+    let v = base();
+    let mut psbt = bitcoin::Psbt::deserialize(&b64_decode(&s(&v, "finalized_psbt_b64"))).unwrap();
+    // Point the input at a vout the previous transaction does not have, and
+    // rebuild the record so its hash still matches the new outpoint.
+    let prev = psbt.inputs[0].non_witness_utxo.clone().expect("no record");
+    let high = prev.output.len() as u32 + 7;
+    psbt.unsigned_tx.input[0].previous_output = bitcoin::OutPoint {
+        txid: prev.compute_txid(),
+        vout: high,
+    };
+    // Give it a witness_utxo so a value is still available at all.
+    psbt.inputs[0].witness_utxo = Some(prev.output[0].clone());
+
+    let (_, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
+    if ok {
+        assert!(
+            !err.contains("TXID-BOUND"),
+            "a value read from witness_utxo was labelled TXID-BOUND:\n{err}"
+        );
+        assert!(
+            err.contains("PSBT-CLAIMED — unverified"),
+            "the fallback value must render as unverified:\n{err}"
+        );
+    }
+}

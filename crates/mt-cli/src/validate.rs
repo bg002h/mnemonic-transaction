@@ -275,15 +275,42 @@ pub fn non_witness_utxo_guard(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
 ///
 /// `None` where neither is present — which §8.2c turns into a requirement to
 /// supply the value, and §8.2c's warning into a live one.
-pub fn psbt_input_value(psbt: &bitcoin::Psbt, n: usize) -> Option<u64> {
+pub fn psbt_input_value(psbt: &bitcoin::Psbt, n: usize) -> Option<(u64, ValueSource)> {
     let inp = psbt.inputs.get(n)?;
     let vout = psbt.unsigned_tx.input.get(n)?.previous_output.vout as usize;
     if let Some(prev) = &inp.non_witness_utxo {
         if let Some(o) = prev.output.get(vout) {
-            return Some(o.value.to_sat());
+            return Some((o.value.to_sat(), ValueSource::TxidBound));
         }
+        // The record is present and its hash matched, but it has no output at
+        // this vout -- so it does NOT describe the outpoint being spent, and
+        // falling through to witness_utxo here is fine as long as the LABEL
+        // falls through with it. Returning the source alongside the number is
+        // what makes that structural.
     }
-    inp.witness_utxo.as_ref().map(|w: &TxOut| w.value.to_sat())
+    inp.witness_utxo
+        .as_ref()
+        .map(|w: &TxOut| (w.value.to_sat(), ValueSource::PsbtClaimed))
+}
+
+/// Which record a PSBT value came from — returned WITH the number, never
+/// derived separately.
+///
+/// **The caller used to pick the label from `non_witness_utxo.is_some()` while
+/// this function picked the number.** An adversarial review found the gap: §8.2d
+/// hashes the record and matches the txid, but nothing checked that the record
+/// has an output at the input's `vout`. A record that matches the txid and is
+/// too short falls back to `witness_utxo` for the value — while the caller,
+/// seeing `non_witness_utxo` present, labelled it `TXID-BOUND`. An **unverified**
+/// number under a **verified** heading, which is the exact defect the three
+/// provenance columns exist to prevent, reached through a different door.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueSource {
+    /// Read from a `non_witness_utxo` whose hash reproduced the input's txid
+    /// **and** which has an output at that vout.
+    TxidBound,
+    /// Read from a `witness_utxo`, which nothing has checked.
+    PsbtClaimed,
 }
 
 // ── §8.2c — require values a PSBT lacks; warn on an UNBOUND legacy input ─────
@@ -372,27 +399,44 @@ pub fn legacy_unbound_warning(n: usize, claimed_sat: u64, out_total_sat: u64) ->
 /// `md1`/`mk1` strings are watch-only public material, where a leak costs
 /// privacy. A finalized transaction is bearer, where it costs the money.
 pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
-    for a in args {
+    // The verb, read from argv — this guard runs BEFORE clap, so nothing has
+    // parsed one yet, and a refusal that says `mt mt:` tells the operator less
+    // than one that names what they typed.
+    let verb = args
+        .get(1)
+        .filter(|a| matches!(a.as_str(), "encode" | "decode" | "verify" | "inspect"))
+        .cloned()
+        .unwrap_or_else(|| "encode".to_string());
+
+    for a in args.iter().skip(1) {
         if !looks_like_a_transaction(a) {
             continue;
         }
         // NEVER echo the argument. Printing it back into the refusal would put
         // the bearer material in a SECOND place -- the same defect the refusal
         // exists to name.
+        let what = if a.to_ascii_lowercase().starts_with("mt1") {
+            "an mt1 set"
+        } else {
+            "a transaction"
+        };
         return Err(Refusal::new(
-            "encode",
+            verb,
             "§8.2f",
             format!(
-                "a transaction was passed as a command-line argument ({} characters)",
+                "{what} was passed as a command-line argument ({} characters)",
                 a.chars().count()
             ),
             "It is now in your shell history and was visible in `ps` while this \
-             ran. A finalized transaction is BEARER: anyone who reads it can \
-             broadcast it. mt reads from a FILE or STDIN only, and does not print \
-             the argument back — that would put it in a second place.",
+             ran. A finalized transaction — and the mt1 strings it becomes — is \
+             BEARER: anyone who reads it can broadcast it. mt reads from a FILE \
+             or STDIN only, and does not print the argument back, which would \
+             put it in a second place. (md and mk DO take their strings as \
+             arguments; md1/mk1 are watch-only, so a leak there costs privacy \
+             rather than the money.)",
         )
         .with_remedy(format!(
-            "Remove it:  {}\nThen re-run: mt encode < tx.psbt",
+            "Remove it:  {}\nThen re-run:  mt <verb> < file",
             purge_command()
         )));
     }
@@ -402,8 +446,21 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
 /// Recognise the shapes §8.2f is about, and nothing else.
 ///
 /// Deliberately narrow: a false positive here refuses a legitimate flag value.
+///
+/// **`mt1` strings belong here, and the siblings are exactly why they are easy
+/// to miss.** `md verify <STRINGS>…` and `mk verify [MK1_STRINGS]…` both take
+/// their material positionally — but `md1`/`mk1` are watch-only public material,
+/// where a leak costs privacy, while an `mt1` set is the engraved transaction
+/// itself, where it costs the money. Same shape, different hazard class, and an
+/// operator carrying the habit across reaches for it first.
 fn looks_like_a_transaction(a: &str) -> bool {
     if a.starts_with("cHNidP8") {
+        return true;
+    }
+    // An mt1 string: the bearer artifact in the form an operator has typed off
+    // steel. The shortest real one measured is 83 characters.
+    let lower = a.to_ascii_lowercase();
+    if lower.starts_with("mt1") && lower.len() >= 40 {
         return true;
     }
     let body = a.strip_prefix("0x").unwrap_or(a);

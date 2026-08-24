@@ -77,9 +77,11 @@ fn every_row_is_present_offline() {
         out.contains("FEE       UNKNOWN"),
         "fee must say UNKNOWN, not vanish"
     );
+    // §8.4's spelling, not a sixth of mt's own invention. The row is bound to
+    // the section's five normative forms and may not add to them.
     assert!(
-        out.contains("current height UNKNOWN"),
-        "height must say UNKNOWN"
+        out.contains("current height unknown (no node)"),
+        "height must use §8.4's offline spelling: {out}"
     );
 }
 
@@ -391,7 +393,9 @@ fn reaching_a_node_changes_the_report() {
     // ...and specifically on the rows §1.1 says only a node can fill.
     assert!(offline.contains("STATUS    UNKNOWN") && online.contains("STATUS    LIVE"));
     assert!(
-        offline.contains("current height UNKNOWN") && !online.contains("current height UNKNOWN")
+        offline.contains("current height unknown (no node)")
+            && online.contains("current height 963832"),
+        "offline:\n{offline}\nonline:\n{online}"
     );
 }
 

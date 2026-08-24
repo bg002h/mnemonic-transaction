@@ -33,6 +33,13 @@ pub struct Refusal {
     /// What to do. `None` when there is nothing — padding a refusal with advice
     /// that does not apply is worse than saying nothing.
     pub remedy: Option<String>,
+    /// Preformatted lines printed after the remedy, **never re-wrapped**.
+    ///
+    /// For content whose LAYOUT carries meaning: a ranked suspect list is a
+    /// table, and reflowing it as prose strips the column alignment that makes
+    /// it scannable. `wrap` splits on whitespace, so it silently collapsed
+    /// `chunk   4   3 of 4` into `chunk 4 3 of 4`.
+    pub verbatim: Option<String>,
 }
 
 impl Refusal {
@@ -49,6 +56,7 @@ impl Refusal {
             verdict: verdict.into(),
             mechanism: mechanism.into(),
             remedy: None,
+            verbatim: None,
         }
     }
 
@@ -56,6 +64,13 @@ impl Refusal {
     #[must_use]
     pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
         self.remedy = Some(remedy.into());
+        self
+    }
+
+    /// Attach preformatted lines, printed as-is.
+    #[must_use]
+    pub fn with_verbatim(mut self, block: impl Into<String>) -> Self {
+        self.verbatim = Some(block.into());
         self
     }
 }
@@ -74,6 +89,12 @@ impl fmt::Display for Refusal {
         if let Some(r) = &self.remedy {
             writeln!(f)?;
             for line in wrap(r, 68) {
+                writeln!(f, "  {line}")?;
+            }
+        }
+        if let Some(v) = &self.verbatim {
+            writeln!(f)?;
+            for line in v.lines() {
                 writeln!(f, "  {line}")?;
             }
         }

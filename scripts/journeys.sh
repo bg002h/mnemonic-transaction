@@ -144,7 +144,7 @@ for form in typed typed-elided; do
     have "$WORK/b.out" "$row" "row ${row% } present rather than omitted"
   done
   have "$WORK/b.out" "FEE       UNKNOWN"    "the fee says UNKNOWN, not nothing"
-  have "$WORK/b.out" "current height UNKNOWN" "the height says UNKNOWN"
+  have "$WORK/b.out" "current height unknown (no node)" "the height uses §8.4's offline spelling"
   have "$WORK/b.out" "STATUS    UNKNOWN"   "liveness says UNKNOWN"
   # READ vs VERIFIED, and BOTH ways out.
   have "$WORK/b.err" "what the transaction SAYS" "the read-vs-verified split is visible"

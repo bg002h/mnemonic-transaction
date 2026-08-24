@@ -57,6 +57,9 @@ for path in sorted(glob.glob("crates/*/tests/*.rs")):
 # Exempt by NAME, and only with a stated reason that a reader can check. An
 # exemption list is safer than a cleverer heuristic: it is visible in the diff.
 EXEMPT = {
+    "ordinary_amounts_parse":
+        "the CONTROL for §8.2c's amount parser -- it asserts a legitimate amount "
+        "is NOT refused, so it names a §-refusal in order to check its absence",
     "refuses_beyond_the_budget":
         "mt-codec BCH t=4 correction limit, not a §8 refusal -- it matches the "
         "naming convention by coincidence and asserts on a codec error",
@@ -110,6 +113,7 @@ REQUIRED = [
     # each with a test that existed and an entry that did not:
     "§3b",    # all-elided input: no prefix to restore from, and mt will not guess
     "§8.2c",  # input values: required when a PSBT lacks them, and PER INPUT
+    "§1.1",   # the reassembled transaction must re-derive the content id
 ]
 cited = {e["spec"] for e in entries}
 for r in REQUIRED:

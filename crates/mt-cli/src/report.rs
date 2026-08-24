@@ -16,6 +16,7 @@
 //!    checked* — which is where an unverified fee sits.
 //! 3. **`encode` appends, never edits.**
 
+use crate::locktime::{self, Chain, Lock};
 use crate::node::{Node, ParentState, Utxo};
 use bitcoin::Transaction;
 use std::fmt::Write as _;
@@ -135,7 +136,7 @@ pub struct Report {
     /// Fee in satoshis, and the weakest provenance of any input.
     pub fee: Option<(u64, Provenance)>,
     /// `nLockTime`, and the chain height if a node answered.
-    pub locktime: (u32, Option<u64>),
+    pub locktime: (Lock, Chain),
     /// Inputs, as (outpoint, value, provenance).
     pub inputs: Vec<(String, Option<u64>, Provenance)>,
     /// Liveness.
@@ -290,9 +291,22 @@ impl Report {
                 })
                 .collect(),
             fee,
+            // §8.4 reads TWO fields, not one: nLockTime AND every input's
+            // nSequence. Reading nLockTime alone reported `LOCKED TO BLOCK 96`
+            // for a transaction whose every input is final -- one anybody can
+            // broadcast today, and §8.4 calls that the worst failure available.
             locktime: (
-                tx.lock_time.to_consensus_u32(),
-                node.and_then(Node::block_count),
+                locktime::read(tx),
+                Chain {
+                    height: node.and_then(Node::block_count),
+                    // Only fetched when a timestamp lock actually needs it:
+                    // §8.4 compares like with like, and a height lock has no
+                    // use for MTP.
+                    mtp: match locktime::read(tx) {
+                        Lock::Time(_) => node.and_then(Node::median_time),
+                        _ => None,
+                    },
+                },
             ),
             inputs,
             status,
@@ -336,12 +350,8 @@ impl Report {
         // claim about spendability, because a BIP-68 relative timelock lives in
         // OP_CSV inside the witness script and reading it means evaluating the
         // sending wallet's script.
-        let (lt, height) = self.locktime;
-        let _ = match (lt, height) {
-            (0, _) => writeln!(s, "LOCKTIME  NO TIMELOCK"),
-            (n, Some(h)) => writeln!(s, "LOCKTIME  block {n}, current height {h}"),
-            (n, None) => writeln!(s, "LOCKTIME  block {n}, current height UNKNOWN"),
-        };
+        let (lock, chain) = &self.locktime;
+        let _ = writeln!(s, "LOCKTIME  {}", lock.report_row(*chain));
 
         let _ = writeln!(s, "INPUTS    {} input(s)", self.inputs.len());
         for (op, val, prov) in &self.inputs {
@@ -430,16 +440,18 @@ mod tests {
     #[test]
     fn locktime_never_renders_a_verdict() {
         for (lt, h) in [
-            (900_000u32, Some(963_663u64)),
-            (900_000, None),
-            (0, Some(1)),
+            (Lock::Height(900_000), Some(963_663u64)),
+            (Lock::Height(900_000), None),
+            (Lock::None, Some(1)),
+            (Lock::NotEnforced(900_000), Some(963_663)),
+            (Lock::Time(1_800_000_000), Some(963_663)),
         ] {
             let r = Report {
                 txid: "a".into(),
                 set: None,
                 outputs: vec![],
                 fee: None,
-                locktime: (lt, h),
+                locktime: (lt, Chain { height: h, mtp: h }),
                 inputs: vec![],
                 status: Status::Unknown,
             };
@@ -464,7 +476,7 @@ mod tests {
             set: None,
             outputs: vec![],
             fee: None,
-            locktime: (900_000, None),
+            locktime: (Lock::Height(900_000), Chain::default()),
             inputs: vec![("x:0".into(), None, Provenance::Unknown)],
             status: Status::Unknown,
         };
@@ -472,10 +484,14 @@ mod tests {
         for row in ["TX ", "OUT ", "FEE ", "LOCKTIME ", "INPUTS ", "STATUS "] {
             assert!(out.contains(row), "row {row:?} was omitted");
         }
-        assert_eq!(
-            out.matches("UNKNOWN").count(),
-            4,
-            "unanswerable rows must say UNKNOWN"
+        // FOUR rows unanswerable, and each says so in its own section's words:
+        // FEE and INPUTS use `UNKNOWN`, STATUS uses `UNKNOWN — no node
+        // reachable`, and LOCKTIME uses §8.4's `unknown (no node)`. Counting one
+        // spelling across all four would force mt to invent a sixth.
+        assert_eq!(out.matches("UNKNOWN").count(), 3, "got:\n{out}");
+        assert!(
+            out.contains("current height unknown (no node)"),
+            "got:\n{out}"
         );
     }
 

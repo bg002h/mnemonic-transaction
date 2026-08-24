@@ -104,6 +104,22 @@ impl Node {
         }
     }
 
+    /// The chain's current **median-time-past**.
+    ///
+    /// §8.4's *"compare like with like"*: a timestamp `nLockTime` is compared
+    /// against MTP, never against a block height and never against the header
+    /// stamp. MTP is what consensus actually enforces a time-lock against, and
+    /// it is monotonic; a header `nTime` may run up to two hours fast.
+    pub fn median_time(&self) -> Option<u64> {
+        let json = self.call(&["getblockchaininfo"])?;
+        let at = json.find("\"mediantime\"")?;
+        let rest = &json[at + 12..];
+        let colon = rest.find(':')?;
+        let tail = &rest[colon + 1..];
+        let end = tail.find(|c: char| !c.is_ascii_digit() && !c.is_whitespace())?;
+        tail[..end].trim().parse().ok()
+    }
+
     /// Does this node have `-txindex`?
     ///
     /// **It decides whether "not found" means PENDING or UNKNOWN.** Without the

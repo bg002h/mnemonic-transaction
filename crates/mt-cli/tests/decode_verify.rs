@@ -553,3 +553,207 @@ fn the_margin_report_gives_before_and_after_values() {
         );
     }
 }
+
+// ── the content id: §1.1's last check ───────────────────────────────────────
+
+/// **The check `verify`'s OK line has always claimed.** Two independent reviews
+/// found it missing from opposite directions — one reading the spec against the
+/// code, one forging the state it defends against — and until it existed
+/// `verify` printed *"transaction re-derives"* on every run without deriving
+/// anything.
+///
+/// The forgery is one call: encode transaction B's bytes under transaction A's
+/// txid. Every checksum holds, every header is intact and names A, and the
+/// payload is B — which is precisely what a BCH mis-correction produces, and
+/// what a chunk cannot detect about itself.
+fn forged_set() -> Vec<String> {
+    let a_txid = corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == "even")
+        .unwrap()["txid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b_bytes = hex_to_bytes(&raw_of("uneven"));
+    mt_codec::string_layer::pipeline::encode(&b_bytes, &a_txid).unwrap()
+}
+
+fn hex_to_bytes(s: &str) -> Vec<u8> {
+    s.trim()
+        .as_bytes()
+        .chunks(2)
+        .map(|p| u8::from_str_radix(core::str::from_utf8(p).unwrap(), 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn verify_refuses_a_set_that_does_not_re_derive_its_id() {
+    let f = tmp_with(&forged_set().join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "verify accepted a set whose payload is a DIFFERENT transaction"
+    );
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("REFUSED — §1.1,"), "got: {err}");
+    assert!(
+        !err.contains("transaction re-derives."),
+        "verify still printed its OK line: {err}"
+    );
+    assert!(
+        err.contains("MIS-CORRECTION"),
+        "the likely cause is unnamed: {err}"
+    );
+    assert!(
+        err.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("every checksum holds"),
+        "got: {err}"
+    );
+    // Collapse whitespace before asserting on PROSE: the refusal formatter wraps
+    // at 68 columns, so any phrase long enough to be worth asserting on is long
+    // enough to be split by it.
+    let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("does NOT prove every byte"),
+        "the honest limit is missing — the txid does not cover the witness: {err}"
+    );
+}
+
+/// **stdout must stay empty.** This is the funds-critical half: with the check
+/// absent, `decode` emitted the WRONG transaction's broadcastable hex, and the
+/// documented pipeline pipes stdout straight onward.
+#[test]
+fn decode_emits_nothing_when_the_id_does_not_re_derive() {
+    let f = tmp_with(&forged_set().join("\n"));
+    let out = mt()
+        .args(["decode", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "decode emitted broadcastable hex for a transaction that failed mt's \
+         own checks: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn inspect_refuses_a_set_that_does_not_re_derive_its_id() {
+    let f = tmp_with(&forged_set().join("\n"));
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli", "/nonexistent", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "inspect described a forged set");
+}
+
+/// The control: a genuine set must still pass, or the guard is just a refusal.
+#[test]
+fn a_genuine_set_re_derives_its_id() {
+    for label in ["even", "uneven"] {
+        let f = tmp_with(&strings_of(label).join("\n"));
+        let out = mt()
+            .args(["verify", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{label}: a genuine set was refused:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8(out.stderr)
+                .unwrap()
+                .contains("transaction re-derives.")
+        );
+    }
+}
+
+/// **The suspect list is the whole value of the failure report.** "Something is
+/// wrong somewhere in 1,242 characters" leaves the operator with a pile of steel
+/// and nowhere to start; a ranked list is half an hour of work. The margin
+/// report already computed the ranking — this only had to print it.
+#[test]
+fn the_failure_report_ranks_the_suspects_by_corrections_applied() {
+    let mut s = forged_set();
+    // Damage two chunks by different amounts, so the ranking has an order to get
+    // right. Both stay inside t = 4, so both still decode.
+    let mut c: Vec<char> = s[3].chars().collect();
+    for i in [30, 40, 50] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    s[3] = c.into_iter().collect();
+    let mut c: Vec<char> = s[1].chars().collect();
+    c[42] = if c[42] == 'q' { 'p' } else { 'q' };
+    s[1] = c.into_iter().collect();
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+
+    let worst = err
+        .find("chunk   4   3 of 4")
+        .unwrap_or_else(|| panic!("chunk 4 missing:\n{err}"));
+    let next = err
+        .find("chunk   2   1 of 4")
+        .unwrap_or_else(|| panic!("chunk 2 missing:\n{err}"));
+    assert!(
+        worst < next,
+        "the suspects are not ranked most-corrected first:\n{err}"
+    );
+    assert!(
+        err.contains("<-- most suspect"),
+        "the top suspect is unmarked:\n{err}"
+    );
+    assert!(
+        err.contains("needed no correction"),
+        "the clean chunks are not accounted for, so the operator cannot tell how \
+         many plates they can skip:\n{err}"
+    );
+}
+
+/// With NO chunk corrected, miscorrection is not the explanation and there is no
+/// ranking to offer. Saying so beats printing an empty list under a heading that
+/// promises one.
+#[test]
+fn the_failure_report_says_so_when_there_is_nothing_to_rank() {
+    let f = tmp_with(&forged_set().join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("No chunk needed any correction"),
+        "an unranked failure printed a ranking heading: {err}"
+    );
+    assert!(
+        err.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("two different transactions"),
+        "the remaining explanation is not named: {err}"
+    );
+}

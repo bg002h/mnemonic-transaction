@@ -105,6 +105,125 @@ pub fn verify_the_steel() -> Warning {
     )
 }
 
+/// §5's legend — the **suggested text an operator may cut beside their
+/// strings**, printed on `stderr` by `mt encode`.
+///
+/// **§0a rules that `encode` prints these five fields, and nothing printed
+/// them.** `--from`, `--to` and `--to-label` were accepted and silently
+/// discarded for the whole of P2–P6: three of §10.10's twelve ruled flags
+/// parsing into a struct nobody read. An independent spec-first review found it
+/// by walking §5 and looking for the code.
+///
+/// **This is a SUGGESTION, not an artifact.** It goes to `stderr` because
+/// stdout is the strings and nothing else, and because the layout on steel is
+/// the operator's by ruling (§3b) — `mt` cannot see how strings are laid onto a
+/// plate and does not try to.
+///
+/// The `~` on the year is load-bearing: a projection presented as a fact is the
+/// mistake §9 refuses for fiat figures, and this text is cut into metal.
+pub fn legend(
+    lock: &crate::locktime::Lock,
+    from: Option<&str>,
+    to: Option<&str>,
+    to_label: Option<&str>,
+    out_total_sat: u64,
+) -> String {
+    use core::fmt::Write as _;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "SUGGESTED LEGEND — cut this beside the strings. mt cannot see your\n\
+         plate, so the layout is yours (§3b); these are the five facts a\n\
+         stranger needs BEFORE they can do anything with the steel.\n"
+    );
+    let _ = writeln!(s, "    BEARER - ANYONE HOLDING THIS CAN BROADCAST IT");
+    let _ = writeln!(s, "    FORMAT: mt1 codex32");
+
+    match from {
+        Some(f) => {
+            let _ = writeln!(s, "    FROM WALLET {f}");
+        }
+        None => {
+            let _ = writeln!(s, "    FROM WALLET ????????        <-- NOT SUPPLIED");
+        }
+    }
+
+    // The destination names a WALLET, not one truncated address. A free-text
+    // label is allowed only behind its own flag, because nothing can check it
+    // against the transaction — the separate flag IS the ruling (§10.4): it
+    // makes the label an act of assertion rather than something that appears.
+    match (to, to_label) {
+        (Some(t), Some(l)) => {
+            let _ = writeln!(s, "    TO {t} ({l})  {}", btc(out_total_sat));
+        }
+        (Some(t), None) => {
+            let _ = writeln!(s, "    TO {t}  {}", btc(out_total_sat));
+        }
+        (None, Some(l)) => {
+            let _ = writeln!(
+                s,
+                "    TO {l}  {}   <-- LABEL ONLY, unverified",
+                btc(out_total_sat)
+            );
+        }
+        (None, None) => {
+            let _ = writeln!(
+                s,
+                "    TO ????????  {}   <-- NOT SUPPLIED",
+                btc(out_total_sat)
+            );
+        }
+    }
+    let _ = writeln!(s, "    {}", lock.legend());
+
+    // §10.4: optional, and LOUDLY WARNED when absent. A plate that does not say
+    // where the money came from or where it went is one a recoverer cannot act
+    // on -- and neither fact is in the transaction, so mt cannot fill them in.
+    if from.is_none() || to.is_none() {
+        let missing = match (from.is_none(), to.is_none()) {
+            (true, true) => "FROM WALLET and TO are",
+            (true, false) => "FROM WALLET is",
+            _ => "TO is",
+        };
+        let _ = writeln!(
+            s,
+            "\n  {missing} NOT SUPPLIED. The transaction does not carry either\n  \
+             fact — it names outpoints and scripts, not wallets — so mt cannot\n  \
+             fill it in and will not guess. Supply --from / --to, or engrave the\n  \
+             line by hand. A plate that says neither leaves a recoverer holding\n  \
+             steel they cannot place."
+        );
+    }
+    s
+}
+
+fn btc(sats: u64) -> String {
+    format!("{}.{:08} BTC", sats / 100_000_000, sats % 100_000_000)
+}
+
+/// §6a's **encode-time** no-node warning.
+///
+/// A different moment from the recovery-time one, so different words: the
+/// operator is standing at the machine with the plate uncut, and their decision
+/// is *cut now or check first*. The recovery-time wording — *"look this txid up
+/// in a block explorer"* — is useless here, because there is nothing to look up
+/// yet and the choice is still open.
+pub fn encode_no_node_warning() -> crate::refusal::Warning {
+    crate::refusal::Warning::new(
+        "no bitcoind reachable — mt could not check the chain before you cut.",
+        "These are the questions a node would have answered, and mt has NOT:\n\
+         \n\
+         \x20 - are these inputs still unspent, or did something else take them?\n\
+         \x20 - what fee does this actually pay?\n\
+         \x20 - how far away is the locktime, in real blocks?\n\
+         \n\
+         Engraving takes about 21 minutes per plate and is permanent. Running \
+         mt again with a node reachable takes seconds and answers all three. \
+         If the inputs turn out to be spent, the plate is scrap the moment it \
+         leaves the machine.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

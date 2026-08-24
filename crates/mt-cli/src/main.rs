@@ -7,8 +7,19 @@
 //! to parse `mt`'s prose out of its own input — and the first one that forgets
 //! engraves a warning label as though it were a chunk.
 
+// `Refusal` carries four strings and two optional ones — about 144 bytes — so
+// clippy flags every `Result<_, Refusal>` as having a large Err variant. The
+// lint is about hot paths, where a fat Err inflates every Result threaded
+// through a call chain. Nothing here is a hot path: `mt` constructs at most ONE
+// refusal per run and returns immediately. Boxing would put an allocation and a
+// deref between the refusal and the operator to buy nothing, and every
+// `Err(Refusal::new(...))` in the crate would grow a `Box::new`. Recorded as a
+// judgement rather than suppressed silently.
+#![allow(clippy::result_large_err)]
+
 mod blocks;
 mod input;
+mod locktime;
 mod node;
 mod read_strings;
 mod refusal;
@@ -142,6 +153,26 @@ struct EncodeArgs {
 }
 
 fn main() -> std::process::ExitCode {
+    // §8.2f RUNS BEFORE CLAP, and that ordering is the whole refusal.
+    //
+    // `mt encode <hex>` never reached this guard when it sat inside `encode`:
+    // clap rejects the unexpected positional argument first, and **clap's error
+    // message echoes the entire bearer transaction back to stderr**. So the
+    // refusal written to stop a bearer artifact leaking into `ps` and shell
+    // history leaked it itself, through the argument parser, with no refusal, no
+    // purge command and no warning. The guard was correct about what it looked
+    // at; it was simply downstream of something that had already printed.
+    //
+    // `mt verify mt1…` is the same hole reached by a likelier route: `md verify
+    // <STRINGS>…` and `mk verify [MK1_STRINGS]…` both take their material
+    // POSITIONALLY, so an operator carrying that habit across hits this on their
+    // first try — and `mt1` strings, unlike `md1`/`mk1`, are bearer.
+    let argv: Vec<String> = std::env::args().collect();
+    if let Err(refusal) = validate::command_line_guard(&argv) {
+        eprint!("{refusal}");
+        return std::process::ExitCode::FAILURE;
+    }
+
     let cli = Cli::parse();
     match cli.command {
         Command::Encode(args) => run(encode(args)),
@@ -165,12 +196,6 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 
 fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
-
-    // §8.2f FIRST, before a single byte is read. A bearer artifact on the
-    // command line has ALREADY leaked — into the shell's history file and into
-    // `ps` for every user on the machine — so the refusal has to reach the
-    // operator whether or not the rest of the invocation makes sense.
-    validate::command_line_guard(&std::env::args().collect::<Vec<_>>())?;
 
     let raw = match &args.r#in {
         Some(path) => std::fs::read(path).map_err(|e| {
@@ -242,15 +267,23 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
             // §8.2c refused that case a line ago.
             let values: Vec<Option<(u64, report::Provenance)>> = (0..psbt.inputs.len())
                 .map(|n| {
-                    let bound = psbt.inputs[n].non_witness_utxo.is_some();
+                    // The LABEL comes back WITH the number, from one place. It
+                    // used to be derived here from `non_witness_utxo.is_some()`
+                    // while the value came from `psbt_input_value` — and a
+                    // record that matched the txid but had no output at the
+                    // input's vout made the two disagree, putting an unverified
+                    // number under a verified heading.
                     validate::psbt_input_value(&psbt, n)
-                        .map(|v| {
+                        .map(|(v, src)| {
                             (
                                 v,
-                                if bound {
-                                    report::Provenance::TxidBound
-                                } else {
-                                    report::Provenance::PsbtClaimed
+                                match src {
+                                    validate::ValueSource::TxidBound => {
+                                        report::Provenance::TxidBound
+                                    }
+                                    validate::ValueSource::PsbtClaimed => {
+                                        report::Provenance::PsbtClaimed
+                                    }
                                 },
                             )
                         })
@@ -385,6 +418,21 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         let _ = writeln!(stderr, "{w}");
     }
 
+    // §8.4's negative subtraction: the lock height passed before this build's
+    // reference, so there is no future date to estimate and saying "spendable
+    // now" beats printing a past year.
+    let lock = locktime::read(&tx);
+    if let Some(w) = lock.below_reference_warning() {
+        let _ = writeln!(stderr, "{w}");
+    }
+
+    // §6a at ENCODE time. The recovery-time warning names a block explorer,
+    // which is useless to someone standing at an uncut plate: their decision is
+    // cut-now-or-check-first, and it is still open.
+    if node.is_none() {
+        let _ = writeln!(stderr, "{}", blocks::encode_no_node_warning());
+    }
+
     if from_raw_hex {
         let _ = writeln!(
             stderr,
@@ -433,6 +481,21 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
             strings.len()
         );
         let _ = writeln!(stderr, "          prefix belong together");
+        let _ = writeln!(stderr);
+
+        // §0a / §5: the five suggested legend fields.
+        let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let _ = write!(
+            stderr,
+            "{}",
+            blocks::legend(
+                &lock,
+                args.from.as_deref(),
+                args.to.as_deref(),
+                args.to_label.as_deref(),
+                out_total,
+            )
+        );
         let _ = writeln!(stderr);
     }
 
@@ -669,18 +732,41 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
         )
     })?;
 
+    // §1.1's LAST CHECK, before anything reaches stdout.
+    content_id_guard(&set.bytes, &set.chunks, "decode")?;
+
     let mut stderr = std::io::stderr();
     if !args.quiet {
-        // decode PRINTS THE REPORT, because decode is the verb a recoverer
-        // reaches for first — `inspect` is the one designed for them, and they
-        // have no way to know that. A silent decode hands a stranger sixty
-        // kilobytes of hex before anything has told them what it does.
-        let _ = writeln!(stderr, "TX        {}", txid_display(&set.bytes)?);
-        let _ = writeln!(
-            stderr,
-            "mt1 SET   {} strings, all present",
-            set.chunks.len()
-        );
+        // decode PRINTS §1.1's REPORT — the same one, not a summary of its own.
+        // It is the verb a recoverer reaches for first (`inspect` is the one
+        // designed for them, and they have no way to know that), so a decode
+        // that stays quiet hands a stranger sixty kilobytes of hex — a bearer
+        // instrument in the most broadcastable form there is — before anything
+        // has told them the destination, the amount or the locktime. The next
+        // command they plausibly type is `sendrawtransaction`.
+        //
+        // It printed TWO HAND-COMPOSED LINES until an independent spec-first
+        // review compared §1.1a against the code: a txid and a chunk count, and
+        // none of the rows that decide whether to broadcast. That is also a
+        // second implementation of the `mt1 SET` row, in a different format —
+        // the drift the single-owner rule exists to prevent.
+        let tx = decode_tx(&set.bytes, "decode")?;
+        let txid = tx.compute_txid().to_string();
+        let node = node::Node::find(&args.bitcoin_cli);
+        let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
+        r.set = Some((set.chunks.len(), set.chunks.len()));
+        let _ = write!(stderr, "{}", r.render());
+
+        // §6a's no-node warning belongs here for the same reason the report
+        // does: this reader is a recoverer, and four rows just said UNKNOWN.
+        if node.is_none() {
+            let _ = writeln!(stderr);
+            let _ = write!(
+                stderr,
+                "{}",
+                report::no_node_warning(tx.lock_time.to_consensus_u32(), &txid)
+            );
+        }
         set_notices(&set, &mut stderr);
         margin_report(&set.chunks, &mut stderr);
     }
@@ -707,6 +793,11 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
     let strings = read_strings::read(&text)?;
     let set = pipeline::decode(&strings)
         .map_err(|e| Refusal::new("verify", "§1.1", "the set does not verify", format!("{e}")))?;
+
+    // ...AND the reassembled transaction re-derives that id. This is the check
+    // the OK line has always claimed; until it existed, the claim was a
+    // sentence rather than a test.
+    content_id_guard(&set.bytes, &set.chunks, "verify")?;
 
     let mut stderr = std::io::stderr();
     let set_id = set.chunks[0].header.chunk_set_id;
@@ -777,6 +868,8 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
         )
     })?;
 
+    content_id_guard(&set.bytes, &set.chunks, "inspect")?;
+
     let tx = decode_tx(&set.bytes, "inspect")?;
     let txid = tx.compute_txid().to_string();
 
@@ -805,6 +898,121 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     set_notices(&set, &mut std::io::stderr());
     margin_report(&set.chunks, &mut std::io::stderr());
     Ok(())
+}
+
+/// §1.1's last check: **the reassembled transaction must re-derive the id every
+/// chunk header carries.**
+///
+/// It was the one check in §1.1's list with no code behind it, and `verify`
+/// printed *"transaction re-derives"* on every run without ever deriving it.
+/// Two independent reviews found it from opposite directions — one by reading
+/// the spec against the code, one by FORGING the exact state it defends
+/// against: valid checksums, intact headers, wrong payload. With the check
+/// absent, `verify` passed that set and `decode` emitted the wrong
+/// transaction's broadcastable hex.
+///
+/// **This is what makes recovery decidable**, and the plan leaned on it when it
+/// ruled bespoke header-corruption tests a won't-fix: past the `t = 4` budget a
+/// recoverer can disregard headers entirely and search orderings, *with the
+/// content id validating the result*.
+///
+/// **What it does NOT prove, stated because the honest limit matters here.** The
+/// txid identifies the transaction; it does not cover the witness data, which is
+/// most of the payload. Damage inside a signature does not change the txid, so
+/// this can pass on bytes that will not broadcast. Per-string correction is
+/// BCH's job.
+fn content_id_guard(
+    bytes: &[u8],
+    chunks: &[mt_codec::DecodedChunk],
+    verb: &str,
+) -> Result<(), Refusal> {
+    let expected = chunks[0].header.chunk_set_id;
+    let txid = txid_display(bytes)?;
+    let derived = pipeline::content_id_from_txid_display(&txid)
+        .map_err(|e| Refusal::new(verb, "§1.1", "cannot derive the content id", format!("{e}")))?;
+    if derived == expected {
+        return Ok(());
+    }
+
+    // THE MARGIN REPORT IS ALREADY THE SUSPECT LIST. Miscorrection risk rises
+    // with corrections applied: a chunk that needed none is almost certainly
+    // intact, and the one that spent its whole budget is the one most likely to
+    // have spent more than it had. Ordering is the entire value -- "something is
+    // wrong somewhere in 1,242 characters" leaves the operator with a pile of
+    // steel and nowhere to start.
+    let mut ranked: Vec<&mt_codec::DecodedChunk> =
+        chunks.iter().filter(|c| c.corrected > 0).collect();
+    ranked.sort_by(|a, b| b.corrected.cmp(&a.corrected));
+
+    let mut list = String::new();
+    {
+        use core::fmt::Write as _;
+        for (n, c) in ranked.iter().enumerate() {
+            let tag = if n == 0 { "   <-- most suspect" } else { "" };
+            let _ = writeln!(
+                list,
+                "  chunk {:>3}   {} of 4 symbols corrected{tag}",
+                c.header.index + 1,
+                c.corrected
+            );
+        }
+        let clean = chunks.len() - ranked.len();
+        if clean > 0 {
+            let _ = write!(
+                list,
+                "The other {clean} chunk{} needed no correction and {} almost \
+                 certainly right.",
+                if clean == 1 { "" } else { "s" },
+                if clean == 1 { "is" } else { "are" }
+            );
+        }
+    }
+
+    let mechanism = "These chunks do not add up to the transaction they name. The likeliest \
+         cause is MIS-CORRECTION: a chunk took more than 4 damaged symbols, and \
+         BCH repaired it into a valid string that is not what you engraved. A \
+         chunk cannot detect this about itself.\n\
+         \n\
+         The rarer cause is a chunk carried in from a DIFFERENT transaction whose \
+         20-bit id collides with this one. mt cannot tell the two apart, and your \
+         action is the same either way.\n\
+         \n\
+         NOTE: this check identifies the TRANSACTION. It does NOT prove every \
+         byte. Damage inside the witness data — the signatures, most of the \
+         payload — does not change the txid, so mt can pass this check on bytes \
+         that will not broadcast.";
+
+    let ranked_block = if ranked.is_empty() {
+        None
+    } else {
+        Some(list.clone())
+    };
+    let remedy = if ranked.is_empty() {
+        // No chunk was corrected, so miscorrection is not the explanation and
+        // there is no ranking to offer. Saying so beats an empty list.
+        "No chunk needed any correction, so this is not miscorrection — the set \
+         is most likely mixing chunks from two different transactions. Check \
+         that every plate came from the same engraving."
+            .to_string()
+    } else {
+        "Most likely first — re-type these from the steel, in this order:".to_string()
+    };
+
+    let refusal = Refusal::new(
+        verb,
+        "§1.1",
+        format!(
+            "{} chunks, set {expected:#07x}, every checksum holds, but the \
+             transaction re-derives {derived:#07x}",
+            chunks.len()
+        ),
+        mechanism,
+    )
+    .with_remedy(remedy);
+    Err(match ranked_block {
+        Some(b) => refusal.with_verbatim(b),
+        None => refusal,
+    })
 }
 
 /// A transaction's txid in display form.
@@ -840,6 +1048,19 @@ fn decode_tx(bytes: &[u8], verb: &str) -> Result<bitcoin::Transaction, Refusal> 
 /// the input sum" and "this is ADDED to the bound inputs" — that differ by a
 /// whole input, and which one an implementer picked would decide whether §8.2b's
 /// refusals fire at all.
+///
+/// **The amount is parsed as a DECIMAL STRING into satoshis, never through
+/// `f64`.** The previous version did `s.parse::<f64>()` then
+/// `(btc * 100_000_000.0).round() as u64`, and an adversarial review found the
+/// hole by typing what a person mistypes: `--input-value 0:inf` **panicked**,
+/// and `0:1e30` panicked with it. `-5` and `NaN` did not panic — worse, they
+/// produced a silent nonsense value that tripped §8.2b for the wrong reason, so
+/// the operator got a refusal about their outputs when the fault was their
+/// input.
+///
+/// Parsing the string also gives the honest refusal for `0:1.234567891`: nine
+/// decimal places is not a satoshi amount, and rounding it silently is how a
+/// wrong number gets engraved.
 fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
     raw.iter()
         .map(|s| {
@@ -861,15 +1082,65 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
                     "The index is the input's position, counting from 0.",
                 )
             })?;
-            let btc: f64 = v.parse().map_err(|_| {
-                Refusal::new(
-                    "encode",
-                    "§8.2c",
-                    format!("--input-value amount {v:?} is not a number"),
-                    "The amount is in BTC, as a decimal — e.g. 0.05000000.",
-                )
-            })?;
-            Ok((idx, (btc * 100_000_000.0).round() as u64))
+            Ok((idx, parse_btc(v)?))
         })
         .collect()
+}
+
+/// A BTC amount as a decimal string, in satoshis.
+///
+/// Accepts `<digits>` or `<digits>.<1..=8 digits>`, and nothing else — no sign,
+/// no exponent, no `inf`, no `NaN`, no ninth decimal place.
+fn parse_btc(v: &str) -> Result<u64, Refusal> {
+    let bad = |why: &str| {
+        Refusal::new(
+            "encode",
+            "§8.2c",
+            format!("--input-value amount {v:?} is not a BTC amount"),
+            format!(
+                "{why} An amount is plain decimal BTC with at most 8 places — \
+                 `0.05000000`, `1`, `21000000`. mt does not accept a sign, an \
+                 exponent, or a value it would have to round: the fee absorbs \
+                 every error in an input value, in full."
+            ),
+        )
+    };
+    let (whole, frac) = match v.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (v, ""),
+    };
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad("That is not a decimal number."));
+    }
+    if !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad("The fractional part is not digits."));
+    }
+    if frac.len() > 8 {
+        return Err(bad(&format!(
+            "It has {} decimal places; a satoshi is the eighth.",
+            frac.len()
+        )));
+    }
+    let whole: u64 = whole
+        .parse()
+        .map_err(|_| bad("The whole part is too large."))?;
+    let mut sats = whole
+        .checked_mul(100_000_000)
+        .ok_or_else(|| bad("The whole part is too large."))?;
+    if !frac.is_empty() {
+        let scale = 10u64.pow((8 - frac.len()) as u32);
+        let f: u64 = frac
+            .parse()
+            .map_err(|_| bad("The fractional part is not a number."))?;
+        sats = sats
+            .checked_add(f * scale)
+            .ok_or_else(|| bad("The amount is too large."))?;
+    }
+    // 21,000,000 BTC is every satoshi that will ever exist. A larger value is
+    // not a mistake mt should carry into a fee calculation.
+    const MAX_SATS: u64 = 21_000_000 * 100_000_000;
+    if sats > MAX_SATS {
+        return Err(bad("It exceeds 21,000,000 BTC, the entire supply."));
+    }
+    Ok(sats)
 }
