@@ -1,0 +1,88 @@
+# `mt` — engravable backups of signed Bitcoin transactions
+
+`mt` turns an **already-signed** Bitcoin transaction into `mt1` codex32 strings
+that a human engraves on steel, and reads them back years later. It builds
+nothing, signs nothing, and broadcasts nothing.
+
+> **The engraving is a BEARER instrument.** Anyone holding the plate can
+> broadcast the transaction. That single fact shapes most of this tool: what it
+> refuses, where it will and will not print things, and why it never takes a
+> transaction as a command-line argument.
+
+## The four verbs
+
+```
+mt encode  < tx.psbt      # signed transaction  -> mt1 strings on stdout
+mt decode  < typed.txt    # mt1 strings         -> broadcastable hex on stdout
+mt verify  < typed.txt    # structural check, offline, never asks a node
+mt inspect < typed.txt    # what is IN a set, consulting a node if one is there
+```
+
+**stdout is the artifact; stderr is everything a human must see.** That is a
+hard interface boundary, not a formatting preference — `mt decode` is meant to
+be piped, and the moment a warning shares that stream a downstream consumer has
+to parse prose out of its own input.
+
+Input comes from a **file or stdin, never an argument**: an argument lands in
+shell history and in `ps` for every user on the machine, and this material is
+bearer.
+
+## Try it
+
+```sh
+cargo build
+./target/debug/mt encode --bitcoin-cli /nonexistent --in tx.hex
+```
+
+`--bitcoin-cli /nonexistent` forces the **offline** path, which is the
+constellation's normal posture. With a real `bitcoin-cli` on `PATH`, `mt`
+consults it automatically and asks the operator for nothing — `bitcoin-cli`
+already holds the RPC URL, the cookie, the network and the wallet.
+
+## Verifying the tool, not just running it
+
+```sh
+cargo nextest run --locked          # the suite
+./scripts/check-refusal-coverage.sh # every refusal has a test, and vice versa
+./scripts/mutate-refusals.sh        # every refusal test goes RED without its check
+./scripts/journeys.sh               # three operator journeys, end to end
+./scripts/check-provenance.sh       # the copied design files still match source
+```
+
+The first four run in CI. **`check-provenance.sh` cannot** — it compares against
+a second repository that CI does not check out, and it says so rather than
+pretending otherwise.
+
+`mutate-refusals.sh` is the one worth understanding. A refusal test that passes
+against code with its check deleted is testing nothing, so the script neuters
+each named check in `crates/mt-cli/tests/refusals.toml`, runs only that
+refusal's test, and asserts it goes red. **A green suite is where review starts,
+not where it ends:** the mandatory post-implementation review found nine
+Criticals in a tree where all of the above already passed.
+
+## Where the design lives
+
+**Not here.** The specification and implementation plan live in
+`mnemonic-engrave/design/`, and copies under `design/` are exactly that —
+copies, listed with their source commit in `design/PROVENANCE.md` and checked
+by `check-provenance.sh`. If a `§`-reference in the code disagrees with the
+spec, the spec wins.
+
+Review reports persist verbatim in `design/agent-reports/`. Each was committed
+**before** the fold answering it, so `git diff <persist>..<fold>` shows exactly
+what changed in response to what — which is the only reason those diffs mean
+anything.
+
+## What v0.1 deliberately does not do
+
+- **No `mt qr`**, and nothing QR-shaped. Deferred.
+- **No script evaluation.** There is no consensus engine, so `mt` recognises
+  signatures **by shape** and says so. It cannot detect a bad signature; that is
+  an accepted, recorded hazard.
+- **No transaction construction**, and no redundancy coding — the mitigation for
+  a lost plate is cutting a second copy, which `mt` supports on the reading side.
+- **Publishes nothing.** No crates.io, no tags, no releases.
+
+## Licence
+
+MIT OR Unlicense.
