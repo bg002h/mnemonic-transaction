@@ -84,7 +84,7 @@ at five inputs (89 chunks, **2.2%** of the ceiling).
 > **An earlier version of this section said the cut "costs one artifact of
 > seven", naming that same 89-chunk wallet as losing its path.** That rested on
 > a 64-chunk ceiling `mt1` never had — `md-codec`'s 6-bit `count` field, which
-> §3 corrected to 12 bits. The scope cut costs **machine engraving**, not
+> §3 widened to 15 bits. The scope cut costs **machine engraving**, not
 > transaction sizes.
 
 **What it removes from v0.1**, all of it QR-only: §4's entire configuration
