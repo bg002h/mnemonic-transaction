@@ -165,3 +165,11 @@ check = "src/main.rs::content_id_guard"
 spec  = "§8.2c"
 test  = "a_hostile_input_value_is_refused_by_name_and_never_panics"
 check = "src/main.rs::parse_btc"
+
+# §1.1e's LENGTH CHECK. A dropped character reported `chunk 3 of 6 is missing` --
+# an accusation about the operator's steel, sending them to hunt for a plate
+# sitting in front of them. BCH repairs substitutions; it cannot repair a length.
+[[refusal]]
+spec  = "§1.1e"
+test  = "a_dropped_character_is_named_as_a_length_error_not_a_missing_plate"
+check = "src/read_strings.rs::length_report"

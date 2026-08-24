@@ -757,3 +757,109 @@ fn the_failure_report_says_so_when_there_is_nothing_to_rank() {
         "the remaining explanation is not named: {err}"
     );
 }
+
+// ── §1.1e's length check ────────────────────────────────────────────────────
+
+/// **A dropped character reported a MISSING PLATE.** An omission shifts every
+/// symbol after it, so the string fails its checksum, contributes no chunk, and
+/// the set says `chunk 3 of 6 is missing` — an accusation about the operator's
+/// steel, sending them to hunt for a plate sitting in front of them. BCH repairs
+/// substitutions; it cannot repair a length.
+#[test]
+fn a_dropped_character_is_named_as_a_length_error_not_a_missing_plate() {
+    let mut s = strings_of("even");
+    s[2] = format!("{}{}", &s[2][..40], &s[2][41..]);
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+
+    assert!(err.contains("REFUSED — §1.1e,"), "got: {err}");
+    assert!(
+        !err.contains("is missing"),
+        "mt still accused the operator of a lost plate:\n{err}"
+    );
+    assert!(
+        err.contains("string 3: 86 characters (expected 87)"),
+        "the suspect string and both lengths must be named:\n{err}"
+    );
+    assert!(err.contains("MISSING"), "{err}");
+    // The verb is the one the operator typed, not a hardcoded one.
+    assert!(err.starts_with("mt verify:"), "{err}");
+}
+
+#[test]
+fn an_extra_character_is_named_as_extra() {
+    let mut s = strings_of("even");
+    s[4] = format!("{}q{}", &s[4][..30], &s[4][30..]);
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("string 5: 88 characters (expected 87)") && err.contains("EXTRA"),
+        "got: {err}"
+    );
+}
+
+/// **The control that decides the design.** A set whose payload does not divide
+/// evenly has one legitimately SHORT final chunk — indistinguishable from a
+/// dropped character BY LENGTH. The discriminator is that the legitimate one
+/// PARSES, which is why the check is consulted on the failure path rather than
+/// run up front. Without this test, a length-only check would refuse every
+/// uneven set.
+#[test]
+fn a_legitimately_short_final_chunk_is_not_a_length_error() {
+    let s = strings_of("uneven");
+    let lengths: Vec<usize> = s.iter().map(|x| x.chars().count()).collect();
+    assert!(
+        lengths.last() < lengths.first(),
+        "the fixture is not uneven, so this control proves nothing: {lengths:?}"
+    );
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an uneven set was refused as a length error:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A string damaged past `t = 4` but the RIGHT LENGTH is not a length error, and
+/// must keep its own message. Otherwise the new check would relabel every
+/// unreadable string as a miscount.
+#[test]
+fn a_correct_length_string_that_fails_keeps_its_own_message() {
+    let mut s = strings_of("even");
+    let mut c: Vec<char> = s[1].chars().collect();
+    for i in [10, 20, 30, 40, 50, 60] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    s[1] = c.into_iter().collect();
+    assert_eq!(s[1].chars().count(), 87, "the damage changed the length");
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        !err.contains("§1.1e"),
+        "a correctly-sized unreadable string was reported as a miscount:\n{err}"
+    );
+}

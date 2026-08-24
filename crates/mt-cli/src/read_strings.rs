@@ -56,7 +56,102 @@ pub fn read(raw: &str) -> Result<Vec<String>, Refusal> {
     }
 
     // 3. Restore elided lines from the set's full string (§3b).
-    restore_elided(candidates)
+    let restored = restore_elided(candidates)?;
+
+    Ok(restored)
+}
+
+/// §1.1e: **the expected length comes from the strings themselves — the MODAL
+/// length across the set.**
+///
+/// Every chunk with `index < count − 1` carries the same payload length, so the
+/// most common string length in a set *is* the expected one, and any string
+/// differing from it is the suspect. The **final** chunk is shorter whenever the
+/// payload does not divide evenly, so exactly one string may differ — and its
+/// length cannot be checked until the set is complete, which is the thing this
+/// check exists to gate.
+///
+/// **The obvious derivation is circular**, which is why the spec states the
+/// modal rule outright: per-chunk length follows from `bytes_per_chunk`, which
+/// follows from the total payload length, which is not known until every chunk
+/// is assembled.
+///
+/// **Without this, a DROPPED CHARACTER reported a MISSING PLATE.** An omission
+/// shifts every symbol after it, so the string fails its checksum, decodes to
+/// nothing, and the set reports `chunk 3 of 9 is missing` — *an accusation about
+/// the operator's steel*, sending them to hunt for a plate that is sitting in
+/// front of them. BCH repairs substitutions; it cannot repair a length.
+pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option<Refusal> {
+    if strings.len() < 3 || failed.is_empty() {
+        // With one or two strings there is no mode to speak of, and with nothing
+        // failing there is nothing to explain.
+        return None;
+    }
+    let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for s in strings {
+        *counts.entry(s.chars().count()).or_default() += 1;
+    }
+    let (&modal, &n) = counts
+        .iter()
+        .max_by_key(|&(_, n)| *n)
+        .expect("strings is non-empty");
+    if n < 2 {
+        // No length occurs twice, so there is no mode and nothing to compare
+        // against. Silence beats a guess.
+        return None;
+    }
+
+    // **LENGTH ALONE CANNOT DECIDE THIS, and that is why the check is consulted
+    // on FAILURE rather than run up front.** A set whose payload does not divide
+    // evenly has one legitimately SHORT final chunk, and a dropped character
+    // produces a short string too — indistinguishable by length. The
+    // discriminator is that the legitimate short chunk PARSES: its checksum
+    // holds, so it never reaches this path. §1.1e's own order says the same
+    // thing — try the string as written, and only then attempt repair.
+    let suspect: Vec<(usize, usize)> = failed
+        .iter()
+        .filter_map(|&pos| {
+            let len = strings.get(pos - 1)?.chars().count();
+            (len != modal).then_some((pos, len))
+        })
+        .collect();
+    if suspect.is_empty() {
+        return None;
+    }
+
+    let mut list = String::new();
+    {
+        use core::fmt::Write as _;
+        for (n, len) in &suspect {
+            let (word, delta) = if *len < modal {
+                ("MISSING", modal - len)
+            } else {
+                ("EXTRA", len - modal)
+            };
+            let plural = if delta == 1 { " is" } else { "s are" };
+            let _ = writeln!(
+                list,
+                "string {n}: {len} characters (expected {modal}) — {delta} character{plural} {word}"
+            );
+        }
+    }
+
+    Some(
+        Refusal::new(
+        verb,
+        "§1.1e",
+        format!(
+            "{} string{} the wrong length for this set (most are {modal})",
+            suspect.len(),
+            if suspect.len() == 1 { " is" } else { "s are" }
+        ),
+        "A character is MISSING or EXTRA, not wrong. BCH repairs SUBSTITUTIONS —          up to 4 per string — but an omission or an insertion shifts every symbol          after it and cannot be corrected. mt stops here rather than decoding,          because a length error reports as a MISSING PLATE once it reaches the          codec, and that sends you looking for steel that is not lost.\n\
+         \n\
+         The expected length is the most common one in this set: every string but          the last carries the same payload, so exactly one may be shorter.",
+    )
+        .with_remedy("Re-read these from the plate, counting characters:")
+        .with_verbatim(list),
+    )
 }
 
 /// Restore `--elide-prefix` output.

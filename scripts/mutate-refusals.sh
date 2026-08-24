@@ -96,11 +96,18 @@ for i, l in enumerate(lines):
         break
 if start is None:
     sys.exit(f"no `fn {fn}(` in {path}")
+# THE NEUTRAL RETURN, chosen by the signature. A guard is neutered by making it
+# NOT FIRE, and what that looks like depends on how it reports: a refusing guard
+# returns `Ok(Default::default())`, an advisory one returns `None`. One mutation
+# CONCEPT, two spellings -- so a genuine refusal is never kept out of the ledger
+# because of the shape of its return type.
+sig = "\n".join(lines[start:start + 12])
+neutral = "None" if "-> Option<" in sig else "Ok(Default::default())"
 # The body opens at the first following line ending in `{`.
 for j in range(start, min(start + 25, len(lines))):
     if lines[j].rstrip().endswith("{"):
         indent = " " * (len(lines[j]) - len(lines[j].lstrip()) + 4)
-        lines.insert(j + 1, f"{indent}return Ok(Default::default()); // MUTATED by mutate-refusals.sh")
+        lines.insert(j + 1, f"{indent}return {neutral}; // MUTATED by mutate-refusals.sh")
         open(path, "w").write("\n".join(lines))
         sys.exit(0)
 sys.exit(f"could not find the body of `{fn}` in {path}")

@@ -352,34 +352,72 @@ pub fn require_psbt_input_values(
     .with_remedy("Supply it per input: --input-value 0:0.05000000"))
 }
 
-/// §8.2c's legacy warning, which **fires only when the value is UNBOUND**.
+/// §8.2c's legacy warning — **fires only when the value is bound by NOTHING**,
+/// and every clause is derived rather than asserted.
 ///
-/// Not on every legacy input. The earlier rule fired *"whenever any input is
-/// legacy"* while asserting `mt` could not bind the value by txid — which
-/// §8.2d now does — so in the common case, a legacy input carrying
-/// `non_witness_utxo`, it printed a false, capitalised block. **A warning that
-/// cries wolf on the normal path has negative value**, because it trains the
-/// operator to ignore the rare case where it is true.
-pub fn legacy_unbound_warning(n: usize, claimed_sat: u64, out_total_sat: u64) -> Warning {
-    let fee = claimed_sat.saturating_sub(out_total_sat);
+/// **It was wrong in six ways at once, and an adversarial review found all of
+/// them by building the legacy PSBT nobody had built.** It gated on
+/// `witness.is_empty()` — *is this input non-witness* — and never consulted the
+/// provenance the caller had already resolved. So:
+///
+/// 1. It fired on the COMMON legacy path: a PSBT input carrying
+///    `non_witness_utxo`, which Core always attaches, which §8.2d hashes and
+///    matches. The report printed `TXID-BOUND` for that same input five lines
+///    below.
+/// 2. Its body said *"This input carries no non_witness_utxo"* about an input
+///    that carried one.
+/// 3. It said *"You have told mt it holds"* about a number the operator never
+///    supplied — it came from the PSBT record.
+/// 4. It printed a HARDCODED *"9.01 BTC"* illustration as though it described
+///    the numbers on screen.
+/// 5. Its fee arithmetic was one input minus **all** outputs, so on any
+///    multi-input transaction it saturated to zero and asserted a fee of
+///    `0.00000000 BTC` twenty lines above the real `FEE` row.
+/// 6. And the inversion was complete: the genuinely unverified case got no
+///    warning at all.
+///
+/// The doc-comment it replaced *already argued* the cost correctly — *"a warning
+/// that cries wolf on the normal path has negative value, because it trains the
+/// operator to ignore the rare case where it is true"* — and described a
+/// provenance test that was never in the code. **Prose asserting more than the
+/// code does, inside the very function it describes.**
+pub fn legacy_unbound_warning(
+    n: usize,
+    claimed_sat: u64,
+    supplied_by_operator: bool,
+    out_total_sat: u64,
+    fee_sat: Option<u64>,
+) -> Warning {
+    let source = if supplied_by_operator {
+        "you supplied it with --input-value"
+    } else {
+        "it came from the PSBT's witness_utxo, which nothing has checked"
+    };
+    // THE FEE mt ACTUALLY SHOWS, or nothing. A number labelled "the fee" that
+    // disagrees with the FEE row is worse than no number: the operator is
+    // reading both, twenty lines apart, immediately before cutting steel.
+    let fee_line = match fee_sat {
+        Some(f) => format!("mt therefore shows a fee of  {}", btc(f)),
+        None => "mt cannot show a fee at all: another input's value is unknown too.".to_string(),
+    };
     Warning::new(
-        format!("input {n} is a legacy (pre-SegWit) input."),
+        format!("input {n} is a legacy (pre-SegWit) input whose value NOTHING has verified."),
         format!(
-            "The fee you will pay is:   (what is REALLY at that input) - {}\n\
-             You have told mt it holds:  {}\n\
-             So mt shows a fee of:       {}\n\
+            "Outputs total                {}   (certain — it is in the transaction)\n\
+             Claimed for input {n}          {}   ({source})\n\
+             {fee_line}\n\
              \n\
-             NOTHING HAS VERIFIED THAT VALUE. This input carries no \
-             non_witness_utxo, so mt could not bind it by txid (see 8.2d), and a \
-             legacy signature does not commit to the amount either. A wrong value \
-             still produces a perfectly valid transaction -- and the fee absorbs \
-             the entire difference. If that input actually holds 10 BTC, this \
-             transaction pays 9.01 BTC in fees and a miner will simply take it.\n\
+             This input carries no non_witness_utxo, so mt could not bind the \
+             value by txid (see 8.2d) — and a LEGACY signature does not commit \
+             to the amount either. So a wrong value still produces a perfectly \
+             valid transaction, and THE FEE ABSORBS THE ENTIRE DIFFERENCE: every \
+             satoshi this input really holds beyond the {} claimed above is paid \
+             to a miner, and nothing in Bitcoin rejects it.\n\
              \n\
              Verify the input value out of band before you cut this plate.",
             btc(out_total_sat),
             btc(claimed_sat),
-            btc(fee),
+            btc(claimed_sat),
         ),
     )
 }

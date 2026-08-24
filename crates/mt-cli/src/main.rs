@@ -400,14 +400,27 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     // §8.2d now does, so on the common path it printed a false capitalised
     // block and trained the operator to skip the rare case where it is true.
     let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+    let in_total: Option<u64> = values.iter().map(|v| v.map(|(s, _)| s)).sum();
+    let fee_sat = in_total.and_then(|i| i.checked_sub(out_total));
     for (n, inp) in tx.input.iter().enumerate() {
+        // GATE ON THE PROVENANCE, not on `witness.is_empty()`. "Is this input
+        // non-witness" is not the question §8.2c asks — the question is whether
+        // ANYTHING has checked its value, and the code had already answered that
+        // a hundred lines earlier and thrown the answer away.
+        let unverified = values[n].is_none_or(|(_, p)| !p.is_verified());
         let legacy = inp.witness.is_empty();
-        if legacy && !bound_by_chain[n] {
-            if let Some((claimed, _)) = values[n] {
+        if legacy && unverified {
+            if let Some((claimed, prov)) = values[n] {
                 let _ = writeln!(
                     stderr,
                     "{}",
-                    validate::legacy_unbound_warning(n, claimed, out_total)
+                    validate::legacy_unbound_warning(
+                        n,
+                        claimed,
+                        prov == report::Provenance::OperatorAsserted,
+                        out_total,
+                        fee_sat,
+                    )
                 );
             }
         }
@@ -723,14 +736,7 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 fn decode(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "decode")?;
     let strings = read_strings::read(&text)?;
-    let set = pipeline::decode(&strings).map_err(|e| {
-        Refusal::new(
-            "decode",
-            "§1.1a",
-            "cannot reassemble the set",
-            format!("{e}"),
-        )
-    })?;
+    let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
 
     // §1.1's LAST CHECK, before anything reaches stdout.
     content_id_guard(&set.bytes, &set.chunks, "decode")?;
@@ -791,8 +797,7 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
 fn verify(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "verify")?;
     let strings = read_strings::read(&text)?;
-    let set = pipeline::decode(&strings)
-        .map_err(|e| Refusal::new("verify", "§1.1", "the set does not verify", format!("{e}")))?;
+    let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
 
     // ...AND the reassembled transaction re-derives that id. This is the check
     // the OK line has always claimed; until it existed, the claim was a
@@ -859,14 +864,7 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
 fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "inspect")?;
     let strings = read_strings::read(&text)?;
-    let set = pipeline::decode(&strings).map_err(|e| {
-        Refusal::new(
-            "inspect",
-            "§1.1",
-            "cannot reassemble the set",
-            format!("{e}"),
-        )
-    })?;
+    let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
 
@@ -898,6 +896,32 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     set_notices(&set, &mut std::io::stderr());
     margin_report(&set.chunks, &mut std::io::stderr());
     Ok(())
+}
+
+/// Turn a codec failure into the message that actually helps.
+///
+/// **A dropped character reports as a MISSING PLATE once it reaches the codec.**
+/// An omission shifts every symbol after it, so the string fails its checksum,
+/// contributes no chunk, and the set says `chunk 3 of 6 is missing` — *an
+/// accusation about the operator's steel*, sending them to hunt for a plate that
+/// is sitting in front of them. §1.1e's length check exists to say the true
+/// thing instead, and it is consulted HERE, on the failure path, because length
+/// alone cannot tell a dropped character from a legitimately short final chunk.
+fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refusal {
+    // Which strings could not be read at all. Recomputed here rather than
+    // threaded through the codec's error type: this runs only on the failure
+    // path, where the operator is already stopped and one more pass over a
+    // dozen strings costs nothing.
+    let unreadable: Vec<usize> = strings
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| pipeline::decode_chunk(s, None).is_err())
+        .map(|(i, _)| i + 1)
+        .collect();
+    if let Some(r) = read_strings::length_report(strings, &unreadable, verb) {
+        return r;
+    }
+    Refusal::new(verb, "§1.1", "the set does not verify", format!("{e}"))
 }
 
 /// §1.1's last check: **the reassembled transaction must re-derive the id every

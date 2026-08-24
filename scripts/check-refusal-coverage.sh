@@ -85,16 +85,18 @@ for e in entries:
         continue
     # The mutation shape mutate-refusals.sh relies on.
     sig = re.search(rf"^\s*(pub )?fn {re.escape(fn)}\((?:.|\n)*?\)\s*->\s*([^{{]+)\{{", body, re.M)
-    # Any `Result<T, Refusal>` where T: Default. mutate-refusals.sh inserts
-    # `return Ok(Default::default());`, which fits the unit type and Vec alike --
-    # one mutation shape, so a genuine refusal is never kept OUT of this ledger
-    # merely because its guard returns something.
-    if not sig or "Refusal>" not in sig.group(2) or "Result<" not in sig.group(2):
-        got = sig.group(2).strip() if sig else "?"
+    # The shapes mutate-refusals.sh can neuter: a REFUSING guard
+    # (`Result<T: Default, Refusal>`) and an ADVISORY one (`Option<Refusal>`).
+    # One mutation concept -- make the check not fire -- with the spelling chosen
+    # by the signature, so a genuine refusal is never kept OUT of this ledger
+    # because of the shape of its return type.
+    ret = sig.group(2).strip() if sig else "?"
+    ok_shape = ("Refusal>" in ret) and ("Result<" in ret or ret.startswith("Option<"))
+    if not ok_shape:
         problems.append(
-            f"{e['spec']}: `{fn}` returns `{got}`, not a `Result<_, Refusal>` -- "
-            "mutate-refusals.sh inserts `return Ok(Default::default());` and "
-            "would not compile"
+            f"{e['spec']}: `{fn}` returns `{ret}`, which mutate-refusals.sh has no "
+            "neutral return for -- it handles `Result<T: Default, Refusal>` "
+            "(`Ok(Default::default())`) and `Option<Refusal>` (`None`)"
         )
 
 # 3. THE SEEDED SET. These twelve are the implementation plan's own list, put
@@ -114,6 +116,7 @@ REQUIRED = [
     "§3b",    # all-elided input: no prefix to restore from, and mt will not guess
     "§8.2c",  # input values: required when a PSBT lacks them, and PER INPUT
     "§1.1",   # the reassembled transaction must re-derive the content id
+    "§1.1e",  # a MISSING or EXTRA character, named as such rather than as a lost plate
 ]
 cited = {e["spec"] for e in entries}
 for r in REQUIRED:
