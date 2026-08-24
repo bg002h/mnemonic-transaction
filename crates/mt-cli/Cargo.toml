@@ -1,0 +1,18 @@
+[package]
+name = "mt-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The mt CLI — encode, decode, verify and inspect mt1 engravable transaction backups"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mt"
+path = "src/main.rs"
+
+[dependencies]
+mt-codec = { path = "../mt-codec", version = "0.1.0" }

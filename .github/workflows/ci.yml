@@ -1,0 +1,31 @@
+name: ci
+on:
+  push:
+    branches: [main, "ci/**"]
+  pull_request:
+
+jobs:
+  test:
+    name: test (rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install toolchain
+        run: rustup show   # honours rust-toolchain.toml
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: build
+        run: cargo build --locked
+      # NOTE: `cargo nextest run` is deliberately absent until P1.
+      # Since nextest 0.9.85 the default is --no-tests=fail, so on a workspace
+      # with no tests it prints "error: no tests to run" and exits 4. Adding it
+      # here would make CI red from the first commit, and `--no-tests=pass`
+      # would only make it vacuous. P1 is the first phase with tests to run.
+      - name: install nextest
+        if: hashFiles('crates/*/tests/**') != ''
+        uses: taiki-e/install-action@nextest
+      - name: test
+        if: hashFiles('crates/*/tests/**') != ''
+        run: cargo nextest run --locked

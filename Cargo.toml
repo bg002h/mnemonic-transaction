@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/mt-codec", "crates/mt-cli"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Unlicense"
+repository = "https://github.com/bg002h/mnemonic-transaction"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+# Speed WITHOUT dropping debug_assertions. Do NOT reach for `--release` to make
+# tests faster: it drops `debug_assertions` and overflow checks, so mutation
+# tests and invariant panics stop detecting things while still reporting green.
+# Measured elsewhere in this constellation: 25.4s -> 0.765s at opt-level 2,
+# versus 0.775s for --release — the same speed with the checks intact.
+[profile.test]
+opt-level = 2
+
+[profile.dev]
+opt-level = 2

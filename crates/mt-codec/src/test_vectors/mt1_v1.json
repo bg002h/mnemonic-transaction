@@ -1,0 +1,111 @@
+{
+  "format": "mt1",
+  "wire_version": 1,
+  "hrp": "mt",
+  "header_bits": 55,
+  "header_symbols": 11,
+  "mt_regular_const": "0x1a2fc877f9528d7c1",
+  "nums_domain": "shibbolethnumstransaction",
+  "payload_ceiling_bytes": 40,
+  "generator": "scripts/gen-mt1-vectors.py (mnemonic-engrave)",
+  "vectors": [
+    {
+      "label": "even",
+      "note": "6 chunks of 37 B, divides evenly \u2014 no short final chunk",
+      "raw_hex": "020000000001017c8da925af70e49a12b0cea7b639df5037c87b7fa61f262b86ac32c47aa3ba1a0000000000fdffffff02404b4c0000000000160014c1de0dd435d1d4ad97ed1f51d63f91c800cc4eab3ea1b92901000000160014751097c299d6354fbb2c5a84512dd708f2902f5e0247304402207debc7d89984c7717940b622504318d2c184966a618b32cf8b700d0f125b3ffa02206ef875f9c0b5931e0ea1cf0c109bdb8512835c8e51526f99b3419929a2ea7259012103718f5fd45b926226357e2b0400574b41a32d0bf0ae69a02eebea5fbc542ff52060000000",
+      "size_bytes": 222,
+      "txid": "2dcf2b973d52044b1e58c988a5a59d388073ff05598b0a1e93eeb04c72ebf630",
+      "wtxid": "d5717c031917116bbd4fcaff0bcc3abe9d456899991414f2177a5281ed836f51",
+      "txid_is_wtxid": false,
+      "locktime": 96,
+      "inputs": [
+        {
+          "txid": "1abaa37ac432ac862b261fa67f7bc83750df39b6a7ceb0129ae470af25a98d7c",
+          "vout": 0,
+          "witness_items": 2
+        }
+      ],
+      "chunk_count": 6,
+      "bytes_per_chunk": 37,
+      "last_chunk_bytes": 37,
+      "set_id": "0x2dcf2",
+      "invariant_prefix": "p9h8jqq9",
+      "string_lengths": [
+        87,
+        87,
+        87,
+        87,
+        87,
+        87
+      ],
+      "strings": [
+        "mt1p9h8jqq9qqqqgqqqqqqqyqherdfykhhpey6z2cvafak8804qd7g0dl6v8ex9wr2cvky023skwkeud2229sax",
+        "mt1p9h8jqq9qqphgdqqqqqqqq0mllllupyqj6vqqqqqqqqzcqpfsw7ph2rt5w54kt768636cls8zxg0najlzunp",
+        "mt1p9h8jqq9qqzj8yqpnzw4vl2rwffqyqqqqqkqq282yyhc2vavd20hvk94pz39hts3u5s9a0qd8pwskxfl7ju5",
+        "mt1p9h8jqq9qqrqfrnq3qzyp77h37cnxzvwutegzmzy5zrrrfvrpykdfsckvk03dcq6rcjtvlsfcglv7zx43yaz",
+        "mt1p9h8jqq9qqylgpzqmhcwhuupdvnrc82rncvzzdahpgjsdwgu52jd7vmxsve9x3w5ujeqyssuvddxvwqze4ve",
+        "mt1p9h8jqq9qq9qdcc7h75twfxyf340c4sgqzhfdq6xtgt7zhxngpwa049l0z59l6jqcqqqqqq5k5y2ye5nv8yf"
+      ],
+      "strings_elided": [
+        "mt1p9h8jqq9qqqqgqqqqqqqyqherdfykhhpey6z2cvafak8804qd7g0dl6v8ex9wr2cvky023skwkeud2229sax",
+        "qqphgdqqqqqqqq0mllllupyqj6vqqqqqqqqzcqpfsw7ph2rt5w54kt768636cls8zxg0najlzunp",
+        "qqzj8yqpnzw4vl2rwffqyqqqqqkqq282yyhc2vavd20hvk94pz39hts3u5s9a0qd8pwskxfl7ju5",
+        "qqrqfrnq3qzyp77h37cnxzvwutegzmzy5zrrrfvrpykdfsckvk03dcq6rcjtvlsfcglv7zx43yaz",
+        "qqylgpzqmhcwhuupdvnrc82rncvzzdahpgjsdwgu52jd7vmxsve9x3w5ujeqyssuvddxvwqze4ve",
+        "qq9qdcc7h75twfxyf340c4sgqzhfdq6xtgt7zhxngpwa049l0z59l6jqcqqqqqq5k5y2ye5nv8yf"
+      ]
+    },
+    {
+      "label": "uneven",
+      "note": "8 chunks of 36 B with a 32 B final chunk \u2014 exercises \u00a71.1e's modal length check",
+      "raw_hex": "020000000001017c8da925af70e49a12b0cea7b639df5037c87b7fa61f262b86ac32c47aa3ba1a0000000000fdffffff0440420f00000000001600146d9c13d105bd8e268434c2792bfa4fec5dc03369925caa2901000000160014f0435e39e8d45ca9ef36d217c407a6811149e24f80841e0000000000160014dc1bcd3c8efcf9097031a45578d0af2e0b7ab157c0c62d0000000000160014665ad11c1c45e52380dc0a6b78db3f5ac576bb220247304402206ccdda8091aecdcc3f7af89e7c9260c3f9957107a081d2768abeef3d97cbc53902207065a6d1bd207ff907b56e572f694ebb713f59bb777f9cf478a449203cddcf5a012103718f5fd45b926226357e2b0400574b41a32d0bf0ae69a02eebea5fbc542ff52062000000",
+      "size_bytes": 284,
+      "txid": "3b426e922a2cbf018fb6cd5650a39f60f3eb40fe85ca435cc049f6551b3462b9",
+      "wtxid": "483003987d29b5f489e0c44222027b0fb79336b00256c178b35afec7d0e036f6",
+      "txid_is_wtxid": false,
+      "locktime": 98,
+      "inputs": [
+        {
+          "txid": "1abaa37ac432ac862b261fa67f7bc83750df39b6a7ceb0129ae470af25a98d7c",
+          "vout": 0,
+          "witness_items": 2
+        }
+      ],
+      "chunk_count": 8,
+      "bytes_per_chunk": 36,
+      "last_chunk_bytes": 32,
+      "set_id": "0x3b426",
+      "invariant_prefix": "p8dpxqq8",
+      "string_lengths": [
+        85,
+        85,
+        85,
+        85,
+        85,
+        85,
+        85,
+        79
+      ],
+      "strings": [
+        "mt1p8dpxqq8qqqqgqqqqqqqyqherdfykhhpey6z2cvafak8804qd7g0dl6v8ex9wr2cvky0gukj5httfg6h7u",
+        "mt1p8dpxqq8qqp5wap5qqqqqqqpl0llllsgszzpuqqqqqqqqtqq9rdnsfazpda3cnggdxz0yfaj3pagq9d42j",
+        "mt1p8dpxqq8qqz90aylmzacqeknyju4g5szqqqqqtqq98sgd0rn6x5tj577dkjzlzq0f5pzyckjju6fpmqh96",
+        "mt1p8dpxqq8qqrf83ylqyyrcqqqqqqqqtqq9xur0xnerhulyyhqvdy24udptewpdatz47qcc0mvtxgxe3pcvn",
+        "mt1p8dpxqq8qqy95qqqqqqqqtqq9rxttg3c8z9u53cphq2ddudk066c4mtkgszgucygq3qdsudzl26yqsqxcp",
+        "mt1p8dpxqq8qq9ehdgpydwehxr77hcne7fycxrlx2hzpaqs8f8dz47au7e0j798ypzqur95cyr3vzslwgnlgm",
+        "mt1p8dpxqq8qqx6x7jqlleq76ku4e0d98tkufltxahwluu73u2gjfq8nwu7kspyyphrr6l6srk58kpq022ayd",
+        "mt1p8dpxqq8qq8twfxyf340c4sgqzhfdq6xtgt7zhxngpwa049l0z59l6jqcsqqqqqylatwa94hql0v"
+      ],
+      "strings_elided": [
+        "mt1p8dpxqq8qqqqgqqqqqqqyqherdfykhhpey6z2cvafak8804qd7g0dl6v8ex9wr2cvky0gukj5httfg6h7u",
+        "qqp5wap5qqqqqqqpl0llllsgszzpuqqqqqqqqtqq9rdnsfazpda3cnggdxz0yfaj3pagq9d42j",
+        "qqz90aylmzacqeknyju4g5szqqqqqtqq98sgd0rn6x5tj577dkjzlzq0f5pzyckjju6fpmqh96",
+        "qqrf83ylqyyrcqqqqqqqqtqq9xur0xnerhulyyhqvdy24udptewpdatz47qcc0mvtxgxe3pcvn",
+        "qqy95qqqqqqqqtqq9rxttg3c8z9u53cphq2ddudk066c4mtkgszgucygq3qdsudzl26yqsqxcp",
+        "qq9ehdgpydwehxr77hcne7fycxrlx2hzpaqs8f8dz47au7e0j798ypzqur95cyr3vzslwgnlgm",
+        "qqx6x7jqlleq76ku4e0d98tkufltxahwluu73u2gjfq8nwu7kspyyphrr6l6srk58kpq022ayd",
+        "qq8twfxyf340c4sgqzhfdq6xtgt7zhxngpwa049l0z59l6jqcsqqqqqylatwa94hql0v"
+      ]
+    }
+  ]
+}
