@@ -9,6 +9,7 @@
 
 mod blocks;
 mod input;
+mod read_strings;
 mod refusal;
 
 use clap::{Parser, Subcommand};
@@ -29,6 +30,34 @@ struct Cli {
 enum Command {
     /// Turn a signed transaction into `mt1` strings for hand engraving.
     Encode(EncodeArgs),
+    /// Read `mt1` strings back and emit BROADCASTABLE HEX on stdout.
+    Decode(ReadArgs),
+    /// Check a set of `mt1` strings — structurally, and never asking a node.
+    Verify(ReadArgs),
+}
+
+/// Arguments shared by the two reading verbs.
+#[derive(clap::Args)]
+struct ReadArgs {
+    /// Read the strings from a file. Defaults to stdin.
+    #[arg(long, value_name = "PATH")]
+    r#in: Option<std::path::PathBuf>,
+
+    /// Compare against a transaction, by FULL txid.
+    ///
+    /// `verify` only. Comparing against the 20-bit set id would report a match
+    /// for any transaction sharing those bits — 1 in 1,048,576 by accident, and
+    /// under a second to construct deliberately.
+    #[arg(long, value_name = "PSBT|HEX")]
+    transaction: Option<std::path::PathBuf>,
+
+    /// Suppress the report. Warnings and refusals are never suppressed.
+    #[arg(long)]
+    quiet: bool,
+
+    /// Machine-readable report.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -103,13 +132,21 @@ struct EncodeArgs {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Encode(args) => match encode(args) {
-            Ok(()) => std::process::ExitCode::SUCCESS,
-            Err(r) => {
-                eprint!("{r}");
-                std::process::ExitCode::FAILURE
-            }
-        },
+        Command::Encode(args) => run(encode(args)),
+        Command::Decode(args) => run(decode(args)),
+        Command::Verify(args) => run(verify(args)),
+    }
+}
+
+/// Exit 0 means every check passed; non-zero otherwise. `mt decode`'s
+/// documented pipeline depends on it.
+fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
+    match r {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(refusal) => {
+            eprint!("{refusal}");
+            std::process::ExitCode::FAILURE
+        }
     }
 }
 
@@ -263,4 +300,191 @@ fn txid_display(bytes: &[u8]) -> Result<String, Refusal> {
         .with_remedy("Check this is the output of `finalizepsbt`, not a template.")
     })?;
     Ok(tx.compute_txid().to_string())
+}
+
+/// Read the strings an operator typed back, from a file or stdin.
+fn read_input(path: &Option<std::path::PathBuf>, verb: &str) -> Result<String, Refusal> {
+    let bytes = match path {
+        Some(p) => std::fs::read(p).map_err(|e| {
+            Refusal::new(
+                verb,
+                "§1.1e",
+                format!("cannot read {}", p.display()),
+                format!("The file could not be opened: {e}."),
+            )
+        })?,
+        None => {
+            let mut buf = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut buf)
+                .map_err(|e| Refusal::new(verb, "§1.1e", "cannot read stdin", format!("{e}")))?;
+            buf
+        }
+    };
+    String::from_utf8(bytes).map_err(|_| {
+        Refusal::new(
+            verb,
+            "§1.1e",
+            "input is not text",
+            "mt1 strings are bech32 characters. This input is not valid UTF-8, so \
+             it cannot be a set of strings typed back from steel.",
+        )
+    })
+}
+
+/// The margin report §1.1 requires: not just a verdict, but how much of the
+/// correction budget each chunk spent — and WHERE.
+///
+/// A chunk repaired four times passes while sitting **one scratch from
+/// unrecoverable**, with zero redundancy behind it. A verdict that hides that
+/// tells the operator the opposite of what they need.
+fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
+    const T: usize = 4;
+    let mut repaired: Vec<&mt_codec::DecodedChunk> =
+        chunks.iter().filter(|c| c.corrected > 0).collect();
+    if repaired.is_empty() {
+        return;
+    }
+    // Descending: the nearest-to-limit chunk is the one to act on, and under a
+    // failed re-derivation it is also the likeliest mis-correction.
+    repaired.sort_by(|a, b| b.corrected.cmp(&a.corrected));
+
+    let _ = writeln!(
+        out,
+        "\nCORRECTION APPLIED. {} chunk{} needed repair:",
+        repaired.len(),
+        if repaired.len() == 1 { "" } else { "s" }
+    );
+    for c in &repaired {
+        // 1-based for humans; `index` is a wire field and appears in no message.
+        let margin = if c.corrected >= T {
+            "   <-- NO MARGIN LEFT"
+        } else {
+            ""
+        };
+        let positions: Vec<String> = c
+            .corrected_positions
+            .iter()
+            // data-part offset -> 1-based whole-string position
+            .map(|p| (p + 1 + 3).to_string())
+            .collect();
+        let _ = writeln!(
+            out,
+            "  chunk {:>3}   {} of {T} symbols   pos {}{margin}",
+            c.header.index + 1,
+            c.corrected,
+            positions.join(", ")
+        );
+    }
+    if let Some(worst) = repaired.first() {
+        if worst.corrected >= T {
+            let _ = writeln!(
+                out,
+                "\n  Chunk {} is at its correction limit. One more damaged symbol in\n  \
+                 that string and this transaction is unrecoverable. Re-cut it.",
+                worst.header.index + 1
+            );
+        }
+    }
+    let _ = writeln!(out);
+}
+
+fn decode(args: ReadArgs) -> Result<(), Refusal> {
+    let text = read_input(&args.r#in, "decode")?;
+    let strings = read_strings::read(&text)?;
+    let (bytes, chunks) = pipeline::decode(&strings).map_err(|e| {
+        Refusal::new(
+            "decode",
+            "§1.1a",
+            "cannot reassemble the set",
+            format!("{e}"),
+        )
+    })?;
+
+    let mut stderr = std::io::stderr();
+    if !args.quiet {
+        // decode PRINTS THE REPORT, because decode is the verb a recoverer
+        // reaches for first — `inspect` is the one designed for them, and they
+        // have no way to know that. A silent decode hands a stranger sixty
+        // kilobytes of hex before anything has told them what it does.
+        let _ = writeln!(stderr, "TX        {}", txid_display(&bytes)?);
+        let _ = writeln!(stderr, "mt1 SET   {} strings, all present", chunks.len());
+        margin_report(&chunks, &mut stderr);
+    }
+
+    // stdout ONLY on success: every check above passed, so these bytes are
+    // vouched for. A failure path that still printed hex would let the
+    // documented pipeline broadcast a transaction that failed mt's own checks.
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    {
+        use core::fmt::Write as _;
+        for b in &bytes {
+            let _ = write!(hex, "{b:02x}");
+        }
+    }
+    let _ = writeln!(out, "{hex}");
+    Ok(())
+}
+
+fn verify(args: ReadArgs) -> Result<(), Refusal> {
+    let text = read_input(&args.r#in, "verify")?;
+    let strings = read_strings::read(&text)?;
+    let (bytes, chunks) = pipeline::decode(&strings)
+        .map_err(|e| Refusal::new("verify", "§1.1", "the set does not verify", format!("{e}")))?;
+
+    let mut stderr = std::io::stderr();
+    let set_id = chunks[0].header.chunk_set_id;
+    let _ = writeln!(
+        stderr,
+        "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
+        chunks.len()
+    );
+    margin_report(&chunks, &mut stderr);
+
+    // §1.1: verify NEVER asks a node. A predicate whose answer changes between
+    // runs is not a predicate, and keeping it offline is what lets it run on an
+    // air-gapped machine.
+    if let Some(path) = &args.transaction {
+        let supplied = std::fs::read(path).map_err(|e| {
+            Refusal::new(
+                "verify",
+                "§1.1",
+                format!("cannot read {}", path.display()),
+                format!("{e}"),
+            )
+        })?;
+        let supplied = match input::sniff(&supplied)? {
+            input::Input::RawHex(b) => b,
+            input::Input::Psbt(_) => {
+                return Err(Refusal::new(
+                    "verify",
+                    "§1.1",
+                    "PSBT comparison lands with PSBT support",
+                    "A supplied PSBT is compared against its EXTRACTED transaction \
+                     (§10.13 c). Extraction arrives with the rest of §8.",
+                ));
+            }
+        };
+        // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
+        // reports a match for any transaction sharing those bits, and says so in
+        // the words "prove identity".
+        let want = txid_display(&bytes)?;
+        let got = txid_display(&supplied)?;
+        if want != got {
+            return Err(Refusal::new(
+                "verify",
+                "§1.1",
+                "the supplied transaction is not the one on these strings",
+                format!(
+                    "The strings reassemble to txid {want}. The supplied \
+                     transaction is {got}. These differ in the FULL txid, not \
+                     merely in the 20-bit set id."
+                ),
+            ));
+        }
+        let _ = writeln!(stderr, "  --transaction matches, on the full txid.");
+    }
+    Ok(())
 }
