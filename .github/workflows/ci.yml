@@ -36,3 +36,10 @@ jobs:
         run: ./scripts/check-refusal-coverage.sh
       - name: refusal mutation (every refusal test can fail)
         run: ./scripts/mutate-refusals.sh
+
+      # P6's acceptance runs. They assert on WHAT THE OPERATOR SEES, which the
+      # test suite deliberately does not: a journey that checks only exit codes
+      # passes against a tool that succeeds in silence, and all three of these
+      # are about moments where the output IS the deliverable.
+      - name: journeys (encode, recover, miscut)
+        run: ./scripts/journeys.sh

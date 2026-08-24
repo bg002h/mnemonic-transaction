@@ -538,19 +538,27 @@ fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
         } else {
             ""
         };
-        let positions: Vec<String> = c
-            .corrected_positions
-            .iter()
-            // data-part offset -> 1-based whole-string position
-            .map(|p| (p + 1 + 3).to_string())
-            .collect();
         let _ = writeln!(
             out,
-            "  chunk {:>3}   {} of {T} symbols   pos {}{margin}",
+            "  chunk {:>3}   {} of {T} symbols{margin}",
             c.header.index + 1,
-            c.corrected,
-            positions.join(", ")
+            c.corrected
         );
+        // WHAT was repaired away, not only WHERE. A bare position tells the
+        // operator to go and look; a before-and-after tells them what to look
+        // for — and it is the only way to distinguish a MIS-CUT plate from a
+        // MIS-READ one. If the steel really says the corrected character, the
+        // plate is fine and the typist slipped.
+        for (n, &p) in c.corrected_positions.iter().enumerate() {
+            let was = c.corrected_from.get(n).copied().map_or('?', symbol_char);
+            let now = c.corrected_to.get(n).copied().map_or('?', symbol_char);
+            // data-part offset -> 1-based whole-string position
+            let _ = writeln!(
+                out,
+                "              pos {:>3}   read {was}, corrected to {now}",
+                p + 1 + 3
+            );
+        }
     }
     if let Some(worst) = repaired.first() {
         if worst.corrected >= T {
@@ -565,10 +573,73 @@ fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
     let _ = writeln!(out);
 }
 
+/// A bech32 symbol value as the character an operator sees on steel.
+fn symbol_char(v: u8) -> char {
+    const ALPHABET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    ALPHABET.get(v as usize).map_or('?', |&b| b as char)
+}
+
+/// What a set carried besides its bytes: duplicates resolved, strings that
+/// could not be read at all.
+///
+/// **Both are silent successes if nobody prints them**, and both name a piece of
+/// steel the operator should act on. A duplicate that `mt` quietly resolved
+/// still means one of the two plates is closer to unrecoverable than the other,
+/// and an unreadable string means a plate is already scrap while the set as a
+/// whole is fine.
+fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut impl Write) {
+    const T: usize = 4;
+    for d in &set.duplicates {
+        let _ = writeln!(
+            out,
+            "\nDUPLICATE RESOLVED. chunk {} was present twice.",
+            d.index + 1
+        );
+        let _ = writeln!(
+            out,
+            "  KEPT       the copy needing {} of {T} corrections",
+            d.kept_corrections
+        );
+        let _ = writeln!(
+            out,
+            "  DISCARDED  the copy needing {} of {T} corrections",
+            d.discarded_corrections
+        );
+        let _ = writeln!(
+            out,
+            "  Both carry the same payload, so nothing is ambiguous. mt kept the\n  \
+             healthier copy — but the discarded plate has {} correction{} left\n  \
+             before it is unrecoverable, and it is the one to re-cut.",
+            T.saturating_sub(d.discarded_corrections),
+            if T.saturating_sub(d.discarded_corrections) == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+    }
+    for u in &set.unreadable {
+        let _ = writeln!(
+            out,
+            "\nUNREADABLE STRING. string {} of the input could not be read:",
+            u.input_position
+        );
+        let _ = writeln!(out, "  {}", u.reason);
+        let _ = writeln!(
+            out,
+            "  Its chunk came from another copy, so this SET is complete — but\n  \
+             that plate is scrap. Re-cut it from the strings mt has verified."
+        );
+    }
+    if !set.duplicates.is_empty() || !set.unreadable.is_empty() {
+        let _ = writeln!(out);
+    }
+}
+
 fn decode(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "decode")?;
     let strings = read_strings::read(&text)?;
-    let (bytes, chunks) = pipeline::decode(&strings).map_err(|e| {
+    let set = pipeline::decode(&strings).map_err(|e| {
         Refusal::new(
             "decode",
             "§1.1a",
@@ -583,10 +654,16 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
         // reaches for first — `inspect` is the one designed for them, and they
         // have no way to know that. A silent decode hands a stranger sixty
         // kilobytes of hex before anything has told them what it does.
-        let _ = writeln!(stderr, "TX        {}", txid_display(&bytes)?);
-        let _ = writeln!(stderr, "mt1 SET   {} strings, all present", chunks.len());
-        margin_report(&chunks, &mut stderr);
+        let _ = writeln!(stderr, "TX        {}", txid_display(&set.bytes)?);
+        let _ = writeln!(
+            stderr,
+            "mt1 SET   {} strings, all present",
+            set.chunks.len()
+        );
+        set_notices(&set, &mut stderr);
+        margin_report(&set.chunks, &mut stderr);
     }
+    let bytes = set.bytes;
 
     // stdout ONLY on success: every check above passed, so these bytes are
     // vouched for. A failure path that still printed hex would let the
@@ -607,17 +684,19 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
 fn verify(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "verify")?;
     let strings = read_strings::read(&text)?;
-    let (bytes, chunks) = pipeline::decode(&strings)
+    let set = pipeline::decode(&strings)
         .map_err(|e| Refusal::new("verify", "§1.1", "the set does not verify", format!("{e}")))?;
 
     let mut stderr = std::io::stderr();
-    let set_id = chunks[0].header.chunk_set_id;
+    let set_id = set.chunks[0].header.chunk_set_id;
     let _ = writeln!(
         stderr,
         "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
-        chunks.len()
+        set.chunks.len()
     );
-    margin_report(&chunks, &mut stderr);
+    set_notices(&set, &mut stderr);
+    margin_report(&set.chunks, &mut stderr);
+    let bytes = &set.bytes;
 
     // §1.1: verify NEVER asks a node. A predicate whose answer changes between
     // runs is not a predicate, and keeping it offline is what lets it run on an
@@ -646,7 +725,7 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
         // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
         // reports a match for any transaction sharing those bits, and says so in
         // the words "prove identity".
-        let want = txid_display(&bytes)?;
+        let want = txid_display(bytes)?;
         let got = txid_display(&supplied)?;
         if want != got {
             return Err(Refusal::new(
@@ -668,7 +747,7 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
 fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "inspect")?;
     let strings = read_strings::read(&text)?;
-    let (bytes, chunks) = pipeline::decode(&strings).map_err(|e| {
+    let set = pipeline::decode(&strings).map_err(|e| {
         Refusal::new(
             "inspect",
             "§1.1",
@@ -677,7 +756,7 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
         )
     })?;
 
-    let tx = decode_tx(&bytes, "inspect")?;
+    let tx = decode_tx(&set.bytes, "inspect")?;
     let txid = tx.compute_txid().to_string();
 
     // §6a: the node is consulted AUTOMATICALLY when one is reachable. The
@@ -686,7 +765,7 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     let node = node::Node::find(&args.bitcoin_cli);
 
     let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
-    r.set = Some((chunks.len(), chunks.len()));
+    r.set = Some((set.chunks.len(), set.chunks.len()));
 
     let out = std::io::stdout();
     let mut out = out.lock();
@@ -702,7 +781,8 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
             report::no_node_warning(tx.lock_time.to_consensus_u32(), &txid)
         );
     }
-    margin_report(&chunks, &mut std::io::stderr());
+    set_notices(&set, &mut std::io::stderr());
+    margin_report(&set.chunks, &mut std::io::stderr());
     Ok(())
 }
 

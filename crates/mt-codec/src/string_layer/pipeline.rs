@@ -98,6 +98,62 @@ pub struct DecodedChunk {
     /// settles against the steel in seconds, and counts alone leave them nothing
     /// to compare. `mt-cli` converts these to 1-based whole-string positions.
     pub corrected_positions: Vec<usize>,
+    /// The symbol that was **read** at each corrected position, before repair,
+    /// in the same order as `corrected_positions`.
+    ///
+    /// Without it the margin report can say *where* it repaired but not *what
+    /// it repaired away* — and `pos 41 read v, corrected to d` is a claim an
+    /// operator settles against the steel in seconds, while a bare position
+    /// leaves them nothing to compare. **It is also the only way to tell a
+    /// mis-cut from a mis-READ:** if the steel really says `d`, the plate is
+    /// fine and the typist slipped.
+    pub corrected_from: Vec<u8>,
+    /// The symbol BCH put there instead, in the same order.
+    ///
+    /// Stored beside `corrected_from` rather than re-derived from the payload,
+    /// so the pair is atomic: a re-derivation is a second implementation of the
+    /// symbol layout, free to disagree with the first.
+    pub corrected_to: Vec<u8>,
+}
+
+/// A chunk the set carried **twice**, and what `mt` did about it.
+///
+/// §1.8's advice is to cut a second copy, so duplicates are the *expected*
+/// state of a well-kept drawer rather than an anomaly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Duplicate {
+    /// 0-based chunk index. `mt-cli` renders it 1-based.
+    pub index: usize,
+    /// Corrections the copy `mt` KEPT needed.
+    pub kept_corrections: usize,
+    /// Corrections the copy `mt` DISCARDED needed.
+    pub discarded_corrections: usize,
+}
+
+/// A string `mt` could not read at all, and which copy saved the set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreadable {
+    /// 1-based position in the input, which is what the operator can point at.
+    pub input_position: usize,
+    /// Why it could not be read.
+    pub reason: String,
+}
+
+/// Everything `decode` learnt, not merely the bytes.
+///
+/// **A tuple would have hidden the last two fields**, and they are the two an
+/// operator holding steel most needs: which plate is closest to unrecoverable,
+/// and which one `mt` stopped trusting.
+#[derive(Debug, Clone)]
+pub struct DecodedSet {
+    /// The reassembled transaction bytes.
+    pub bytes: Vec<u8>,
+    /// The chunk `mt` used for each index, in index order.
+    pub chunks: Vec<DecodedChunk>,
+    /// Duplicates resolved, in index order.
+    pub duplicates: Vec<Duplicate>,
+    /// Strings that could not be read, whose chunks came from another copy.
+    pub unreadable: Vec<Unreadable>,
 }
 
 /// Parse and checksum-verify one `mt1` string, correcting up to `t = 4`.
@@ -113,12 +169,31 @@ pub fn decode_chunk(s: &str, plan: Option<Chunking>) -> Result<DecodedChunk> {
     }
     // Try the string AS WRITTEN first (§1.1e): correction is a repair attempted
     // on failure, never a preprocessing pass.
-    let (symbols, corrected, corrected_positions) = if bch_verify_regular(HRP, &symbols) {
-        (symbols, 0, Vec::new())
-    } else {
-        let r = crate::string_layer::bch::bch_correct_regular(HRP, &symbols)?;
-        (r.data, r.corrections_applied, r.corrected_positions)
-    };
+    let (symbols, corrected, corrected_positions, (corrected_from, corrected_to)) =
+        if bch_verify_regular(HRP, &symbols) {
+            (symbols, 0, Vec::new(), (Vec::new(), Vec::new()))
+        } else {
+            let r = crate::string_layer::bch::bch_correct_regular(HRP, &symbols)?;
+            // `corrected_positions` index into the same array that was handed
+            // in, so the pre-repair symbol is read from the ORIGINAL here —
+            // after `r.data` shadows it there is nothing left to compare with.
+            let from: Vec<u8> = r
+                .corrected_positions
+                .iter()
+                .filter_map(|&i| symbols.get(i).copied())
+                .collect();
+            let to: Vec<u8> = r
+                .corrected_positions
+                .iter()
+                .filter_map(|&i| r.data.get(i).copied())
+                .collect();
+            (
+                r.data,
+                r.corrections_applied,
+                r.corrected_positions,
+                (from, to),
+            )
+        };
 
     let header = ChunkHeader::from_symbols(&symbols)?;
     let body = &symbols[HEADER_SYMBOLS..symbols.len() - CHECKSUM_SYMBOLS];
@@ -146,6 +221,8 @@ pub fn decode_chunk(s: &str, plan: Option<Chunking>) -> Result<DecodedChunk> {
         payload,
         corrected,
         corrected_positions,
+        corrected_from,
+        corrected_to,
     })
 }
 
@@ -154,14 +231,42 @@ pub fn decode_chunk(s: &str, plan: Option<Chunking>) -> Result<DecodedChunk> {
 /// Ordering comes from each chunk's **header index**, never from the order the
 /// strings arrived in — §1.1a takes them "in any order", and sorting them
 /// lexicographically almost works, which is the worst kind of nearly-right.
-pub fn decode(strings: &[String]) -> Result<(Vec<u8>, Vec<DecodedChunk>)> {
-    let first = decode_chunk(
-        strings.first().ok_or(Error::MissingChunk {
+pub fn decode(strings: &[String]) -> Result<DecodedSet> {
+    // Read EVERY string first, keeping the failures rather than propagating the
+    // first one.
+    //
+    // **A miscut plate must not kill a set that has a good copy of that chunk.**
+    // §1.8's advice is to cut a second copy, and journey C is precisely the
+    // drawer that followed it: one string damaged past t = 4, one clean, both
+    // typed back. Failing on the first unreadable string would refuse a set that
+    // is completely recoverable — and would do it while holding the good copy.
+    let mut read: Vec<DecodedChunk> = Vec::new();
+    let mut unreadable: Vec<Unreadable> = Vec::new();
+    let mut first_error: Option<Error> = None;
+    for (n, s) in strings.iter().enumerate() {
+        match decode_chunk(s, None) {
+            Ok(c) => read.push(c),
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e.clone());
+                }
+                unreadable.push(Unreadable {
+                    input_position: n + 1,
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+
+    // Nothing readable at all: the FIRST error is the honest answer. Reporting
+    // "missing chunk 1 of 0" for a file of garbage would send the operator
+    // looking for a plate rather than at what they typed.
+    let Some(first) = read.first() else {
+        return Err(first_error.unwrap_or(Error::MissingChunk {
             missing: 1,
             count: 0,
-        })?,
-        None,
-    )?;
+        }));
+    };
     let count = first.header.count;
     let set_id = first.header.chunk_set_id;
 
@@ -173,20 +278,15 @@ pub fn decode(strings: &[String]) -> Result<(Vec<u8>, Vec<DecodedChunk>)> {
     let bpc = if count == 1 {
         0 // a single chunk is its own last: its length is taken directly below
     } else {
-        let mut found = None;
-        for s in strings {
-            let c = decode_chunk(s, None)?;
-            if c.header.index < count - 1 {
-                found = Some(c.payload.len());
-                break;
-            }
-        }
-        found.ok_or(Error::MissingChunk { missing: 1, count })?
+        read.iter()
+            .find(|c| c.header.index < count - 1)
+            .map(|c| c.payload.len())
+            .ok_or(Error::MissingChunk { missing: 1, count })?
     };
 
     let mut slots: Vec<Option<DecodedChunk>> = vec![None; count];
-    for s in strings {
-        let c = decode_chunk(s, None)?;
+    let mut duplicates: Vec<Duplicate> = Vec::new();
+    for c in read {
         let (idx, cid) = (c.header.index, c.header.chunk_set_id);
         if cid != set_id {
             return Err(Error::SetIdMismatch {
@@ -195,24 +295,47 @@ pub fn decode(strings: &[String]) -> Result<(Vec<u8>, Vec<DecodedChunk>)> {
                 index: idx + 1,
             });
         }
-        match &slots[idx] {
+        if idx >= count {
+            return Err(Error::MissingChunk {
+                missing: count,
+                count,
+            });
+        }
+        match slots[idx].take() {
             None => slots[idx] = Some(c),
             Some(existing) => {
                 // §1.1's duplicate rule: byte-identical copies are §1.8's own
-                // advice being followed, so accept silently. Distinct valid
-                // payloads are the only ambiguous case.
+                // advice being followed, so accept. Distinct valid payloads are
+                // the only ambiguous case.
                 if existing.payload != c.payload {
                     return Err(Error::AmbiguousChunk {
                         index: idx + 1,
                         candidates: 2,
                     });
                 }
+                // KEEP THE HEALTHIER COPY, and say which one was dropped. Two
+                // copies of one chunk agree on the payload but not on how much
+                // of the t = 4 budget each spent getting there, and "first one
+                // wins" would report the margin of whichever the operator
+                // happened to type first. The point of a second plate is that
+                // the better one is used.
+                let (keep, drop) = if c.corrected < existing.corrected {
+                    (c, existing)
+                } else {
+                    (existing, c)
+                };
+                duplicates.push(Duplicate {
+                    index: idx,
+                    kept_corrections: keep.corrected,
+                    discarded_corrections: drop.corrected,
+                });
+                slots[idx] = Some(keep);
             }
         }
     }
 
     let mut chunks = Vec::with_capacity(count);
-    let mut out = Vec::new();
+    let mut bytes = Vec::new();
     for (i, slot) in slots.into_iter().enumerate() {
         let c = slot.ok_or(Error::MissingChunk {
             missing: i + 1,
@@ -223,10 +346,16 @@ pub fn decode(strings: &[String]) -> Result<(Vec<u8>, Vec<DecodedChunk>)> {
         } else {
             bpc
         };
-        out.extend_from_slice(&c.payload[..keep.min(c.payload.len())]);
+        bytes.extend_from_slice(&c.payload[..keep.min(c.payload.len())]);
         chunks.push(c);
     }
-    Ok((out, chunks))
+    duplicates.sort_by_key(|d| d.index);
+    Ok(DecodedSet {
+        bytes,
+        chunks,
+        duplicates,
+        unreadable,
+    })
 }
 
 /// The 8 characters every string of a set shares, after `mt1`.

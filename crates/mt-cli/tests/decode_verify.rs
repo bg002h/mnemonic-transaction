@@ -374,3 +374,182 @@ fn verify_never_needs_a_node() {
         "verify's output depended on a node"
     );
 }
+
+// ── the drawer: duplicates, and a plate that is scrap ────────────────────────
+
+/// Damage `n` characters of a string, at spread-out positions.
+fn damage(s: &str, positions: &[usize]) -> String {
+    let mut c: Vec<char> = s.chars().collect();
+    for &p in positions {
+        c[p] = if c[p] == 'q' { 'p' } else { 'q' };
+    }
+    c.into_iter().collect()
+}
+
+/// **§1.8's advice produces duplicates, so duplicates are the expected state of
+/// a well-kept drawer** — not an anomaly. What matters is which copy `mt` uses
+/// and whether it says so: the point of cutting a second plate is that the
+/// better one gets used, and "first one wins" would report the margin of
+/// whichever the operator happened to type first.
+#[test]
+fn a_duplicate_keeps_the_healthier_copy_and_says_which_it_dropped() {
+    let s = strings_of("even");
+    let mut lines = s.clone();
+    lines.push(damage(&s[2], &[45])); // chunk 3, one wrong character
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "a duplicate must not fail the set");
+    let err = String::from_utf8(out.stderr).unwrap();
+
+    assert!(err.contains("DUPLICATE RESOLVED. chunk 3"), "got: {err}");
+    assert!(
+        err.contains("KEPT       the copy needing 0 of 4"),
+        "the CLEAN copy must win, not the first-typed one: {err}"
+    );
+    assert!(
+        err.contains("DISCARDED  the copy needing 1 of 4"),
+        "the discarded copy's margin is what tells the operator to re-cut: {err}"
+    );
+    // The kept copy is clean, so there is nothing to report a correction for.
+    assert!(
+        !err.contains("CORRECTION APPLIED"),
+        "the margin report described a copy mt did not use: {err}"
+    );
+}
+
+/// The reverse order. If "first one wins" were the rule this would keep the
+/// damaged copy and the test above would still pass — so both orders are
+/// asserted, and only the pair proves the rule.
+#[test]
+fn the_healthier_copy_wins_whichever_arrives_first() {
+    let s = strings_of("even");
+    let mut lines = vec![damage(&s[2], &[45])];
+    lines.extend(s.iter().cloned());
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("KEPT       the copy needing 0 of 4"),
+        "the damaged copy won because it was typed first: {err}"
+    );
+}
+
+/// **A miscut plate must not kill a set that has a good copy of that chunk.**
+/// §1.8's advice is to cut a second copy, and this is the drawer that followed
+/// it: one string damaged past `t = 4`, one clean, both typed back. Failing on
+/// the first unreadable string would refuse a completely recoverable set —
+/// while holding the good copy.
+#[test]
+fn a_plate_damaged_past_the_budget_does_not_kill_a_recoverable_set() {
+    let s = strings_of("even");
+    let mut lines = s.clone();
+    lines.push(damage(&s[4], &[20, 30, 40, 50, 60, 70])); // six: past t = 4
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an unreadable EXTRA string failed a set that is complete:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("UNREADABLE STRING"), "silently ignored: {err}");
+    assert!(
+        err.contains("string 7"),
+        "the plate is not identified: {err}"
+    );
+    assert!(
+        err.contains("that plate is scrap"),
+        "no action named: {err}"
+    );
+}
+
+/// The other half of the rule: tolerating an unreadable string must NOT tolerate
+/// a MISSING chunk. Without this, the change above would turn a set that cannot
+/// be recovered into one that reports OK.
+#[test]
+fn an_unreadable_string_with_no_other_copy_still_fails() {
+    let s = strings_of("even");
+    let mut lines = s.clone();
+    lines[4] = damage(&s[4], &[20, 30, 40, 50, 60, 70]); // REPLACED, not added
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a set missing chunk 5 entirely reported success"
+    );
+}
+
+/// Garbage in must still say what is wrong with the input, not report a missing
+/// plate — the operator would go looking in a drawer for something that was
+/// never the problem.
+#[test]
+fn unreadable_input_reports_the_read_error_not_a_missing_chunk() {
+    let f = tmp_with("mt1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq");
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        !err.contains("missing") || err.contains("checksum") || err.contains("BCH"),
+        "a garbage input was reported as a missing plate: {err}"
+    );
+}
+
+/// **The margin report gives the BEFORE-value, not only the position.**
+///
+/// A bare position tells the operator to go and look; a before-and-after tells
+/// them what to look for — and it is the only way to distinguish a MIS-CUT plate
+/// from a MIS-READ one. If the steel really says the corrected character, the
+/// plate is fine and the typist slipped.
+#[test]
+fn the_margin_report_gives_before_and_after_values() {
+    let s = strings_of("even");
+    let mut lines = s.clone();
+    lines[0] = damage(&s[0], &[40, 55]);
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+
+    assert!(err.contains("2 of 4 symbols"), "{err}");
+    // Both corrections, each with what was read and what replaced it.
+    let reads = err.matches("read ").count();
+    assert_eq!(reads, 2, "expected one before-value per correction: {err}");
+    assert_eq!(err.matches("corrected to ").count(), 2, "{err}");
+    // The characters actually on the plate. `damage` wrote 'q' or 'p'.
+    for (pos, was) in [(41usize, 'q'), (56, 'q')] {
+        assert!(
+            err.contains(&format!("pos {pos:>3}   read {was}, corrected to ")),
+            "position {pos} is missing its before-value: {err}"
+        );
+    }
+}

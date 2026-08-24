@@ -102,7 +102,8 @@ fn decode_round_trips_every_pinned_vector() {
             .map(|s| s.as_str().unwrap().to_string())
             .collect();
 
-        let (bytes, chunks) = pipeline::decode(&strings).expect("decode failed");
+        let set = pipeline::decode(&strings).expect("decode failed");
+        let (bytes, chunks) = (set.bytes, set.chunks);
         assert_eq!(bytes, raw, "{label}: round trip lost bytes");
         assert!(
             chunks.iter().all(|c| c.corrected == 0),
@@ -129,7 +130,7 @@ fn decode_is_order_independent() {
         let mut reversed = strings.clone();
         reversed.reverse();
         assert_eq!(
-            pipeline::decode(&reversed).unwrap().0,
+            pipeline::decode(&reversed).unwrap().bytes,
             raw,
             "{label}: decode depends on arrival order (reversed)"
         );
@@ -137,7 +138,7 @@ fn decode_is_order_independent() {
         let mut rotated = strings[2..].to_vec();
         rotated.extend_from_slice(&strings[..2]);
         assert_eq!(
-            pipeline::decode(&rotated).unwrap().0,
+            pipeline::decode(&rotated).unwrap().bytes,
             raw,
             "{label}: decode depends on arrival order (rotated)"
         );

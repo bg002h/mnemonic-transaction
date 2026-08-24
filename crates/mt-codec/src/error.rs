@@ -7,7 +7,7 @@
 use thiserror::Error;
 
 /// What can go wrong reading or writing `mt1`.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum Error {
     /// A character outside bech32's alphabet. `1`, `b`, `i` and `o` are absent
     /// from the charset precisely because they are confusable when engraved.
