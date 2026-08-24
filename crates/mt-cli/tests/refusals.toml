@@ -199,3 +199,22 @@ check = "src/main.rs::input_index_range_guard"
 spec  = "§8.2f"
 test  = "a_real_mt1_string_on_the_command_line_is_still_refused"
 check = "src/validate.rs::command_line_guard"
+
+# §8.2c's ACTUAL per-input requirement -- `require_psbt_input_values`, which is
+# called on every PSBT and had NO test and NO entry. An entry I added earlier
+# claimed to cover it and named `parse_input_values`, a DIFFERENT guard with a
+# confusingly similar name. A ledger whose entries are not read back is a
+# ledger, not a gate.
+[[refusal]]
+spec  = "§8.2c"
+test  = "refuses_a_psbt_input_with_no_utxo_record_and_no_supplied_value"
+check = "src/validate.rs::require_psbt_input_values"
+
+# §10.10: a pasted TXID is recognisable as such. 64 hex characters is an easy
+# thing to reach for -- it is what an explorer shows and what mt's own TX row
+# prints -- and it fell through to "valid hex but does not parse", which sends
+# the operator to look at the wrong thing.
+[[refusal]]
+spec  = "§10.10"
+test  = "refuses_a_pasted_txid_by_name"
+check = "src/main.rs::txid_paste_guard"

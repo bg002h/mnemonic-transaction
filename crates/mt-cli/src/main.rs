@@ -251,6 +251,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
 
     separator_guard(&args.separator)?;
 
+    txid_paste_guard(&raw)?;
     let sniffed = input::sniff(&raw)?;
     let asserted = parse_input_values(&args.input_value)?;
     check_input_value_indices(&asserted, &args)?;
@@ -504,16 +505,32 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     }
 
     if from_raw_hex {
+        // §8.2e has TWO branches and only one was ever printed. The warning said
+        // flatly that mt "cannot see any input's value and cannot check the fee"
+        // -- in the same run where it had just fetched every value from the
+        // chain and printed the fee. What degrades on a raw transaction is
+        // narrow, and A NODE CLOSES MOST OF IT; saying otherwise while doing
+        // otherwise trains the operator to skim the warning.
+        let body = if fee_sat.is_some() {
+            "A raw transaction carries its inputs' OUTPOINTS but not their VALUES, \
+             so mt cannot compute the fee from it alone.\n\
+             \n\
+             mt fetched each input's value instead, so the fee above is real. What \
+             is still missing is everything a PSBT carries ABOUT the signing: \
+             derivation paths, and the wallet's own record of what it meant to \
+             spend. (§8.2e)"
+        } else {
+            "A raw transaction carries its inputs' OUTPOINTS but not their VALUES, \
+             so mt cannot compute the fee from it alone.\n\
+             \n\
+             THE FEE IS UNKNOWN. mt cannot tell you whether it is 0.0001 BTC or \
+             9 BTC. Supply the values with --input-value <index>:<amount>, or \
+             re-run with a node reachable so mt can fetch them. (§8.2e)"
+        };
         let _ = writeln!(
             stderr,
             "{}",
-            refusal::Warning::new(
-                "this is a RAW TRANSACTION, so mt cannot check what a PSBT would carry.",
-                "A raw transaction has no UTXO records, so mt cannot see any input's \
-                 value and cannot check the fee. Supply values with --input-value \
-                 <index>:<amount>, or re-run with a node reachable so mt can fetch \
-                 them. (§8.2e)"
-            )
+            refusal::Warning::new("this is a RAW TRANSACTION, not a PSBT.", body)
         );
     }
 
@@ -564,6 +581,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
                 args.to.as_deref(),
                 args.to_label.as_deref(),
                 &outs,
+                strings.len(),
             )
         );
         let _ = writeln!(stderr);
@@ -856,6 +874,7 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
         let node = node::Node::find(&args.bitcoin_cli);
         let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
         r.set = Some((set.chunks.len(), set.chunks.len()));
+        r.set_id = Some(set.chunks[0].header.chunk_set_id);
         let _ = write!(stderr, "{}", r.render());
 
         // §6a's no-node warning belongs here for the same reason the report
@@ -865,7 +884,7 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
             let _ = write!(
                 stderr,
                 "{}",
-                report::no_node_warning(tx.lock_time.to_consensus_u32(), &txid)
+                report::no_node_warning(&locktime::read(&tx), &txid)
             );
         }
         set_notices(&set, &mut stderr);
@@ -997,10 +1016,19 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
 
     let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
     r.set = Some((set.chunks.len(), set.chunks.len()));
+    r.set_id = Some(set.chunks[0].header.chunk_set_id);
 
     let out = std::io::stdout();
     let mut out = out.lock();
-    let _ = write!(out, "{}", r.render());
+    let _ = write!(
+        out,
+        "{}",
+        if args.json {
+            report::render_json(&r)
+        } else {
+            r.render()
+        }
+    );
 
     // The no-node warning goes to STDERR, in its recovery-time wording.
     if node.is_none() {
@@ -1009,7 +1037,7 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
         let _ = write!(
             stderr,
             "{}",
-            report::no_node_warning(tx.lock_time.to_consensus_u32(), &txid)
+            report::no_node_warning(&locktime::read(&tx), &txid)
         );
     }
     set_notices(&set, &mut std::io::stderr());
@@ -1250,6 +1278,39 @@ fn content_id_guard(
         Some(b) => refusal.with_verbatim(b),
         None => refusal,
     })
+}
+
+/// §10.10: **a txid is recognisable as such, so say so.**
+///
+/// 64 hex characters is a transaction ID, not a transaction — and it is an easy
+/// thing to reach for, because it is what a block explorer shows and what `mt`
+/// itself prints in its `TX` row. Without this it fell through to "the bytes
+/// are valid hex but do not parse as a transaction", which is true and sends
+/// the operator to look at the wrong thing entirely.
+fn txid_paste_guard(raw: &[u8]) -> Result<(), Refusal> {
+    let text: String = core::str::from_utf8(raw)
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if text.len() != 64 || !text.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        "encode",
+        "§10.10",
+        "this is a transaction ID (64 hex characters), not a transaction",
+        "A txid NAMES a transaction; it does not contain one. mt engraves the \
+         transaction itself — the bytes a node would broadcast — because a txid \
+         is useless to a recoverer holding steel and no chain.\n\
+         \n\
+         mt prints the txid in its own TX row, which is probably where this came \
+         from.",
+    )
+    .with_remedy(
+        "Fetch the transaction: `bitcoin-cli getrawtransaction <txid>`, then pass \
+         that. Or `bitcoin-cli finalizepsbt <psbt>` if you have not broadcast yet.",
+    ))
 }
 
 /// A transaction's txid in display form.

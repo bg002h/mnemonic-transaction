@@ -82,7 +82,7 @@ pub fn correction_coverage(lengths: &[usize]) -> Warning {
         format!(
             "It cannot repair a MISSING or EXTRA character — those shift every \
              symbol after them. Count each string: {}. \
-             \n\nIt cannot repair a missing STRING either. There is no \
+             \n\nIt cannot repair a missing STRING — or a lost PLATE — either. There is no \
              redundancy: all {} strings are required. To survive losing one, cut \
              a second copy — mt will not do it for you.",
             spans.join(", "),
@@ -127,6 +127,7 @@ pub fn legend(
     to: Option<&str>,
     to_label: Option<&str>,
     outputs: &[u64],
+    count: usize,
 ) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
@@ -183,6 +184,17 @@ pub fn legend(
         }
     }
     let _ = writeln!(s, "    {}", lock.legend());
+    // §5's `n/m` beside each engraved unit. It belongs on the PLATE, not on
+    // stdout — stdout is the strings and nothing else — so it is a suggestion
+    // like the rest of the legend. Without it a recoverer holding a pile of
+    // steel has to decode a string to learn which one they are looking at, and
+    // the header that carries the index is the part BCH repairs LAST.
+    if count > 1 {
+        let _ = writeln!(
+            s,
+            "\n  ...and on EACH plate, its number:  1/{count}, 2/{count}, … {count}/{count}"
+        );
+    }
 
     // §10.4: optional, and LOUDLY WARNED when absent. A plate that does not say
     // where the money came from or where it went is one a recoverer cannot act
@@ -218,6 +230,29 @@ pub fn legend(
 
 fn btc(sats: u64) -> String {
     format!("{}.{:08} BTC", sats / 100_000_000, sats % 100_000_000)
+}
+
+/// §10.20's malleability caveat — *"somewhere a recoverer will read"*, and
+/// until now nowhere at all.
+///
+/// A **legacy** input's signature does not commit to the `scriptSig`'s exact
+/// encoding, so a third party can alter it in flight and the transaction
+/// arrives with a **different txid**, still valid and still spending the same
+/// coins to the same places. The engraving is then a backup of a transaction
+/// that will never confirm under the name written on it — while the money moved
+/// exactly as intended.
+///
+/// Printed at RECOVERY time, beside the txid, because that is the moment the
+/// question is asked: *"my explorer says this txid does not exist — is my money
+/// gone?"* The answer is usually no.
+pub fn malleability_caveat() -> String {
+    "          IF AN EXPLORER SAYS THIS TXID DOES NOT EXIST, check the OUTPUTS\n\
+    \x20         before concluding anything. A legacy input's signature does not\n\
+    \x20         commit to its own encoding, so a transaction can be altered in\n\
+    \x20         flight and confirm under a DIFFERENT txid — same coins, same\n\
+    \x20         destinations, different name. Search the explorer for the\n\
+    \x20         destination address instead.\n"
+        .to_string()
 }
 
 /// The output file is BEARER too, and nothing said so.
