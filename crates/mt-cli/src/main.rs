@@ -123,7 +123,13 @@ struct EncodeArgs {
     #[arg(long, value_name = "N")]
     group_size: Option<usize>,
 
-    /// Separator to use with `--group-size`.
+    /// Separator to use with `--group-size`. **Whitespace only.**
+    ///
+    /// `read_strings` strips whitespace and nothing else, so a non-whitespace
+    /// separator produces an artifact `mt`'s own verbs refuse. The sequence that
+    /// makes it expensive: choose `-`, engrave nine plates over several hours,
+    /// type them back, and find that mt cannot read what mt produced — with the
+    /// encode-time banner having said "verify the ENGRAVING, not this output".
     #[arg(long, value_name = "S", default_value = " ")]
     separator: String,
 
@@ -237,8 +243,11 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         let _ = writeln!(stderr, "{w}");
     }
 
+    separator_guard(&args.separator)?;
+
     let sniffed = input::sniff(&raw)?;
     let asserted = parse_input_values(&args.input_value)?;
+    check_input_value_indices(&asserted, &args)?;
 
     // Both payloads reach the same checks, each by ITS OWN VOCABULARY (§8.1).
     let (tx, mut values, from_raw_hex) = match sniffed {
@@ -295,6 +304,46 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
                         })
                 })
                 .collect();
+            // A supplied value that CONTRADICTS the record was discarded without
+            // a word. The record wins -- correctly, it is the stronger source --
+            // but silence lets an operator believe mt used their number, and the
+            // number they typed is the one they will check the fee against.
+            for (i, supplied) in &asserted {
+                let n = *i as usize;
+                if let Some((record, src)) = validate::psbt_input_value(&psbt, n) {
+                    if record != *supplied {
+                        let _ = writeln!(
+                            stderr,
+                            "{}",
+                            refusal::Warning::new(
+                                format!(
+                                    "--input-value {n}:{} disagrees with the PSBT, and mt used the PSBT.",
+                                    fmt_btc(*supplied)
+                                ),
+                                format!(
+                                    "The PSBT's own record says {}, and mt used that: {}\n\
+                                     \n\
+                                     mt is not ignoring you by accident. If the PSBT is \
+                                     wrong, the transaction is signed over the wrong \
+                                     value and re-exporting it is the fix — changing the \
+                                     number on mt's command line would only change what \
+                                     mt PRINTS, not what the signature commits to.",
+                                    fmt_btc(record),
+                                    match src {
+                                        validate::ValueSource::TxidBound =>
+                                            "it is bound to the input's txid by §8.2d, so \
+                                             it is the stronger of the two.",
+                                        validate::ValueSource::PsbtClaimed =>
+                                            "it is a witness_utxo, which nothing has \
+                                             checked — so BOTH numbers are claims, and mt \
+                                             prefers the one the signer saw.",
+                                    }
+                                ),
+                            )
+                        );
+                    }
+                }
+            }
             (psbt.extract_tx_unchecked_fee_rate(), values, false)
         }
         input::Input::RawHex(b) => {
@@ -311,6 +360,8 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
             (tx, values, true)
         }
     };
+
+    input_index_range_guard(&asserted, tx.input.len())?;
 
     // §8.6 binds both payloads: an input whose satisfaction does not bind the
     // outputs is redirectable by any holder, and the legend's TO line is a lie.
@@ -553,11 +604,11 @@ fn render(strings: &[String], args: &EncodeArgs) -> Vec<String> {
 /// **Not** the double-SHA-256 of these bytes — that is the *wtxid* for any
 /// segwit transaction. The txid hashes the same transaction with marker, flag
 /// and witnesses stripped, which `bitcoin`'s `compute_txid` does.
-fn txid_display(bytes: &[u8]) -> Result<String, Refusal> {
+fn txid_display(bytes: &[u8], verb: &str) -> Result<String, Refusal> {
     use bitcoin::consensus::Decodable;
     let tx = bitcoin::Transaction::consensus_decode(&mut &bytes[..]).map_err(|e| {
         Refusal::new(
-            "encode",
+            verb,
             "§8.2e",
             "input is not a decodable Bitcoin transaction",
             format!(
@@ -565,7 +616,16 @@ fn txid_display(bytes: &[u8]) -> Result<String, Refusal> {
                  mt reads an ALREADY-SIGNED transaction; it does not build one."
             ),
         )
-        .with_remedy("Check this is the output of `finalizepsbt`, not a template.")
+        .with_remedy(if verb == "encode" {
+            "Check this is the output of `finalizepsbt`, not a template."
+        } else {
+            // On the RECOVERY path there is no PSBT to re-finalize: the operator
+            // is holding steel. Encode-path advice sends them to look for a file
+            // that has not existed for years.
+            "Every checksum held, so this is not miscut steel — the strings are \
+             more likely from two different engravings mixed together. Check that \
+             every plate carries the same 8 characters after `mt1`."
+        })
     })?;
     Ok(tx.compute_txid().to_string())
 }
@@ -722,11 +782,24 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
             u.input_position
         );
         let _ = writeln!(out, "  {}", u.reason);
-        let _ = writeln!(
-            out,
-            "  Its chunk came from another copy, so this SET is complete — but\n  \
-             that plate is scrap. Re-cut it from the strings mt has verified."
-        );
+        // WHAT mt KNOWS, AND NOTHING MORE. It could not read the string, so it
+        // does not know which chunk it was, or whether it belonged to this set
+        // at all -- it may be a plate from a DIFFERENT engraving that got typed
+        // into the same pile, or a stray line. The previous wording told the
+        // operator "that plate is scrap. Re-cut it from the strings mt has
+        // verified", which DIRECTS A PHYSICAL ACTION ON STEEL mt never
+        // identified: acting on it discards a plate that may be the only copy
+        // of something else.
+        for line in [
+            "This set is complete WITHOUT it, so nothing here is missing. mt",
+            "cannot tell you which chunk that string was, or whether it belongs",
+            "to this set at all — it could not read it. Do not discard the plate",
+            "on this message alone: check whether it is from another engraving",
+            "first, and if it is one of THESE, re-cut it from the strings mt has",
+            "just verified.",
+        ] {
+            let _ = writeln!(out, "  {line}");
+        }
     }
     if !set.duplicates.is_empty() || !set.unreadable.is_empty() {
         let _ = writeln!(out);
@@ -827,23 +900,47 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
                 format!("{e}"),
             )
         })?;
+        // §1.1 rules `--transaction <psbt|hex>`, and a supplied PSBT is compared
+        // against its EXTRACTED transaction (§10.13 c) -- so the flag accepted
+        // half of its own ruling and refused the other half. The PSBT is the
+        // form a wallet exports; the hex is what `finalizepsbt` returns. An
+        // operator checking their steel against what they built has the PSBT.
         let supplied = match input::sniff(&supplied)? {
             input::Input::RawHex(b) => b,
-            input::Input::Psbt(_) => {
-                return Err(Refusal::new(
-                    "verify",
-                    "§1.1",
-                    "PSBT comparison lands with PSBT support",
-                    "A supplied PSBT is compared against its EXTRACTED transaction \
-                     (§10.13 c). Extraction arrives with the rest of §8.",
-                ));
+            input::Input::Psbt(bytes) => {
+                let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
+                    Refusal::new(
+                        "verify",
+                        "§1.1",
+                        "the supplied PSBT does not parse",
+                        format!("{e}"),
+                    )
+                })?;
+                // Finalized, by §8.1's vocabulary: an unfinalized PSBT extracts
+                // to a transaction with empty witnesses, whose txid is the same
+                // but whose BYTES are not what was engraved. Comparing against
+                // it would report a match for something unbroadcastable.
+                validate::finalized_guard_psbt(&psbt).map_err(|r| {
+                    Refusal::new(
+                        "verify",
+                        "§1.1",
+                        "the supplied PSBT is not finalized",
+                        format!(
+                            "{} mt compares against the transaction a PSBT \
+                             EXTRACTS to, and an unfinalized one extracts to \
+                             something that cannot be broadcast.",
+                            r.verdict
+                        ),
+                    )
+                })?;
+                bitcoin::consensus::serialize(&psbt.extract_tx_unchecked_fee_rate())
             }
         };
         // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
         // reports a match for any transaction sharing those bits, and says so in
         // the words "prove identity".
-        let want = txid_display(bytes)?;
-        let got = txid_display(&supplied)?;
+        let want = txid_display(bytes, "verify")?;
+        let got = txid_display(&supplied, "verify")?;
         if want != got {
             return Err(Refusal::new(
                 "verify",
@@ -951,7 +1048,7 @@ fn content_id_guard(
     verb: &str,
 ) -> Result<(), Refusal> {
     let expected = chunks[0].header.chunk_set_id;
-    let txid = txid_display(bytes)?;
+    let txid = txid_display(bytes, verb)?;
     let derived = pipeline::content_id_from_txid_display(&txid)
         .map_err(|e| Refusal::new(verb, "§1.1", "cannot derive the content id", format!("{e}")))?;
     if derived == expected {
@@ -1109,6 +1206,84 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
             Ok((idx, parse_btc(v)?))
         })
         .collect()
+}
+
+/// §1.1e: the separator must be something the READING side strips.
+///
+/// `read_strings` strips whitespace and nothing else, so a separator of any
+/// other kind lands on **stdout** — the stream the operator engraves — and mt's
+/// own verbs then refuse the result. The sequence that makes it expensive:
+/// choose `-`, cut nine plates over several hours, type them back, and find
+/// that mt cannot read what mt produced — having been told, by mt, to "verify
+/// the ENGRAVING, not this output".
+fn separator_guard(sep: &str) -> Result<(), Refusal> {
+    if sep.is_empty() || sep.chars().all(char::is_whitespace) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        "encode",
+        "§1.1e",
+        format!("--separator {sep:?} is not whitespace"),
+        "mt strips WHITESPACE when it reads strings back, and nothing else. A \
+         separator of any other kind lands on stdout — the stream you engrave — \
+         and mt's own verbs then refuse the result: the codec sees it as a data \
+         character outside the bech32 alphabet.\n\
+         \n\
+         mt refuses this now rather than after nine plates are cut.",
+    )
+    .with_remedy("Use a space, a tab, or omit --separator (a space is the default)."))
+}
+
+/// §8.2c: an index naming an input the transaction does not have.
+///
+/// **Silently ignored**, and the consequence is not cosmetic: a mistyped index
+/// means the input the operator MEANT to supply still has no value, so §8.2b's
+/// arithmetic silently does not run — no fee check, no inputs-cover-outputs
+/// check — and mt prints `FEE UNKNOWN` while they believe they supplied it.
+fn input_index_range_guard(asserted: &[(u32, u64)], inputs: usize) -> Result<(), Refusal> {
+    let Some((i, _)) = asserted.iter().find(|(i, _)| *i as usize >= inputs) else {
+        return Ok(());
+    };
+    Err(Refusal::new(
+        "encode",
+        "§8.2c",
+        format!("--input-value names input {i}, but this transaction has {inputs} input(s)"),
+        "Indices count from 0. A value supplied for an input that does not exist \
+         is silently no value at all for the input you meant — and §8.2b's fee \
+         and balance checks then do not run, while mt prints FEE UNKNOWN as \
+         though you had supplied nothing.",
+    ))
+}
+
+/// §8.2c: an index that names one input twice.
+///
+/// **Both were silently ignored**, and the consequence is not cosmetic: a
+/// mistyped index means the input the operator MEANT to supply still has no
+/// value, so §8.2b's arithmetic silently does not run — no fee check, no
+/// inputs-cover-outputs check — and `mt` prints `FEE UNKNOWN` while the operator
+/// believes they supplied it.
+///
+/// Checked against the transaction's real input count, which is why it runs
+/// after sniffing rather than inside the parser.
+fn check_input_value_indices(asserted: &[(u32, u64)], _args: &EncodeArgs) -> Result<(), Refusal> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, _) in asserted {
+        if !seen.insert(*i) {
+            return Err(Refusal::new(
+                "encode",
+                "§8.2c",
+                format!("--input-value names input {i} more than once"),
+                "Two values for one input have no defined meaning, and taking \
+                 either silently would decide the fee. mt does not choose.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Satoshis as BTC, for messages composed here.
+fn fmt_btc(sats: u64) -> String {
+    format!("{}.{:08} BTC", sats / 100_000_000, sats % 100_000_000)
 }
 
 /// A BTC amount as a decimal string, in satoshis.

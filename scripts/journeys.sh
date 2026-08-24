@@ -196,7 +196,8 @@ sed 's/^/    | /' "$WORK/c3.err"
 step "assertions:"
 have "$WORK/c3.err" "mt verify: OK"        "a scrap plate does not kill a recoverable set"
 have "$WORK/c3.err" "UNREADABLE STRING"    "the unreadable plate is named"
-have "$WORK/c3.err" "that plate is scrap"  "...and the operator is told to re-cut it"
+have "$WORK/c3.err" "cannot tell you which chunk that string was" "...and mt states the limit of what it knows"
+lacks "$WORK/c3.err" "that plate is scrap" "mt does not assert a plate is scrap it never identified"
 
 echo
 if [ "$FAILED" -ne 0 ]; then

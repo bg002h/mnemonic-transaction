@@ -843,3 +843,160 @@ fn a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound() {
         );
     }
 }
+
+// ── the flags that quietly did nothing ──────────────────────────────────────
+
+/// **`--separator -` produced steel `mt`'s own verbs refuse.** `read_strings`
+/// strips whitespace and nothing else, so a hyphen lands on stdout — the stream
+/// the operator engraves — and the codec then sees it as a data character
+/// outside the bech32 alphabet. The sequence that makes it expensive: choose it,
+/// cut nine plates over several hours, type them back, and discover `mt` cannot
+/// read what `mt` produced.
+#[test]
+fn a_non_whitespace_separator_is_refused_before_anything_is_cut() {
+    let v = base();
+    for sep in ["-", ".", "|", "0"] {
+        let (out, err, ok) = encode(
+            &s(&v, "raw_hex"),
+            &["--group-size", "5", "--separator", sep],
+        );
+        assert_refused(&out, &err, ok, "§1.1e");
+        assert!(err.contains("is not whitespace"), "got: {err}");
+    }
+}
+
+/// The control: whitespace separators must still work, and must round-trip.
+#[test]
+fn whitespace_separators_round_trip() {
+    let v = base();
+    for sep in [" ", "\t", "  "] {
+        let (out, err, ok) = encode(
+            &s(&v, "raw_hex"),
+            &["--group-size", "5", "--separator", sep],
+        );
+        assert!(ok, "separator {sep:?} was refused: {err}");
+        assert!(out.contains(sep), "the separator did not reach stdout");
+
+        // ...and mt must be able to read back what mt just produced.
+        let f = tmp(&out);
+        let back = mt()
+            .args(["verify", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(
+            back.status.success(),
+            "mt refused its own output with separator {sep:?}:\n{}",
+            String::from_utf8_lossy(&back.stderr)
+        );
+    }
+}
+
+/// An index naming no input meant the input the operator MEANT to supply still
+/// had no value — so §8.2b's arithmetic silently did not run, and `mt` printed
+/// `FEE UNKNOWN` while they believed they had supplied it.
+#[test]
+fn an_input_value_index_that_names_no_input_is_refused() {
+    let v = base();
+    let (out, err, ok) = encode(&s(&v, "raw_hex"), &["--input-value", "9:1.0"]);
+    assert_refused(&out, &err, ok, "§8.2c");
+    assert!(
+        err.contains("this transaction has 2 input(s)"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn a_repeated_input_value_index_is_refused() {
+    let v = base();
+    let (out, err, ok) = encode(
+        &s(&v, "raw_hex"),
+        &["--input-value", "0:1.0", "--input-value", "0:2.0"],
+    );
+    assert_refused(&out, &err, ok, "§8.2c");
+    assert!(err.contains("more than once"), "got: {err}");
+}
+
+/// A supplied value that contradicts the PSBT was discarded **without a word**.
+/// The record winning is correct; the silence is not — the number the operator
+/// typed is the one they will check the fee against.
+#[test]
+fn a_value_contradicting_the_psbt_is_reported_not_swallowed() {
+    let v = base();
+    let (_, err, ok) = encode(&s(&v, "finalized_psbt_b64"), &["--input-value", "0:9.5"]);
+    assert!(ok, "{err}");
+    let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("disagrees with the PSBT, and mt used the PSBT"),
+        "the contradiction was swallowed:\n{err}"
+    );
+    assert!(
+        flat.contains("3.00000000 BTC"),
+        "the value mt actually used must be named:\n{err}"
+    );
+    assert!(
+        flat.contains("would only change what mt PRINTS"),
+        "the operator must be told why raising the number does not help:\n{err}"
+    );
+}
+
+/// §1.1 rules `--transaction <psbt|hex>`; the flag accepted the hex half and
+/// refused the other. A PSBT is the form a wallet exports, and it is what an
+/// operator checking steel against what they built actually has.
+#[test]
+fn verify_transaction_accepts_a_psbt() {
+    let v = base();
+    let strings = {
+        let f = tmp(&s(&v, "finalized_psbt_b64"));
+        let out = mt()
+            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let sf = tmp(&strings);
+    let pf = tmp(&s(&v, "finalized_psbt_b64"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(sf.path())
+        .arg("--transaction")
+        .arg(pf.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(out.status.success(), "a finalized PSBT was refused: {err}");
+    assert!(
+        err.contains("--transaction matches, on the full txid."),
+        "{err}"
+    );
+}
+
+/// An UNFINALIZED PSBT extracts to a transaction with the same txid and
+/// different BYTES — one that cannot be broadcast. Matching against it would
+/// vouch for steel that does not carry a spendable transaction.
+#[test]
+fn verify_transaction_refuses_an_unfinalized_psbt() {
+    let v = base();
+    let strings = {
+        let f = tmp(&s(&v, "finalized_psbt_b64"));
+        let out = mt()
+            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let sf = tmp(&strings);
+    let pf = tmp(&s(&v, "unfinalized_psbt_b64"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(sf.path())
+        .arg("--transaction")
+        .arg(pf.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("not finalized"), "got: {err}");
+}
