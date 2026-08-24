@@ -73,6 +73,15 @@ spec  = "§8.2e"
 test  = "refuses_unrecognised_input_naming_what_was_seen"
 check = "src/input.rs::recognised_guard"
 
+# The one genuinely AMBIGUOUS input: valid hex and a PSBT at once. It had a
+# test in encode.rs and no entry here for the whole of P5 -- and the coverage
+# gate could not see it, because it scanned only refusals.rs. Both halves fixed:
+# the gate now reads every suite, and this rule now has a check to mutate.
+[[refusal]]
+spec  = "§8.2e"
+test  = "refuses_a_hex_encoded_psbt_by_name"
+check = "src/input.rs::hex_psbt_guard"
+
 [[refusal]]
 spec  = "§8.2f"
 test  = "refuses_a_transaction_passed_as_a_command_line_argument"
@@ -117,3 +126,24 @@ check = "src/validate.rs::secret_guard"
 spec  = "§6a"
 test  = "refuses_a_value_that_disagrees_with_the_chain"
 check = "src/validate.rs::value_mismatch_guard"
+
+# BOTH FOUND BY WIDENING THE COVERAGE GATE TO EVERY SUITE, 2026-08-24. Each had
+# a passing test in another file and no entry here, so neither had ever been
+# mutation-controlled. They are refusals mt emits; the seeded list could not
+# contain them because it was drawn from the plan's §8 table.
+[[refusal]]
+spec  = "§3b"
+test  = "decode_refuses_all_elided_input"
+check = "src/read_strings.rs::restore_elided"
+
+[[refusal]]
+spec  = "§8.2c"
+test  = "input_value_must_be_per_input"
+check = "src/main.rs::parse_input_values"
+
+# A second §8.2e test, in encode.rs. Same rule, same check, different input --
+# and the ledger keys on the TEST, so both are declared rather than one hidden.
+[[refusal]]
+spec  = "§8.2e"
+test  = "unrecognised_input_shows_the_bytes"
+check = "src/input.rs::recognised_guard"

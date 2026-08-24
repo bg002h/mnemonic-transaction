@@ -95,13 +95,34 @@ have "$WORK/a.err" "verify the ENGRAVING"                          "verify-the-s
 for row in "TX " "OUT " "FEE " "LOCKTIME " "INPUTS " "STATUS " "CUT " "PREFIX "; do
   have "$WORK/a.err" "$row" "report row ${row% } present"
 done
+# THE ARTIFACT EXISTS AT ALL. Asserted FIRST and separately, because every
+# check below it is a statement about the LINES of a file and all of them are
+# vacuously true of a file with no lines. An earlier version of this journey had
+# only those checks: mutating `mt encode` to write zero strings to stdout left
+# the whole gate green, which is the precise failure the script's own header
+# warns about -- a tool that succeeds in silence.
+lines=$(wc -l < "$WORK/a.out")
+if [ "$lines" -gt 0 ]; then
+  echo "    ok   stdout carries $lines strings (the artifact is not empty)"
+else
+  echo "    FAIL stdout is EMPTY — mt reported success and engraved nothing"; FAILED=1
+fi
+# ...and it is the RIGHT number of them: the report's own CUT row says how many
+# strings it cut, so the two halves of mt's output must agree.
+cut_n=$(sed -n 's/^CUT  *\([0-9]*\) strings.*/\1/p' "$WORK/a.err")
+if [ -n "$cut_n" ] && [ "$lines" -eq "$cut_n" ]; then
+  echo "    ok   stdout line count matches the report's CUT row ($cut_n)"
+else
+  echo "    FAIL CUT row says '${cut_n:-?}' strings, stdout has $lines"; FAILED=1
+fi
 # stdout is the artifact and nothing else.
 lacks "$WORK/a.out" "WARNING" "stdout carries no prose"
 lacks "$WORK/a.out" "FEE"     "stdout carries no report"
-if [ "$(grep -cv '^mt1[0-9a-z]*$' "$WORK/a.out")" -eq 0 ]; then
+bad=$(grep -cv '^mt1[0-9a-z]*$' "$WORK/a.out" || true)
+if [ "$lines" -gt 0 ] && [ "$bad" -eq 0 ]; then
   echo "    ok   every stdout line is a lowercase, ungrouped mt1 string"
 else
-  echo "    FAIL stdout is not purely lowercase ungrouped mt1 strings"; FAILED=1
+  echo "    FAIL $bad of $lines stdout lines are not lowercase ungrouped mt1 strings"; FAILED=1
 fi
 
 # ── B — recover ──────────────────────────────────────────────────────────────
@@ -139,10 +160,12 @@ done
 # safe to do on steel.
 "$MT" decode --in "$WORK/typed.txt" 2>/dev/null >"$WORK/b-full.hex"
 "$MT" decode --in "$WORK/typed-elided.txt" 2>/dev/null >"$WORK/b-elided.hex"
-if cmp -s "$WORK/b-full.hex" "$WORK/b-elided.hex"; then
+if [ -s "$WORK/b-full.hex" ] && cmp -s "$WORK/b-full.hex" "$WORK/b-elided.hex"; then
   echo "    ok   the elided form decodes to the same transaction, with no flag"
 else
-  echo "    FAIL elided and full forms decode differently"; FAILED=1
+  # `-s` FIRST: two empty files compare equal, so cmp alone would call a decode
+  # that produced nothing "the same transaction".
+  echo "    FAIL elided and full forms decode differently, or to nothing"; FAILED=1
 fi
 
 # ── C — miscut ───────────────────────────────────────────────────────────────

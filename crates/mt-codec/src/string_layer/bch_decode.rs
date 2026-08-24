@@ -1,85 +1,9 @@
 //! Syndrome-based BCH decoder for the MK regular and long codes.
 //!
-//! Forked from `md-codec` v0.4.x (`crates/md-codec/src/encoding/bch_decode.rs`)
-//! at the start of the mt1 v0.1 implementation per `design/DECISIONS.md` D-13.
-//! The algorithm is shared with the sibling md1 format because both formats
-//! share BIP 93's BCH polynomials; only the target residue constants
-//! ([`crate::consts::MT_REGULAR_CONST`] / [`crate::consts::MT_LONG_CONST`])
-//! and the HRP differ. The fork copy is expected to be retired once the
-//! `mc-codex32` shared-crate extraction lands (closure Q-9 trigger: both
-//! formats v1.0 with cross-validated conformance vectors).
-//!
-//! Implements the textbook decoder pipeline:
-//!
-//! 1. **Syndrome computation**: compute eight syndromes
-//!    `S_m = E(α^{j_start - 1 + m})` for `m = 1, …, 8` where `α` is the
-//!    primitive element of the BCH-defining field and `j_start` is the
-//!    smallest integer in the 8-consecutive-roots window of the
-//!    generator polynomial. For the regular code `α = β = G·ζ` (order 93)
-//!    with `j_start = 77`; for the long code `α = γ = E + X·ζ` (order
-//!    1023) with `j_start = 1019`.
-//! 2. **Berlekamp–Massey**: derive the error-locator polynomial `Λ(x)`
-//!    from the eight syndromes. Runs in `O(t²)` for `t = 4`.
-//! 3. **Chien search**: enumerate `Λ` over every codeword position to
-//!    locate error positions.
-//! 4. **Forney's algorithm** (shifted form): derive each error magnitude
-//!    `e_k = X_k^{1 - j_start} · Ω(X_k^{-1}) / Λ'(X_k^{-1})` from the
-//!    syndrome polynomial `S(x)`, the error-evaluator polynomial
-//!    `Ω(x) ≡ S(x)·Λ(x) mod x⁸`, and the formal derivative `Λ'(x)`.
-//!    The `X_k^{1 - j_start}` factor accounts for syndromes starting at
-//!    `α^{j_start}` rather than `α^1`; cf. Lin & Costello §6.3 eq. (6.21)
-//!    with the substitution `S_j → S_{j_start + j - 1}`.
-//! 5. **Apply corrections**: XOR the error magnitudes into the received
-//!    word at the recovered positions.
-//! 6. **Verify** (caller's responsibility): defensive re-check via the
-//!    polymod primitive guards against pathological inputs (≥ 5 errors
-//!    that happen to produce a degree-≤ 4 `Λ` with 4 valid roots).
-//!
-//! # Field and root structure (BIP 93 §"Generation of valid checksum")
-//!
-//! `GF(32)` uses the codex32/BIP 93 primitive polynomial `x⁵ + x³ + 1`,
-//! with the multiplicative generator being the bit value `0b00010 = 2`
-//! (the bech32 `"z"` character). This matches the `bech32` crate's
-//! `Fe32` representation.
-//!
-//! `GF(1024) = GF(32)[ζ] / (ζ² - ζ - P)` where `P = 1` (so `ζ² = ζ + 1`).
-//! `ζ` is a primitive cube root of unity. For the **regular code**:
-//!
-//! ```text
-//! β = G·ζ                 (G = 8, so β = (0, 8) in our (lo, hi) form)
-//! ord(β) = 93
-//! roots of g_regular(x) are { β^17, β^20, β^46, β^49, β^52,
-//!                             β^77, β^78, β^79, β^80, β^81,
-//!                             β^82, β^83, β^84 }
-//! 8-consecutive window: { β^77, …, β^84 } ⇒ j_start = 77
-//! ```
-//!
-//! For the **long code**:
-//!
-//! ```text
-//! γ = E + X·ζ             (E = 25, X = 6, so γ = (25, 6))
-//! ord(γ) = 1023
-//! roots of g_long(x) are { γ^32, γ^64, γ^96,
-//!                          γ^895, γ^927, γ^959, γ^991,
-//!                          γ^1019, γ^1020, γ^1021, γ^1022,
-//!                          γ^1023, γ^1024, γ^1025, γ^1026 }
-//! 8-consecutive window: { γ^1019, …, γ^1026 } ⇒ j_start = 1019
-//! ```
-//!
-//! Both windows are 8 consecutive integer powers of the chosen primitive
-//! element, satisfying the BCH bound and giving `t = 4` correction.
-//!
-//! # Position indexing
-//!
-//! The polymod consumes symbols in the order
-//! `hrp_expand(hrp) || data || checksum`. If `n` is the total number of
-//! symbols fed, then symbol `i` (in feed order) is the coefficient of
-//! `x^{n-1-i}` in the input polynomial. Errors are constrained to the
-//! `data_with_checksum` segment (the HRP prefix is fixed-and-known).
-//! For `data_with_checksum.len() = L` (`L ≤ 93` regular, `96 ≤ L ≤ 108`
-//! long), an error at index `k` of `data_with_checksum` lies at
-//! polynomial degree `d = L - 1 - k`. The Chien search returns degrees
-//! `d` and we translate to indices via `k = (L - 1) - d`.
+//! **PORTED FROM `mk-codec`, not `md-codec`.** See `bch.rs` for why the
+//! distinction is load-bearing: the constellation's three-way defect check
+//! sends a reader to the upstream this code came from, and the wrong name
+//! sends them to the wrong repository.
 
 #[cfg(test)]
 use super::bch::{GEN_LONG, GEN_REGULAR};

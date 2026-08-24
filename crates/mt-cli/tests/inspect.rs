@@ -305,3 +305,168 @@ fn encode_appends_its_rows_below_status() {
         "encode's rows must come AFTER the shared report"
     );
 }
+
+// ── with a node ─────────────────────────────────────────────────────────────
+//
+// **This half did not exist, and its absence was invisible.** An independent
+// false-PASS review mutated `inspect()` so that `node` was always `None` — as
+// if no node were ever reachable — and all 117 tests plus every gate stayed
+// green. The module doc above has claimed since P4 that these tests "run both
+// offline and with a node"; nothing did. `inspect` is the verb a 2040 recoverer
+// reaches for, and the node is what turns four `UNKNOWN` rows into answers, so
+// this was the untested half of the tool's whole purpose.
+
+mod common;
+use common::{fixture_txids, node_stub};
+
+fn inspect_with_node(label: &str, node: &std::path::Path) -> (String, String) {
+    let f = strings_file(label);
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli"])
+        .arg(node)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "inspect failed with a node: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+fn corpus_vector(label: &str) -> serde_json::Value {
+    corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == label)
+        .unwrap()
+        .clone()
+}
+
+/// **The rows a node exists to answer must actually change.** Offline every
+/// chain-derived row reads `UNKNOWN`, so an offline-only suite agrees with
+/// itself no matter what the node code does — including doing nothing.
+#[test]
+fn a_reachable_node_answers_the_rows_that_were_unknown() {
+    let stub = node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
+    let (out, _) = inspect_with_node("even", stub.path());
+
+    assert!(
+        out.contains("STATUS    LIVE"),
+        "the node said every input is unspent and STATUS did not say so:\n{out}"
+    );
+    assert!(
+        out.contains("current height 963832"),
+        "the chain height was not read:\n{out}"
+    );
+    assert!(
+        out.contains("50.00000000 BTC   from node"),
+        "the input value was not fetched, or not labelled as chain-fetched:\n{out}"
+    );
+    assert!(
+        !out.contains("no node reachable"),
+        "a reachable node was reported as absent:\n{out}"
+    );
+}
+
+/// The offline/online contrast, asserted as a DIFFERENCE. This is the assertion
+/// the mutation actually failed: with `node` forced to `None`, the two runs are
+/// identical and this test goes red where every existing one stayed green.
+#[test]
+fn reaching_a_node_changes_the_report() {
+    let stub = node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
+    let (online, _) = inspect_with_node("even", stub.path());
+    let (offline, _) = inspect_offline("even");
+    assert_ne!(
+        online, offline,
+        "inspect produced the SAME report with and without a node — \
+         the node was never consulted"
+    );
+    // ...and specifically on the rows §1.1 says only a node can fill.
+    assert!(offline.contains("STATUS    UNKNOWN") && online.contains("STATUS    LIVE"));
+    assert!(
+        offline.contains("current height UNKNOWN") && !online.contains("current height UNKNOWN")
+    );
+}
+
+/// §8.5's condition read through `inspect`, which never REFUSES — it reports.
+/// `inspect` is a recovery-time verb: the engraving already exists, so refusing
+/// to describe it helps nobody.
+#[test]
+fn inspect_reports_a_dead_plate_rather_than_refusing() {
+    let v = corpus_vector("even");
+    let (own, parents) = fixture_txids(&v);
+    // gettxout null, parents confirmed, this transaction NOT on chain.
+    let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 6u32)).collect();
+    assert!(!conf.iter().any(|(t, _)| own.starts_with(t)));
+    let stub = node_stub("", &conf);
+
+    let (out, err) = inspect_with_node("even", stub.path());
+    assert!(out.contains("STATUS    DEAD"), "got:\n{out}");
+    assert!(
+        !err.contains("REFUSED"),
+        "inspect refused to describe an engraving that already exists:\n{err}"
+    );
+}
+
+/// The five liveness states are five because this one is not DEAD. A parent in
+/// the mempool means the plate MAY still become live, and `include_mempool` is
+/// false by ruling, so `gettxout -> null` is the expected answer here.
+#[test]
+fn inspect_distinguishes_pending_from_dead() {
+    let v = corpus_vector("even");
+    let (_own, parents) = fixture_txids(&v);
+    let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 0u32)).collect();
+    let stub = node_stub("", &conf);
+
+    let (out, _) = inspect_with_node("even", stub.path());
+    assert!(out.contains("STATUS    PENDING"), "got:\n{out}");
+    assert!(
+        !out.contains("DEAD"),
+        "an unconfirmed parent was called DEAD — the error that gets a live \
+         engraving thrown away:\n{out}"
+    );
+}
+
+/// **ASKED FIRST.** Every input of a confirmed transaction is spent by itself
+/// and every parent is confirmed, which is exactly the DEAD condition — so
+/// without this question the success case reports as the theft case.
+#[test]
+fn inspect_reports_an_already_confirmed_transaction_as_confirmed() {
+    let v = corpus_vector("even");
+    let (own, parents) = fixture_txids(&v);
+    let mut conf: Vec<(&str, u32)> = vec![(&own[..16], 4)];
+    conf.extend(parents.iter().map(|p| (&p[..16], 12u32)));
+    let stub = node_stub("", &conf);
+
+    let (out, _) = inspect_with_node("even", stub.path());
+    assert!(out.contains("ALREADY CONFIRMED"), "got:\n{out}");
+    assert!(
+        !out.contains("STATUS    DEAD"),
+        "a transaction that CONFIRMED was reported as one whose inputs were \
+         stolen:\n{out}"
+    );
+}
+
+/// With a node reachable, §6a's no-node warning must be ABSENT — it names four
+/// questions the node has just answered.
+#[test]
+fn the_no_node_warning_is_absent_when_a_node_is_there() {
+    let stub = node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
+    let (_, err) = inspect_with_node("even", stub.path());
+    assert!(
+        !err.contains("no bitcoind reachable"),
+        "mt warned that no node was reachable while consulting one:\n{err}"
+    );
+    let (_, offline_err) = inspect_offline("even");
+    assert!(
+        offline_err.contains("no bitcoind reachable"),
+        "control failed"
+    );
+}

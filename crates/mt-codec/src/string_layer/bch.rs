@@ -1,20 +1,31 @@
 //! BCH primitives for the mt1 string layer: bech32 alphabet conversion and
 //! syndrome-based error correction.
 //!
-//! Forked from `md-codec` v0.4.x (`crates/md-codec/src/encoding.rs`) at the
-//! start of the mt1 v0.1 implementation per `design/DECISIONS.md` D-13. The
-//! BCH polynomials and field arithmetic are shared with the sibling md1
-//! format (both reuse BIP 93's `BCH(93,80,8)` regular code and
-//! `BCH(108,93,8)` long code); the only mt1-specific knobs are the HRP
-//! (`"mt"`) and the NUMS-derived target residues ([`crate::consts::MT_REGULAR_CONST`]
-//! / [`crate::consts::MT_LONG_CONST`]).
+//! **PORTED FROM `mk-codec`, not `md-codec`** — and the distinction is not
+//! bookkeeping. This file's header claimed `md-codec` through the whole of P1
+//! and cited a file path that does not exist, while `mod.rs` one directory
+//! over, `PROVENANCE.md`, and the P1 commit message all correctly said
+//! `mk-codec`. An independent claim check caught it.
 //!
-//! Unlike md-codec's encoding module, this file does **not** expose a
-//! top-level `encode_string` / `decode_string`: mt1's string-layer header
-//! lives at the 5-bit symbol layer (per closure Q-5 — 2 symbols for
-//! `SingleString`, 8 symbols for `Chunked`) rather than the byte-aligned
-//! layer md1 uses. The mt1 `string_layer/mod.rs` builds string-level
-//! encode/decode on top of the BCH primitives here.
+//! It matters because of the constellation's **three-way defect check**: a bug
+//! found in a BCH primitive here must be checked against the repo this code
+//! came from, and a reader who believes the wrong provenance checks the wrong
+//! sibling, finds nothing, and closes the loop. The fork decision itself was
+//! made because `mk-codec` does NOT depend on `md-codec`, so the two are
+//! genuinely different upstreams.
+//!
+//! The BCH polynomials and field arithmetic are shared with both siblings —
+//! all three reuse BIP-93's `BCH(93,80,8)` regular code and `BCH(108,93,8)`
+//! long code. The only `mt1`-specific knobs are the HRP (`"mt"`) and the
+//! NUMS-derived target residues ([`crate::consts::MT_REGULAR_CONST`] /
+//! [`crate::consts::MT_LONG_CONST`]).
+//!
+//! This file exposes no top-level `encode_string` / `decode_string`: `mt1`'s
+//! header lives at the 5-bit symbol layer as **one 11-symbol header on every
+//! string** (`string_layer/header.rs`). An earlier version of this comment
+//! described a `SingleString`/`Chunked` split with 2- and 8-symbol headers —
+//! a shape `mt1` does not have and never shipped, since the operator's ruling
+//! removed the `chunked` bit in favour of per-field symbol alignment.
 
 use super::bch_decode;
 use crate::consts::{HRP, MT_LONG_CONST, MT_REGULAR_CONST};
@@ -180,7 +191,7 @@ pub const GEN_REGULAR: [u128; 5] = [
 
 /// Constellation-internal initial residue that mt-codec's `ms32_polymod` and
 /// `ms32_long_polymod` seed before processing any input — shared byte-for-byte
-/// with md1 (`md-codec`'s `bch::POLYMOD_INIT`).
+/// with mk1 and md1 alike — this constant is BIP-93's, not any sibling's.
 ///
 /// This value (`0x23181b3`) **IS** codex32/BIP-93's published `ms32_polymod`
 /// initial residue verbatim: the reference `ms32_polymod` seeds its accumulator
@@ -583,7 +594,8 @@ pub fn encode_5bit_to_string(data_5bit: &[u8]) -> Result<String, crate::Error> {
 /// the data part — including positions that fall inside the checksum region.
 /// The decoder-report layer uses this to surface the real corrected
 /// character when BCH ECC repairs a substitution inside the checksum
-/// (parallels md-codec's `Correction.corrected` field).
+/// (parallels `mk-codec`'s `Correction.corrected` field — mk is this file's
+/// upstream; see the module header).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedString {

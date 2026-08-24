@@ -72,8 +72,16 @@ impl Provenance {
     }
 }
 
-/// Plate liveness. **Five states, not four** — the first one is asked before any
-/// input is classified.
+/// Plate liveness. **SIX variants over §6a's five ruled states** — `Unknown` and
+/// `Indeterminate` are two renderings of the same fifth state, *"mt cannot
+/// tell"*, kept apart because their REASONS differ and the operator's next move
+/// differs with them: no node at all versus a node that lacks `-txindex`.
+///
+/// The doc said *"five states, not four"* until an independent claim check
+/// counted the variants: `Indeterminate` was added in P4 and the comment was
+/// not. **A comment that states a count acquires a way to go stale for free.**
+///
+/// The first state is asked before any input is classified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// This transaction itself already confirmed. **Asked first**, because
@@ -167,7 +175,32 @@ impl Report {
                             inputs.push((op, Some(sats), Provenance::ChainFetched));
                         }
                         Utxo::Null => {
-                            all_known = false;
+                            // FALL BACK, do not terminate. `include_mempool` is
+                            // false by ruling, so `Null` is the EXPECTED answer
+                            // for an unconfirmed parent -- it is a lookup that
+                            // did not find the outpoint, NOT evidence that the
+                            // value is unknown. Discarding a txid-bound record
+                            // here made reaching a node STRICTLY WORSE than
+                            // being offline: the same PSBT showed its fee with
+                            // no node and UNKNOWN with one.
+                            //
+                            // §1.1's row table makes FEE present "when a node is
+                            // reachable OR the input was a PSBT carrying
+                            // values"; that OR was implemented as an either/or.
+                            match claimed.iter().find(|(i, _, _)| *i == idx) {
+                                Some(&(_, sats, prov)) => {
+                                    total_in += sats;
+                                    if !prov.is_verified() {
+                                        operator_supplied = true;
+                                    }
+                                    inputs.push((op.clone(), Some(sats), prov));
+                                }
+                                None => {
+                                    all_known = false;
+                                    inputs.push((op.clone(), None, Provenance::Unknown));
+                                }
+                            }
+
                             // DEAD requires the parent to be CONFIRMED, not merely
                             // found: getrawtransaction finds a mempool transaction
                             // too, and only confirmation means someone else took it.
@@ -180,7 +213,6 @@ impl Report {
                                 ParentState::NotFound if txindex => any_pending = true,
                                 ParentState::NotFound => any_unknown = true,
                             }
-                            inputs.push((op, None, Provenance::Unknown));
                         }
                     }
                 }

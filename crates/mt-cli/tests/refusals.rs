@@ -20,6 +20,9 @@ use assert_cmd::Command;
 use bitcoin::consensus::{deserialize, serialize};
 use std::io::Write;
 
+mod common;
+use common::{fixture_txids, node_stub};
+
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
@@ -409,62 +412,6 @@ fn refuses_an_unsigned_raw_transaction() {
 
 // ── §8.5 / §6a — what a node says ───────────────────────────────────────────
 
-/// A stand-in `bitcoin-cli` that answers from a script rather than a chain.
-///
-/// **Not a convenience.** §8.5 and §6a are the two refusals that cannot fire
-/// without a node, so testing them against the real one would make them
-/// unrunnable in CI — and untested is how a refusal that never fires looks from
-/// the outside.
-fn node_stub(
-    gettxout: &str,
-    parent_confirmations: Option<u32>,
-) -> (tempfile::TempDir, std::path::PathBuf) {
-    let parent = match parent_confirmations {
-        Some(n) => format!(r#"{{"txid":"x","confirmations": {n}}}"#),
-        None => String::new(),
-    };
-    let script = format!(
-        r#"#!/bin/sh
-# Reads bitcoin-cli's -stdin form: one argument per line.
-verb=""
-while read -r line; do
-  if [ -z "$verb" ]; then verb="$line"; fi
-done
-case "$verb" in
-  getblockcount)     echo 963832 ;;
-  getindexinfo)      echo '{{"txindex": {{"synced": true, "best_block_height": 963832}}}}' ;;
-  gettxout)          {gettxout} ;;
-  getrawtransaction) {parent_case} ;;
-  *)                 exit 1 ;;
-esac
-"#,
-        gettxout = if gettxout.is_empty() {
-            "exit 1".to_string()
-        } else {
-            format!("echo '{gettxout}'")
-        },
-        parent_case = if parent.is_empty() {
-            "exit 1".to_string()
-        } else {
-            format!("echo '{parent}'")
-        },
-    );
-    // A DIRECTORY, not a NamedTempFile. A NamedTempFile stays open for writing
-    // for its whole lifetime, and Linux refuses to exec a file that is open for
-    // writing -- ETXTBSY. The failure is silent here: exec fails, Node::find
-    // returns None, and every chain-derived row reads UNKNOWN, so the test
-    // reports "no node reachable" rather than "the stub could not run".
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bitcoin-cli");
-    std::fs::write(&path, script).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    (dir, path)
-}
-
 fn encode_with_node(body: &str, node: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
     let f = tmp(body);
     let mut c = mt();
@@ -483,8 +430,16 @@ fn refuses_a_spent_input_whose_parent_confirmed() {
     let v = base();
     // gettxout null AND the parent confirmed: the output was spent or never
     // existed. BOTH facts are required.
-    let (_dir, stub) = node_stub("", Some(6));
-    let (out, err, ok) = encode_with_node(&s(&v, "raw_hex"), &stub, &[]);
+    // The THEFT case: the parents are confirmed, and THIS transaction is NOT
+    // on chain -- so the outputs were taken by somebody else.
+    let (own, parents) = fixture_txids(&v);
+    let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 6u32)).collect();
+    assert!(
+        !conf.iter().any(|(t, _)| own.starts_with(t)),
+        "the fixture spends its own output; this stub could not model theft"
+    );
+    let stub = node_stub("", &conf);
+    let (out, err, ok) = encode_with_node(&s(&v, "raw_hex"), stub.path(), &[]);
     assert_refused(&out, &err, ok, "§8.5");
     assert!(
         err.contains("not in the UTXO set"),
@@ -498,8 +453,11 @@ fn refuses_a_spent_input_whose_parent_confirmed() {
 #[test]
 fn an_unconfirmed_parent_is_not_a_spent_input() {
     let v = base();
-    let (_dir, stub) = node_stub("", Some(0)); // found, 0 confirmations: in the mempool
-    let (_, err, ok) = encode_with_node(&s(&v, "raw_hex"), &stub, &[]);
+    let (_own, parents) = fixture_txids(&v);
+    // found, 0 confirmations: the parent is in the mempool
+    let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 0u32)).collect();
+    let stub = node_stub("", &conf);
+    let (_, err, ok) = encode_with_node(&s(&v, "raw_hex"), stub.path(), &[]);
     assert!(
         ok,
         "a mempool-only parent was refused; §8.5 requires the parent CONFIRMED:\n{err}"
@@ -512,10 +470,10 @@ fn refuses_a_value_that_disagrees_with_the_chain() {
     let v = base();
     // The chain says 3.0 BTC; the operator asserts 4.0. mt cannot tell which is
     // wrong, so it refuses -- naming BOTH numbers.
-    let (_dir, stub) = node_stub(r#"{"value": 3.00000000, "scriptPubKey": {}}"#, None);
+    let stub = node_stub(r#"{"value": 3.00000000, "scriptPubKey": {}}"#, &[]);
     let (out, err, ok) = encode_with_node(
         &s(&v, "raw_hex"),
-        &stub,
+        stub.path(),
         &["--input-value", "0:4.0", "--input-value", "1:4.0"],
     );
     assert_refused(&out, &err, ok, "§6a");
@@ -534,10 +492,10 @@ fn refuses_a_value_that_disagrees_with_the_chain() {
 #[test]
 fn a_value_that_agrees_with_the_chain_is_accepted() {
     let v = base();
-    let (_dir, stub) = node_stub(r#"{"value": 4.00000000, "scriptPubKey": {}}"#, None);
+    let stub = node_stub(r#"{"value": 4.00000000, "scriptPubKey": {}}"#, &[]);
     let (_, err, ok) = encode_with_node(
         &s(&v, "raw_hex"),
-        &stub,
+        stub.path(),
         &["--input-value", "0:4.0", "--input-value", "1:4.0"],
     );
     assert!(ok, "an agreeing value was refused: {err}");
@@ -704,4 +662,85 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
 
 fn sats_to_btc(sats: u64) -> String {
     format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000)
+}
+
+/// **The success case must not be reported as the theft case.**
+///
+/// Every input of a confirmed transaction is spent — *by itself* — and every
+/// parent is confirmed, which is bit-for-bit §8.5's condition. Without asking
+/// whether THIS transaction is on chain, `encode` refused a transaction that had
+/// already paid, told the operator it *"can never be broadcast"*, and advised
+/// them to *"build a new transaction"* — which is advice to pay twice.
+///
+/// Found by running against a real regtest node. No offline or stubbed test
+/// could see it: all three §8.5 situations share `gettxout -> null` and differ
+/// only in what `getrawtransaction` says about a txid the old stub was never
+/// asked about.
+#[test]
+fn an_already_confirmed_transaction_is_not_reported_as_stolen() {
+    let v = base();
+    let (own, parents) = fixture_txids(&v);
+    // The transaction itself IS on chain, and so are its parents — exactly what
+    // a node reports the moment a payment confirms.
+    let mut conf: Vec<(&str, u32)> = vec![(&own[..16], 3)];
+    conf.extend(parents.iter().map(|p| (&p[..16], 9u32)));
+    let stub = node_stub("", &conf);
+
+    let (out, err, ok) = encode_with_node(&s(&v, "finalized_psbt_b64"), stub.path(), &[]);
+    assert!(
+        ok,
+        "a CONFIRMED transaction was refused as though someone had stolen its inputs:\n{err}"
+    );
+    assert!(
+        !err.contains("can never be broadcast"),
+        "mt said a transaction in a block can never be broadcast:\n{err}"
+    );
+    assert!(
+        !err.contains("Build a new transaction"),
+        "mt advised rebuilding a payment that already went through — pay twice:\n{err}"
+    );
+    assert!(
+        err.contains("ALREADY CONFIRMED"),
+        "the report must SAY the transaction confirmed, not stay silent:\n{err}"
+    );
+    assert!(!out.trim().is_empty(), "the strings were still produced");
+}
+
+/// **Reaching a node must never make the report WORSE.**
+///
+/// `include_mempool` is `false` by ruling, so `gettxout -> null` is the EXPECTED
+/// answer for an unconfirmed parent — a lookup that did not find the outpoint,
+/// not evidence that its value is unknown. Discarding the PSBT's txid-bound
+/// record there meant the same file showed its fee offline and `UNKNOWN` with a
+/// node, and §1.1's row table makes `FEE` present *"when a node is reachable
+/// **or** the input was a PSBT carrying values"* — an OR the code had
+/// implemented as an either/or.
+#[test]
+fn a_node_that_cannot_find_an_outpoint_does_not_discard_the_psbt_record() {
+    let v = base();
+    let (_own, parents) = fixture_txids(&v);
+    // Parents in the mempool: gettxout returns null, and nothing is spent.
+    let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 0u32)).collect();
+    let stub = node_stub("", &conf);
+
+    let (_, with_node, ok) = encode_with_node(&s(&v, "finalized_psbt_b64"), stub.path(), &[]);
+    assert!(ok, "a mempool parent must not refuse: {with_node}");
+    let (_, offline, _) = encode(&s(&v, "finalized_psbt_b64"), &[]);
+
+    for (label, err) in [("offline", &offline), ("with a node", &with_node)] {
+        assert!(
+            err.contains("FEE       0.00100000 BTC"),
+            "{label}: the fee is missing, though the PSBT carries every input value:\n{err}"
+        );
+        assert!(
+            err.contains("TXID-BOUND"),
+            "{label}: a record §8.2d verified was thrown away:\n{err}"
+        );
+    }
+    // ...and the row a node CAN improve is the one that improved.
+    assert!(
+        with_node.contains("STATUS    PENDING"),
+        "the node's own contribution is missing:\n{with_node}"
+    );
+    assert!(offline.contains("STATUS    UNKNOWN"), "{offline}");
 }

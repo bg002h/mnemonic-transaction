@@ -100,7 +100,7 @@ if start is None:
 for j in range(start, min(start + 25, len(lines))):
     if lines[j].rstrip().endswith("{"):
         indent = " " * (len(lines[j]) - len(lines[j].lstrip()) + 4)
-        lines.insert(j + 1, f"{indent}return Ok(()); // MUTATED by mutate-refusals.sh")
+        lines.insert(j + 1, f"{indent}return Ok(Default::default()); // MUTATED by mutate-refusals.sh")
         open(path, "w").write("\n".join(lines))
         sys.exit(0)
 sys.exit(f"could not find the body of `{fn}` in {path}")
