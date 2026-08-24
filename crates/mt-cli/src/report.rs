@@ -20,15 +20,56 @@ use crate::node::{Node, ParentState, Utxo};
 use bitcoin::Transaction;
 use std::fmt::Write as _;
 
-/// Where an input's value came from — §10.10's three provenance classes.
+/// Where an input's value came from.
+///
+/// **§10.10 rules THREE columns — verified, claimed, absent — over FIVE
+/// sources**, and conflating any two of them is a defect this artifact has
+/// already produced. The middle column is the one that matters: *"between them
+/// sits operator-asserted **or PSBT-claimed** data, which nothing checked"*.
+///
+/// > **Collapsing it put an unverified number in the verified column — R6
+/// > adversarial I-5.** Air-gapped `mt encode`, which is the constellation's own
+/// > posture: a PSBT carries `witness_utxo` for a segwit input claiming 1.0 BTC.
+/// > No node, so §6a's comparison does not run. Not legacy, so §8.2d's txid
+/// > binding does not apply. **Nothing on any path checks that number**, and it
+/// > is the one the operator uses to decide whether to cut at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
-    /// Fetched from the chain (§6a).
+    /// Fetched from the chain (§6a). **Verified.**
     ChainFetched,
-    /// Asserted by the operator, checked by nothing (§8.2c).
+    /// Read from a `non_witness_utxo` whose hash reproduced the input's txid
+    /// (§8.2d). **Verified** — by proof-of-work-anchored history rather than by
+    /// anyone's word, and forging it would need a txid collision.
+    TxidBound,
+    /// Read from a PSBT's `witness_utxo`, with no node to check it against
+    /// (§8.2c). **Claimed.** The wallet that wrote the PSBT said so; nothing
+    /// since has agreed.
+    PsbtClaimed,
+    /// Supplied by the operator with `--input-value` (§8.2c). **Claimed.**
     OperatorAsserted,
     /// Not available at all.
     Unknown,
+}
+
+impl Provenance {
+    /// Did anything actually check this number?
+    ///
+    /// The question the middle column exists to answer, asked once so no render
+    /// site has to re-derive it — which is how the two classes got collapsed.
+    pub fn is_verified(self) -> bool {
+        matches!(self, Provenance::ChainFetched | Provenance::TxidBound)
+    }
+
+    /// How this value is labelled in the `INPUTS` rows.
+    fn label(self) -> &'static str {
+        match self {
+            Provenance::ChainFetched => "from node",
+            Provenance::TxidBound => "TXID-BOUND",
+            Provenance::PsbtClaimed => "PSBT-CLAIMED — unverified",
+            Provenance::OperatorAsserted => "OPERATOR-ASSERTED",
+            Provenance::Unknown => "UNKNOWN",
+        }
+    }
 }
 
 /// Plate liveness. **Five states, not four** — the first one is asked before any
@@ -99,7 +140,7 @@ impl Report {
         tx: &Transaction,
         txid: &str,
         node: Option<&Node>,
-        asserted: &[(u32, u64)],
+        claimed: &[(u32, u64, Provenance)],
     ) -> Self {
         // ASKED FIRST: did THIS transaction already confirm? Every other row is
         // a guess about *why* the inputs are gone; this answers it exactly.
@@ -144,15 +185,17 @@ impl Report {
                     }
                 }
                 None => {
-                    // No node — but the operator may have supplied the value
-                    // themselves (§8.2c). That is a THIRD provenance class:
-                    // not read off the chain, and not absent, but asserted by
-                    // someone and checked by nobody.
-                    match asserted.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v) {
-                        Some(sats) => {
+                    // No node — but the value may still be known, and by a
+                    // route that is NOT the chain: a PSBT's own UTXO record, a
+                    // txid-bound non_witness_utxo, or the operator's word.
+                    // Which one it was decides the column it renders in.
+                    match claimed.iter().find(|(i, _, _)| *i == idx) {
+                        Some(&(_, sats, prov)) => {
                             total_in += sats;
-                            operator_supplied = true;
-                            inputs.push((op, Some(sats), Provenance::OperatorAsserted));
+                            if !prov.is_verified() {
+                                operator_supplied = true;
+                            }
+                            inputs.push((op, Some(sats), prov));
                         }
                         None => {
                             all_known = false;
@@ -168,8 +211,15 @@ impl Report {
         // asserted rather than fetched, the whole figure is claimed — and it is
         // the number the operator uses to decide whether to cut at all.
         let fee = if all_known && total_in >= total_out {
+            // The WEAKEST provenance of any input. One claimed value makes the
+            // whole figure claimed — it is a sum, so it is exactly as trustworthy
+            // as its least trustworthy term.
             let prov = if operator_supplied {
-                Provenance::OperatorAsserted
+                inputs
+                    .iter()
+                    .map(|(_, _, p)| *p)
+                    .find(|p| !p.is_verified())
+                    .unwrap_or(Provenance::OperatorAsserted)
             } else {
                 Provenance::ChainFetched
             };
@@ -231,7 +281,7 @@ impl Report {
         }
 
         match self.fee {
-            Some((sats, Provenance::ChainFetched)) => {
+            Some((sats, p)) if p.is_verified() => {
                 let _ = writeln!(s, "FEE       {}", btc(sats));
             }
             Some((sats, _)) => {
@@ -263,12 +313,9 @@ impl Report {
 
         let _ = writeln!(s, "INPUTS    {} input(s)", self.inputs.len());
         for (op, val, prov) in &self.inputs {
-            let v = match (val, prov) {
-                (Some(sats), Provenance::ChainFetched) => format!("{}   from node", btc(*sats)),
-                (Some(sats), Provenance::OperatorAsserted) => {
-                    format!("{}   OPERATOR-ASSERTED", btc(*sats))
-                }
-                _ => "UNKNOWN".to_string(),
+            let v = match val {
+                Some(sats) => format!("{}   {}", btc(*sats), prov.label()),
+                None => "UNKNOWN".to_string(),
             };
             let short: String = op.chars().take(16).collect();
             let _ = writeln!(s, "            {short}…   {v}");

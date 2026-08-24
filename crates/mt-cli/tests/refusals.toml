@@ -1,0 +1,119 @@
+# Every refusal `mt` v0.1 can emit, and the test that proves it fires.
+#
+# THIS FILE IS THE INPUT TO THE EXHAUSTIVENESS GATE, and it is a LIST rather
+# than a parser over §8, for three reasons that are each a defect somebody hit:
+#
+#   1. §8's numbering contains NON-refusals. §8.2 (script validity, removed) and
+#      §8.8 are numbered items that are not v0.1 refusals; §8.7 and §8.7c are
+#      pointers to deferred `mt qr` material. A script counting `^\d+[a-z]?\. `
+#      in §8 would demand tests for four things that cannot fire.
+#   2. A REAL REFUSAL LIVES OUTSIDE §8's NUMBERING. §6a's value-mismatch refusal
+#      is normative and is not a numbered §8 item, so a §8-numbering script is
+#      STRUCTURALLY UNABLE TO SEE IT — the one class an exhaustiveness gate
+#      exists to prevent. It is the last entry here for exactly that reason.
+#   3. The spec is in a DIFFERENT REPOSITORY (mnemonic-engrave/design/) from the
+#      crate under test, so a parser had no file to read either.
+#
+# A parser over prose in another repo breaks on a heading edit. A checked-in
+# list breaks only when someone adds a refusal and forgets its entry — which is
+# exactly the failure to catch. Adding a refusal to the spec therefore requires
+# touching this file, and THE COUPLING IS THE MECHANISM, not an inconvenience.
+#
+# THREE FIELDS, and the third is not decoration:
+#
+#   spec   where it is ruled
+#   test   the test that proves it fires, in tests/refusals.rs
+#   check  path::symbol -- the function `scripts/mutate-refusals.sh` neuters to
+#          prove the test is not vacuous. A two-field schema would name the rule
+#          and the test and give the mutation script nothing to point at, so the
+#          locating mechanism would get invented: grep for a message string,
+#          match a test name to a function, or edit by line number. All three
+#          break silently on a refactor, and the last mutates whatever has moved
+#          into that line.
+#
+# EVERY `check` IS A `fn(..) -> Result<(), Refusal>`, so one mutation shape --
+# insert `return Ok(());` at the top of the body -- neuters any of them.
+
+[[refusal]]
+spec  = "§8.1"
+test  = "refuses_an_unfinalized_psbt"
+check = "src/validate.rs::finalized_guard_psbt"
+
+[[refusal]]
+spec  = "§8.2b"
+test  = "refuses_an_absurd_fee_rate"
+check = "src/validate.rs::value_guard"
+
+# §8.2b RULES FOUR CHECKS UNDER ONE NUMBER, so it carries four entries. The
+# spec's own minimum is "inputs >= outputs", "an absurdly HIGH fee", "no
+# duplicate outpoints", and "vin non-empty" -- and the last two are the ones a
+# reader skims past, because they sound impossible rather than merely rare.
+[[refusal]]
+spec  = "§8.2b"
+test  = "refuses_outputs_that_exceed_inputs"
+check = "src/validate.rs::value_guard"
+
+[[refusal]]
+spec  = "§8.2b"
+test  = "refuses_a_duplicate_outpoint"
+check = "src/validate.rs::value_guard"
+
+[[refusal]]
+spec  = "§8.2b"
+test  = "refuses_an_empty_vin"
+check = "src/validate.rs::value_guard"
+
+[[refusal]]
+spec  = "§8.2d"
+test  = "refuses_a_non_witness_utxo_that_does_not_hash_to_its_input"
+check = "src/validate.rs::non_witness_utxo_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "refuses_unrecognised_input_naming_what_was_seen"
+check = "src/input.rs::recognised_guard"
+
+[[refusal]]
+spec  = "§8.2f"
+test  = "refuses_a_transaction_passed_as_a_command_line_argument"
+check = "src/validate.rs::command_line_guard"
+
+[[refusal]]
+spec  = "§8.3"
+test  = "refuses_an_unsigned_raw_transaction"
+check = "src/validate.rs::finalized_guard_raw"
+
+[[refusal]]
+spec  = "§8.5"
+test  = "refuses_a_spent_input_whose_parent_confirmed"
+check = "src/validate.rs::spent_input_guard"
+
+[[refusal]]
+spec  = "§8.6a"
+test  = "refuses_a_signature_that_is_not_sighash_all"
+check = "src/validate.rs::sighash_all_guard"
+
+[[refusal]]
+spec  = "§8.6b"
+test  = "refuses_a_satisfaction_carrying_no_signature"
+check = "src/validate.rs::has_signature_guard"
+
+[[refusal]]
+spec  = "§8.7b"
+test  = "refuses_over_the_chunk_ceiling"
+check = "src/validate.rs::chunk_ceiling_guard"
+
+[[refusal]]
+spec  = "§8.9"
+test  = "refuses_ms1_without_echoing_any_of_it"
+check = "src/validate.rs::secret_guard"
+
+# NORMATIVE AND OUTSIDE §8's NUMBERING. §6a rules that mt compares the value
+# gettxout returns against the PSBT's own UTXO record and refuses on mismatch,
+# naming both numbers. Since §8.2's removal the chain's answer is the only value
+# check mt has for a segwit input, and an earlier draft acted only on whether
+# the result was null -- throwing it away.
+[[refusal]]
+spec  = "§6a"
+test  = "refuses_a_value_that_disagrees_with_the_chain"
+check = "src/validate.rs::value_mismatch_guard"

@@ -18,14 +18,21 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: build
         run: cargo build --locked
-      # NOTE: `cargo nextest run` is deliberately absent until P1.
-      # Since nextest 0.9.85 the default is --no-tests=fail, so on a workspace
-      # with no tests it prints "error: no tests to run" and exits 4. Adding it
-      # here would make CI red from the first commit, and `--no-tests=pass`
-      # would only make it vacuous. P1 is the first phase with tests to run.
+      # The `if: hashFiles(...)` guards these two steps carried until P5 are
+      # GONE. They existed because nextest exits 4 on a workspace with no tests,
+      # which would have made CI red from the first commit -- but a conditional
+      # step prints a green tick when it is SKIPPED, so from P1 onward the guard
+      # was a gate that could silently stop running. There are tests now, and an
+      # unconditional step is the only kind whose green means anything.
       - name: install nextest
-        if: hashFiles('crates/*/tests/**') != ''
         uses: taiki-e/install-action@nextest
       - name: test
-        if: hashFiles('crates/*/tests/**') != ''
         run: cargo nextest run --locked
+
+      # P5's two gates. Both are cheap and both catch a failure no test can:
+      # a refusal added to the spec with no test, and a refusal test that would
+      # pass against code with its check deleted.
+      - name: refusal coverage (bijection with refusals.toml)
+        run: ./scripts/check-refusal-coverage.sh
+      - name: refusal mutation (every refusal test can fail)
+        run: ./scripts/mutate-refusals.sh

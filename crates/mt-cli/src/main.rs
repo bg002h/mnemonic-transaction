@@ -13,6 +13,7 @@ mod node;
 mod read_strings;
 mod refusal;
 mod report;
+mod validate;
 
 use clap::{Parser, Subcommand};
 use std::io::{Read, Write};
@@ -165,6 +166,12 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
 
+    // §8.2f FIRST, before a single byte is read. A bearer artifact on the
+    // command line has ALREADY leaked — into the shell's history file and into
+    // `ps` for every user on the machine — so the refusal has to reach the
+    // operator whether or not the rest of the invocation makes sense.
+    validate::command_line_guard(&std::env::args().collect::<Vec<_>>())?;
+
     let raw = match &args.r#in {
         Some(path) => std::fs::read(path).map_err(|e| {
             Refusal::new(
@@ -193,23 +200,137 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         }
     };
 
+    // §8.9 BEFORE §8.2e. Sniffing's step-4 refusal names what it saw — the first
+    // eight bytes — so an operator can tell what mt thought it received. For an
+    // `ms1` string those bytes are SECRET SEED ENTROPY, and the refusal would be
+    // the second place they land. `me` learnt this the same way; the fix is
+    // ordering, and nothing else.
+    validate::secret_guard(&raw, "encode")?;
+
+    // §8.2g — a WARNING, never a refusal.
+    if let Some(w) = validate::file_mode_warning(args.r#in.as_deref()) {
+        let _ = writeln!(stderr, "{w}");
+    }
+
     let sniffed = input::sniff(&raw)?;
-    let (tx_bytes, from_raw_hex) = match sniffed {
-        input::Input::RawHex(b) => (b, true),
-        input::Input::Psbt(_) => {
-            return Err(Refusal::new(
-                "encode",
-                "§8.1",
-                "PSBT support lands in a later phase",
-                "This build reads a raw signed transaction. PSBT extraction, and \
-                 the refusals that depend on a PSBT's UTXO records, arrive with \
-                 the rest of §8.",
-            )
-            .with_remedy("Run `bitcoin-cli finalizepsbt <psbt>` and pass the resulting hex."));
+    let asserted = parse_input_values(&args.input_value)?;
+
+    // Both payloads reach the same checks, each by ITS OWN VOCABULARY (§8.1).
+    let (tx, mut values, from_raw_hex) = match sniffed {
+        input::Input::Psbt(bytes) => {
+            let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
+                Refusal::new(
+                    "encode",
+                    "§8.2e",
+                    "input carries the PSBT magic but does not parse",
+                    format!(
+                        "The `psbt\\xff` magic is present, so this was meant to be a \
+                         PSBT, but decoding it failed: {e}."
+                    ),
+                )
+                .with_remedy("Re-export it from the wallet that built it.")
+            })?;
+
+            validate::finalized_guard_psbt(&psbt)?; // §8.1
+            validate::non_witness_utxo_guard(&psbt)?; // §8.2d
+            validate::require_psbt_input_values(&psbt, &asserted)?; // §8.2c
+
+            // A record beats an assertion, and WHICH record decides the column
+            // the number renders in: a non_witness_utxo has just been bound to
+            // the input's txid by §8.2d, while a witness_utxo is the wallet's
+            // word and nothing has agreed with it. Nothing here can be None —
+            // §8.2c refused that case a line ago.
+            let values: Vec<Option<(u64, report::Provenance)>> = (0..psbt.inputs.len())
+                .map(|n| {
+                    let bound = psbt.inputs[n].non_witness_utxo.is_some();
+                    validate::psbt_input_value(&psbt, n)
+                        .map(|v| {
+                            (
+                                v,
+                                if bound {
+                                    report::Provenance::TxidBound
+                                } else {
+                                    report::Provenance::PsbtClaimed
+                                },
+                            )
+                        })
+                        .or_else(|| {
+                            asserted
+                                .iter()
+                                .find(|(i, _)| *i as usize == n)
+                                .map(|(_, v)| (*v, report::Provenance::OperatorAsserted))
+                        })
+                })
+                .collect();
+            (psbt.extract_tx_unchecked_fee_rate(), values, false)
+        }
+        input::Input::RawHex(b) => {
+            let tx = decode_tx(&b, "encode")?;
+            validate::finalized_guard_raw(&tx)?; // §8.3
+            let values: Vec<Option<(u64, report::Provenance)>> = (0..tx.input.len())
+                .map(|n| {
+                    asserted
+                        .iter()
+                        .find(|(i, _)| *i as usize == n)
+                        .map(|(_, v)| (*v, report::Provenance::OperatorAsserted))
+                })
+                .collect();
+            (tx, values, true)
         }
     };
 
-    let txid = txid_display(&tx_bytes)?;
+    // §8.6 binds both payloads: an input whose satisfaction does not bind the
+    // outputs is redirectable by any holder, and the legend's TO line is a lie.
+    validate::satisfaction_guard(&tx)?;
+
+    // §6a: the node is consulted AUTOMATICALLY. It is where an unbound value
+    // becomes a bound one, so it runs BEFORE §8.2b's arithmetic.
+    let node = node::Node::find(&args.bitcoin_cli);
+    let mut bound_by_chain = vec![false; tx.input.len()];
+    if let Some(nd) = &node {
+        for (n, inp) in tx.input.iter().enumerate() {
+            let op = inp.previous_output;
+            match nd.txout(&op.txid.to_string(), op.vout) {
+                node::Utxo::Unspent(chain_sat) => {
+                    bound_by_chain[n] = true;
+                    match values[n] {
+                        // §6a: two integers, both claiming to be this input's
+                        // value. mt cannot tell which is wrong, so it refuses.
+                        Some((claimed, _)) => {
+                            validate::value_mismatch_guard(n, claimed, chain_sat)?;
+                        }
+                        None => {}
+                    }
+                    // The chain's answer wins the LABEL as well as the number:
+                    // it is the only one anything checked.
+                    values[n] = Some((chain_sat, report::Provenance::ChainFetched));
+                }
+                node::Utxo::Null => {
+                    // §8.5 needs BOTH facts. `include_mempool` is false by
+                    // ruling, so null is the EXPECTED answer for an unconfirmed
+                    // parent — refusing on it alone states something untrue
+                    // inside a refusal.
+                    let confirmed =
+                        nd.is_confirmed(&op.txid.to_string()) == node::ParentState::Confirmed;
+                    validate::spent_input_guard(n, &op.to_string(), confirmed)?;
+                }
+            }
+        }
+    }
+
+    // §8.2b — the value checks rust-bitcoin's verify_transaction never made.
+    let sats: Vec<Option<u64>> = values.iter().map(|v| v.map(|(s, _)| s)).collect();
+    validate::value_guard(&tx, &sats)?;
+
+    // §8.7b — before chunking, so the ceiling is named rather than a codec error.
+    let tx_bytes = bitcoin::consensus::serialize(&tx);
+    validate::chunk_ceiling_guard(
+        tx_bytes
+            .len()
+            .div_ceil(mt_codec::consts::PAYLOAD_CEILING_BYTES),
+    )?;
+
+    let txid = tx.compute_txid().to_string();
     let strings = pipeline::encode(&tx_bytes, &txid).map_err(|e| {
         Refusal::new(
             "encode",
@@ -218,6 +339,30 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
             format!("{e}"),
         )
     })?;
+
+    // §8.2c's legacy warning fires ONLY where the value is bound by NOTHING —
+    // no non_witness_utxo, no chain fetch. The earlier rule fired on every
+    // legacy input while asserting mt could not bind the value by txid, which
+    // §8.2d now does, so on the common path it printed a false capitalised
+    // block and trained the operator to skip the rare case where it is true.
+    let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+    for (n, inp) in tx.input.iter().enumerate() {
+        let legacy = inp.witness.is_empty();
+        if legacy && !bound_by_chain[n] {
+            if let Some((claimed, _)) = values[n] {
+                let _ = writeln!(
+                    stderr,
+                    "{}",
+                    validate::legacy_unbound_warning(n, claimed, out_total)
+                );
+            }
+        }
+    }
+
+    // §8.2b again, in its WARNING half: no minimum fee, but say the rate.
+    if let Some(w) = validate::low_fee_warning(&tx, &sats) {
+        let _ = writeln!(stderr, "{w}");
+    }
 
     if from_raw_hex {
         let _ = writeln!(
@@ -244,10 +389,12 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         // operator's pre-engraving view and the 2040 recoverer's view would be
         // two implementations of the same thing, free to disagree — and this
         // artifact has produced that defect twice already.
-        let tx = decode_tx(&tx_bytes, "encode")?;
-        let node = node::Node::find(&args.bitcoin_cli);
-        let asserted = parse_input_values(&args.input_value)?;
-        let r = report::Report::build(&tx, &txid, node.as_ref(), &asserted);
+        let claimed: Vec<(u32, u64, report::Provenance)> = values
+            .iter()
+            .enumerate()
+            .filter_map(|(n, v)| v.map(|(s, p)| (n as u32, s, p)))
+            .collect();
+        let r = report::Report::build(&tx, &txid, node.as_ref(), &claimed);
         let _ = write!(stderr, "{}", r.render());
 
         // ...and APPENDS its two rows below STATUS. Anything encode needed to
@@ -345,6 +492,11 @@ fn read_input(path: &Option<std::path::PathBuf>, verb: &str) -> Result<String, R
             buf
         }
     };
+    // §8.9 binds the READING verbs too, and this is where it has to sit: an
+    // operator who reaches for the wrong tool pastes ms1 into `mt decode`, and
+    // every refusal below this point quotes what it saw.
+    validate::secret_guard(&bytes, verb)?;
+
     String::from_utf8(bytes).map_err(|_| {
         Refusal::new(
             verb,

@@ -93,7 +93,23 @@ pub fn sniff(raw: &[u8]) -> Result<Input, Refusal> {
     }
 
     // 4. Nothing matched.
-    Err(unrecognised(trimmed))
+    recognised_guard(false, trimmed)?;
+    unreachable!("recognised_guard(false, ..) returns Err")
+}
+
+/// §8.2e step 4, as a **guard** rather than an inline `return`.
+///
+/// The shape is deliberate: every entry in `tests/refusals.toml` names a
+/// `fn … -> Result<(), Refusal>` so `scripts/mutate-refusals.sh` can locate and
+/// neuter exactly one check by name. Neutered, `sniff` reaches the
+/// `unreachable!` and panics rather than quietly accepting the input — which is
+/// a *stronger* control than silent acceptance, not a weaker one, since a
+/// panicking binary cannot print the refusal the test is looking for either.
+pub fn recognised_guard(matched: bool, bytes: &[u8]) -> Result<(), Refusal> {
+    if matched {
+        return Ok(());
+    }
+    Err(unrecognised(bytes))
 }
 
 /// §8.2e step 4: name what was seen. Never a bare "invalid input" — an operator
