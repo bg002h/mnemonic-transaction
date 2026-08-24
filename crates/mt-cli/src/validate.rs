@@ -174,14 +174,18 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
 
     let fee = in_total - out_total;
     let vb = vsize(tx);
-    let rate = fee / vb.max(1) as u64;
-    if rate > MAX_FEE_RATE_SAT_VB {
+    // COMPARE WITHOUT DIVIDING. `fee / vb` truncates, so a true rate of 25,000.9
+    // computed as 25,000 and passed — the effective ceiling was 25,001. It also
+    // made the two halves of §8.2b measure the same quantity differently, since
+    // `low_fee_warning` uses f64 for it.
+    let rate = fee as f64 / vb.max(1) as f64;
+    if fee > MAX_FEE_RATE_SAT_VB * vb.max(1) as u64 {
         return Err(Refusal::new(
             "encode",
             "§8.2b",
             format!(
-                "fee rate {} sat/vB exceeds {}",
-                thousands(rate),
+                "fee rate {:.1} sat/vB exceeds {}",
+                rate,
                 thousands(MAX_FEE_RATE_SAT_VB)
             ),
             format!(

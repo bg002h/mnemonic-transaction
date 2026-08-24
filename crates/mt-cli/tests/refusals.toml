@@ -173,3 +173,21 @@ check = "src/main.rs::parse_btc"
 spec  = "§1.1e"
 test  = "a_dropped_character_is_named_as_a_length_error_not_a_missing_plate"
 check = "src/read_strings.rs::length_report"
+
+# THE FLAGS THAT QUIETLY DID NOTHING. All three were found by an adversarial
+# review typing what a person mistypes, and each was silent rather than wrong --
+# which is why no test had ever caught them.
+[[refusal]]
+spec  = "§1.1e"
+test  = "a_non_whitespace_separator_is_refused_before_anything_is_cut"
+check = "src/main.rs::separator_guard"
+
+[[refusal]]
+spec  = "§8.2c"
+test  = "a_repeated_input_value_index_is_refused"
+check = "src/main.rs::check_input_value_indices"
+
+[[refusal]]
+spec  = "§8.2c"
+test  = "an_input_value_index_that_names_no_input_is_refused"
+check = "src/main.rs::input_index_range_guard"

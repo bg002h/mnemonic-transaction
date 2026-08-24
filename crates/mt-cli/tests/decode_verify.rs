@@ -473,9 +473,23 @@ fn a_plate_damaged_past_the_budget_does_not_kill_a_recoverable_set() {
         err.contains("string 7"),
         "the plate is not identified: {err}"
     );
+    // **mt MUST NOT SAY THE PLATE IS SCRAP.** It could not read the string, so
+    // it does not know which chunk it was, or whether it belonged to this set at
+    // all — it may be a plate from a different engraving that got typed into the
+    // same pile. The earlier wording DIRECTED A PHYSICAL ACTION ON STEEL mt had
+    // never identified, and this test asserted it.
+    let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        err.contains("that plate is scrap"),
-        "no action named: {err}"
+        !flat.contains("that plate is scrap"),
+        "mt asserted something it cannot know about a plate:\n{err}"
+    );
+    assert!(
+        flat.contains("cannot tell you which chunk that string was"),
+        "the limit of what mt knows is not stated:\n{err}"
+    );
+    assert!(
+        flat.contains("Do not discard the plate on this message alone"),
+        "the operator is not warned off the destructive reading:\n{err}"
     );
 }
 
