@@ -120,6 +120,33 @@ impl Node {
         tail[..end].trim().parse().ok()
     }
 
+    /// Which chain this node is on.
+    ///
+    /// **So the report's addresses are addresses on the operator's network.**
+    /// A `scriptPubKey` carries no network, so mt cannot know from the
+    /// transaction alone — it rendered every output with MAINNET parameters, and
+    /// a regtest transaction therefore showed `bc1q…` for an output the node
+    /// calls `bcrt1q…`: the same witness program under a different HRP, so the
+    /// printed string is not an address anywhere.
+    ///
+    /// Read from the node rather than asked of the operator, which is §6a's
+    /// posture: `bitcoin-cli` already knows, so mt does not add a flag they
+    /// must remember to set correctly.
+    pub fn chain(&self) -> Option<bitcoin::Network> {
+        let json = self.call(&["getblockchaininfo"])?;
+        let at = json.find("\"chain\"")?;
+        let rest = &json[at + 7..];
+        let start = rest.find('"')? + 1;
+        let end = rest[start..].find('"')? + start;
+        match &rest[start..end] {
+            "main" => Some(bitcoin::Network::Bitcoin),
+            "test" => Some(bitcoin::Network::Testnet),
+            "signet" => Some(bitcoin::Network::Signet),
+            "regtest" => Some(bitcoin::Network::Regtest),
+            _ => None,
+        }
+    }
+
     /// Does this node have `-txindex`?
     ///
     /// **It decides whether "not found" means PENDING or UNKNOWN.** Without the

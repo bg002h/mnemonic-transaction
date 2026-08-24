@@ -247,6 +247,27 @@ fn positional_autocorrect(s: &str) -> Vec<String> {
     out.into_iter().map(|v| v.into_iter().collect()).collect()
 }
 
+/// Is this a SIBLING format's material — `md1` or `mk1`?
+///
+/// **Keyed on the literal prefix, and nothing else.** mt imports no knowledge of
+/// the siblings' codecs: the fork-per-codec ruling exists to stop exactly that
+/// coupling spreading, and three characters are enough to say *"you want the
+/// other tool"*.
+///
+/// Worth those three characters because the operator is holding the RIGHT
+/// material for the WRONG TOOL, and without it they get a message about bech32
+/// characters and elided prefixes — accurate, and no help at all.
+fn sibling_format(candidates: &[String]) -> Option<(&'static str, &'static str, &'static str)> {
+    let first = candidates.first()?;
+    if first.starts_with("md1") {
+        Some(("md1", "md", "descriptor material"))
+    } else if first.starts_with("mk1") {
+        Some(("mk1", "mk", "key material"))
+    } else {
+        None
+    }
+}
+
 /// Could this line be mt1 material — full or elided?
 ///
 /// Only the CHARSET, deliberately. An elided line has no `mt1` prefix and no
@@ -520,15 +541,33 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
                     "this input is not an mt1 set ({} line(s), none of them mt1)",
                     candidates.len()
                 ),
-                "mt reads mt1 strings — the codex32 form mt encode produces. Every \
-                 line here contains characters outside the bech32 alphabet, so none \
-                 of them is an mt1 string, elided or otherwise.\n\
-                 \n\
-                 If you have a MNEMONIC, a DESCRIPTOR, an xpub, or an md1/mk1 \
-                 string: those belong to other tools in this family, not to mt. mt \
-                 engraves signed TRANSACTIONS.",
+                match sibling_format(&candidates) {
+                    // NAME THE SIBLING when it is one. The operator holds the
+                    // right material for the WRONG TOOL, and mt knows which.
+                    Some((prefix, tool, what)) => format!(
+                        "These lines begin `{prefix}`, so they are {what} — what \
+                         `{tool}` reads, not what mt does. mt engraves signed \
+                         TRANSACTIONS.\n\
+                         \n\
+                         mt has not tried to interpret them and has echoed none of \
+                         them back."
+                    ),
+                    None => "mt reads mt1 strings — the codex32 form mt encode \
+                             produces. Every line here contains characters outside \
+                             the bech32 alphabet, so none is an mt1 string, elided \
+                             or otherwise.\n\
+                             \n\
+                             If you have a MNEMONIC, a DESCRIPTOR or an xpub, those \
+                             belong to other tools. mt engraves signed TRANSACTIONS."
+                        .to_string(),
+                },
             )
-            .with_remedy("If you meant to encode a transaction, that is `mt encode < tx.psbt`."));
+            .with_remedy(match sibling_format(&candidates) {
+                Some((_, tool, _)) => format!("That material is `{tool}`'s, not mt's."),
+                None => "If you meant to encode a transaction, that is \
+                         `mt encode < tx.psbt`."
+                    .to_string(),
+            }));
         }
         return Err(Refusal::new(
             verb,

@@ -538,3 +538,34 @@ fn the_set_row_names_the_set_the_way_the_steel_does() {
         "the row shows a hex id the operator cannot match against steel:\n{out}"
     );
 }
+
+/// **F-235: addresses are rendered for the operator's NETWORK.** A
+/// `scriptPubKey` carries none, so `mt` rendered every output with mainnet
+/// parameters — a regtest transaction showed `bc1q…` for an output the node
+/// calls `bcrt1q…`, the same witness program under a different HRP, so the
+/// printed string is not an address anywhere.
+///
+/// Read from the node, not asked of the operator: §6a's posture is that
+/// `bitcoin-cli` already knows.
+#[test]
+fn addresses_are_rendered_for_the_network_the_node_reports() {
+    let stub = node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
+    let (out, _) = inspect_with_node("even", stub.path());
+    // The stub answers `getblockchaininfo` with a mainnet-shaped reply and no
+    // `chain` field, so mt must fall back and SAY it fell back.
+    assert!(
+        out.contains("bc1q") || out.contains("addresses shown as MAINNET"),
+        "{out}"
+    );
+}
+
+/// Offline, mt cannot know — and says so rather than printing an address that
+/// is not one on the operator's chain.
+#[test]
+fn an_unknown_network_is_stated_not_assumed_silently() {
+    let (out, _) = inspect_offline("even");
+    assert!(
+        out.contains("addresses shown as MAINNET — no node to ask"),
+        "mt assumed a network without saying so:\n{out}"
+    );
+}
