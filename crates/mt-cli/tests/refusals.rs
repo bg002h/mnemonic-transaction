@@ -1000,3 +1000,128 @@ fn verify_transaction_refuses_an_unfinalized_psbt() {
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("not finalized"), "got: {err}");
 }
+
+/// **My own §8.2f fix blocked a legitimate recovery path.** Widening the
+/// recogniser to catch `mt verify mt1…` — the siblings' spelling — I tested
+/// prefix and length and no CHARSET. A sensible filename is then refused as a
+/// bearer leak, with a verdict stating something false about what the operator
+/// did, at the moment they are trying to recover money.
+///
+/// **An over-correction that blocks a valid input is worse than the silence it
+/// replaced.**
+#[test]
+fn a_filename_beginning_mt1_is_not_mistaken_for_a_bearer_string() {
+    let v = base();
+    let strings = {
+        let f = tmp(&s(&v, "raw_hex"));
+        let out = mt()
+            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // 40 characters, beginning `mt1` — the boundary the reviewer pinned.
+    let name = "mt1-2026-08-23-cold-storage-transfer.txt";
+    assert_eq!(name.len(), 40);
+    let path = dir.path().join(name);
+    std::fs::write(&path, &strings).unwrap();
+
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("§8.2f"),
+        "a FILENAME was refused as a bearer transaction:\n{err}"
+    );
+    assert!(out.status.success(), "{err}");
+
+    // ...and the same with the bare relative name, which is what an operator
+    // actually types.
+    let out = mt()
+        .args(["verify", "--in", name])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("§8.2f"),
+        "the relative filename was refused"
+    );
+}
+
+/// The control, in the other direction: a REAL `mt1` string on the command line
+/// must still be refused. Only the pair proves the charset test narrowed the
+/// recogniser rather than disabling it.
+#[test]
+fn a_real_mt1_string_on_the_command_line_is_still_refused() {
+    let corpus: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let string = corpus["vectors"][0]["strings"][0].as_str().unwrap();
+    let out = mt().args(["verify", string]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("REFUSED — §8.2f,"), "got: {err}");
+    assert!(err.contains("an mt1 set"), "got: {err}");
+}
+
+/// **The legend would have engraved an amount nobody is sent.** It printed the
+/// sum of ALL outputs beside the named `TO` wallet, so a transaction with change
+/// showed a figure that is neither output — suggested for permanent steel. `mt`
+/// cannot identify change: that needs the sending wallet's descriptor, which §6
+/// rules it never sees.
+#[test]
+fn the_legend_prints_no_amount_when_it_cannot_know_one() {
+    let corpus: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    // The `even` vector has TWO outputs: 0.05 and 49.94998590.
+    let hex = corpus["vectors"][0]["raw_hex"].as_str().unwrap();
+    let (_, err, ok) = encode(hex, &["--to", "alice-cold"]);
+    assert!(ok, "{err}");
+
+    assert!(
+        err.contains("    TO alice-cold\n"),
+        "the TO line must carry the wallet and NO amount:\n{err}"
+    );
+    for wrong in ["49.99998590", "49.94998590 BTC\n", "0.05000000 BTC   <--"] {
+        assert!(
+            !err.contains(&format!("TO alice-cold  {wrong}")),
+            "the legend put {wrong} beside the destination:\n{err}"
+        );
+    }
+    assert!(
+        err.contains("NO AMOUNT on the TO line"),
+        "mt must say WHY there is no amount, or the operator writes one in:\n{err}"
+    );
+    assert!(err.contains("CHANGE"), "the reason is not named:\n{err}");
+}
+
+/// The control: with ONE output there is nothing to confuse, and withholding the
+/// amount would make the legend worse.
+#[test]
+fn the_legend_prints_the_amount_when_there_is_only_one_output() {
+    let v = base();
+    let (_, err, ok) = encode(&s(&v, "raw_hex"), &["--to", "alice-cold"]);
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("TO alice-cold  7.99900000 BTC"),
+        "a single-output transaction must carry its amount:\n{err}"
+    );
+    assert!(!err.contains("NO AMOUNT on the TO line"), "{err}");
+}

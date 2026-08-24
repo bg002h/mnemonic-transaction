@@ -191,3 +191,11 @@ check = "src/main.rs::check_input_value_indices"
 spec  = "§8.2c"
 test  = "an_input_value_index_that_names_no_input_is_refused"
 check = "src/main.rs::input_index_range_guard"
+
+# THE CONTROL for §8.2f's charset test. My own widening of the recogniser
+# refused a legitimate FILENAME beginning `mt1`; this asserts the fix narrowed
+# it rather than disabling it, so it belongs beside the rule it guards.
+[[refusal]]
+spec  = "§8.2f"
+test  = "a_real_mt1_string_on_the_command_line_is_still_refused"
+check = "src/validate.rs::command_line_guard"

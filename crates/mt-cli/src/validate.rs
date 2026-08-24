@@ -184,7 +184,12 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
             "encode",
             "§8.2b",
             format!(
-                "fee rate {:.1} sat/vB exceeds {}",
+                // ENOUGH PRECISION TO NOT READ AS A CONTRADICTION. At one
+                // decimal a rate of 25,000.04 printed as "25000.0 sat/vB
+                // exceeds 25,000" -- a refusal that appears to refute itself,
+                // and an operator who does not trust the message does not act
+                // on it.
+                "fee rate {:.4} sat/vB exceeds {}",
                 rate,
                 thousands(MAX_FEE_RATE_SAT_VB)
             ),
@@ -501,9 +506,26 @@ fn looks_like_a_transaction(a: &str) -> bool {
     }
     // An mt1 string: the bearer artifact in the form an operator has typed off
     // steel. The shortest real one measured is 83 characters.
+    //
+    // **THE CHARSET TEST IS NOT OPTIONAL, and leaving it out refused a
+    // legitimate input.** `mt verify --in mt1-2026-08-23-cold-storage-transfer.txt`
+    // is a recovery-path invocation with a perfectly sensible FILENAME — 40
+    // characters, beginning `mt1` — and a length-and-prefix rule called it a
+    // bearer leak, with a verdict line stating something false about what the
+    // operator had done. **An over-correction that blocks a valid path is worse
+    // than the silence it replaced**, because it stops someone who is doing
+    // everything right, at the moment they are trying to recover money.
+    //
+    // A real mt1 string is `mt1` followed by bech32 symbols and NOTHING else.
+    // `-`, `.`, `/` and `_` — every character a filename is made of — are
+    // outside that alphabet, and `1`, `b`, `i` and `o` are absent from it too,
+    // because they are confusable when engraved.
     let lower = a.to_ascii_lowercase();
-    if lower.starts_with("mt1") && lower.len() >= 40 {
-        return true;
+    if let Some(body) = lower.strip_prefix("mt1") {
+        const ALPHABET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+        if body.len() >= 37 && body.chars().all(|c| ALPHABET.contains(c)) {
+            return true;
+        }
     }
     let body = a.strip_prefix("0x").unwrap_or(a);
     // A raw transaction is at least a version, a counted input, an output and a

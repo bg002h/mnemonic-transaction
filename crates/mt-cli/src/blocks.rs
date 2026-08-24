@@ -126,7 +126,7 @@ pub fn legend(
     from: Option<&str>,
     to: Option<&str>,
     to_label: Option<&str>,
-    out_total_sat: u64,
+    outputs: &[u64],
 ) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
@@ -152,26 +152,34 @@ pub fn legend(
     // label is allowed only behind its own flag, because nothing can check it
     // against the transaction — the separate flag IS the ruling (§10.4): it
     // makes the label an act of assertion rather than something that appears.
-    match (to, to_label) {
-        (Some(t), Some(l)) => {
-            let _ = writeln!(s, "    TO {t} ({l})  {}", btc(out_total_sat));
+    //
+    // **THE AMOUNT IS ONLY PRINTED WHEN mt KNOWS IT.** The earlier version put
+    // the sum of ALL outputs beside the named wallet, so a transaction sending
+    // 2.0 BTC with 5.999 BTC of change read `TO alice-cold 7.99900000 BTC` —
+    // a figure that is not what alice-cold receives, suggested for PERMANENT
+    // STEEL. mt cannot identify change: that needs the sending wallet's
+    // descriptor, which it does not have and does not ask for (§6). With one
+    // output there is nothing to confuse; with more than one, mt says so
+    // instead of guessing.
+    let name = to.or(to_label);
+    let unverified = if to.is_none() && to_label.is_some() {
+        "   <-- LABEL ONLY, unverified"
+    } else {
+        ""
+    };
+    match (name, outputs) {
+        (Some(n), [only]) => {
+            let _ = writeln!(s, "    TO {n}  {}{unverified}", btc(*only));
         }
-        (Some(t), None) => {
-            let _ = writeln!(s, "    TO {t}  {}", btc(out_total_sat));
+        (Some(n), _) => {
+            // No amount. A wrong number on steel outlives the plate.
+            let _ = writeln!(s, "    TO {n}{unverified}");
         }
-        (None, Some(l)) => {
-            let _ = writeln!(
-                s,
-                "    TO {l}  {}   <-- LABEL ONLY, unverified",
-                btc(out_total_sat)
-            );
+        (None, [only]) => {
+            let _ = writeln!(s, "    TO ????????  {}   <-- NOT SUPPLIED", btc(*only));
         }
-        (None, None) => {
-            let _ = writeln!(
-                s,
-                "    TO ????????  {}   <-- NOT SUPPLIED",
-                btc(out_total_sat)
-            );
+        (None, _) => {
+            let _ = writeln!(s, "    TO ????????   <-- NOT SUPPLIED");
         }
     }
     let _ = writeln!(s, "    {}", lock.legend());
@@ -179,8 +187,8 @@ pub fn legend(
     // §10.4: optional, and LOUDLY WARNED when absent. A plate that does not say
     // where the money came from or where it went is one a recoverer cannot act
     // on -- and neither fact is in the transaction, so mt cannot fill them in.
-    if from.is_none() || to.is_none() {
-        let missing = match (from.is_none(), to.is_none()) {
+    if from.is_none() || name.is_none() {
+        let missing = match (from.is_none(), name.is_none()) {
             (true, true) => "FROM WALLET and TO are",
             (true, false) => "FROM WALLET is",
             _ => "TO is",
@@ -194,11 +202,47 @@ pub fn legend(
              steel they cannot place."
         );
     }
+    if outputs.len() > 1 {
+        let _ = writeln!(
+            s,
+            "\n  NO AMOUNT on the TO line: this transaction has {} outputs and mt\n  \
+             cannot tell which is the destination and which is CHANGE — that\n  \
+             needs the sending wallet's descriptor, which mt never sees. Write\n  \
+             the amount yourself if you want it on the plate; the report above\n  \
+             lists every output.",
+            outputs.len()
+        );
+    }
     s
 }
 
 fn btc(sats: u64) -> String {
     format!("{}.{:08} BTC", sats / 100_000_000, sats % 100_000_000)
+}
+
+/// The output file is BEARER too, and nothing said so.
+///
+/// `mt` warns in detail that the INPUT file is world-readable (§8.2g) — and
+/// then writes the `mt1` strings to a file it never mentions again. Those
+/// strings are the engraving: `mt`'s own bearer warning says *"a finalized
+/// transaction — **and the mt1 strings it becomes** — is BEARER: anyone who
+/// reads it can broadcast it."*
+///
+/// Printed only when stdout is REDIRECTED. On a terminal the strings scroll
+/// past and the advice would be noise; redirected, there is a file sitting on
+/// disk that outlives the session.
+pub fn redirected_output_warning() -> crate::refusal::Warning {
+    crate::refusal::Warning::new(
+        "the file you just wrote is BEARER, exactly like the plate.",
+        "mt sent the strings to a file rather than a terminal. Anyone who reads \
+         that file can broadcast this transaction — it is the engraving, in a \
+         form that copies itself.\n\
+         \n\
+         When the plates are cut and verified, DESTROY IT: `shred -u <file>` on \
+         Linux, `rm -P <file>` on macOS. Plain `rm` unlinks the name and leaves \
+         the bytes. And check it is not already in a backup, a sync folder, or \
+         your editor's undo history.",
+    )
 }
 
 /// §6a's **encode-time** no-node warning.
