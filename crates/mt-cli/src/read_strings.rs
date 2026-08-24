@@ -435,11 +435,36 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
     // roughly one in 32,768 begins `mtl` legitimately — and refusing THAT is
     // the same near-miss defect in the other direction. A full string is
     // ELIDED_DROP characters longer than an elided one, which settles it.
+    // **THE REFERENCE CANNOT COME ONLY FROM `mt1` LINES.** With
+    // `--elide-prefix` exactly ONE line is full — and if that is the line whose
+    // separator was misread, there is no `mt1` candidate left to measure
+    // against, `full_len` is None, and the guard below can never fire. That is
+    // the whole of the elided variant, and it survived the previous fix.
+    //
+    // So: prefer a real full line when one exists; otherwise derive what a full
+    // line WOULD be from the elided ones, which are exactly ELIDED_DROP shorter.
     let full_len = candidates
         .iter()
         .filter(|c| c.starts_with("mt1"))
         .map(|c| c.chars().count())
-        .max();
+        .max()
+        .or_else(|| {
+            let others: Vec<usize> = candidates
+                .iter()
+                .filter(|c| !(c.starts_with("mtl") || c.starts_with("mti")))
+                .map(|c| c.chars().count())
+                .collect();
+            // The modal elided length, plus what elision removed.
+            let mut counts: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::new();
+            for n in &others {
+                *counts.entry(*n).or_default() += 1;
+            }
+            counts
+                .into_iter()
+                .max_by_key(|(_, n)| *n)
+                .map(|(len, _)| len + ELIDED_DROP)
+        });
     // **NEARER FULL THAN ELIDED, not exactly full.** Requiring an exact match
     // meant the guard fired only when the second defect was a same-length
     // SUBSTITUTION — and the case it was written for is a DROPPED CHARACTER,

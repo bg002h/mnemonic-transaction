@@ -1296,3 +1296,79 @@ fn a_duplicated_unreadable_line_is_one_chunk_not_two() {
         "the true state is not named:\n{err}"
     );
 }
+
+/// **The `--elide-prefix` variant of the misread separator, which survived two
+/// fixes.** With elision exactly ONE line is full — so when that line is the one
+/// whose separator was misread, there is no `mt1` candidate left to measure
+/// against, and a guard that derived "what a full line looks like" only from
+/// `mt1` lines could never fire.
+///
+/// The reference now falls back to the elided lines, which are exactly
+/// `ELIDED_DROP` characters shorter than a full one.
+#[test]
+fn a_misread_separator_on_the_only_full_line_is_named_not_treated_as_elided() {
+    let elided: Vec<String> = corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == "even")
+        .unwrap()["strings_elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+
+    let mut lines = elided.clone();
+    let t = format!("mtl{}", &elided[0][3..]);
+    lines[0] = format!("{}{}", &t[..40], &t[41..]); // separator misread AND one short
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("the `1` of `mt1` misread"),
+        "the only full line was treated as elided:\n{err}"
+    );
+    assert!(
+        !err.contains("all 6 lines are elided"),
+        "mt still reports every line as elided:\n{err}"
+    );
+}
+
+/// The control that keeps the fallback honest: a CLEAN elided set, where the
+/// derived reference must not make anything look wrong.
+#[test]
+fn a_clean_elided_set_is_unaffected_by_the_derived_full_length() {
+    let elided: Vec<String> = corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == "even")
+        .unwrap()["strings_elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    let f = tmp_with(&elided.join("\n"));
+    let out = mt()
+        .args(["decode", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        raw_of("even")
+    );
+}
