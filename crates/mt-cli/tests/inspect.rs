@@ -1,0 +1,307 @@
+//! `mt inspect`, and the report's three callers.
+//!
+//! Run **both offline and with a node**, because offline-only passes vacuously:
+//! with no node every chain-derived row reads `UNKNOWN` for all three callers,
+//! so they agree trivially and the gate proves nothing about the rows that
+//! matter.
+
+use assert_cmd::Command;
+use std::io::Write;
+
+fn mt() -> Command {
+    Command::cargo_bin("mt").unwrap()
+}
+
+/// The offline mechanism, named so no test reaches for `PATH` — which is
+/// process-global and would silently change neighbouring tests in the same run.
+const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+
+fn corpus() -> serde_json::Value {
+    let p = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../mt-codec/src/test_vectors/mt1_v1.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+fn strings_file(label: &str) -> tempfile::NamedTempFile {
+    let s: Vec<String> = corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == label)
+        .unwrap()["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(s.join("\n").as_bytes()).unwrap();
+    f.flush().unwrap();
+    f
+}
+
+fn inspect_offline(label: &str) -> (String, String) {
+    let f = strings_file(label);
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "inspect failed offline");
+    (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+/// **Rule 1: a row is never omitted for being unanswerable — it reads
+/// `UNKNOWN`.** Omission and ignorance look identical on a terminal, and a
+/// reader cannot tell a row that was skipped from one that never existed.
+#[test]
+fn every_row_is_present_offline() {
+    let (out, _) = inspect_offline("even");
+    for row in [
+        "mt1 SET",
+        "TX ",
+        "OUT ",
+        "FEE ",
+        "LOCKTIME ",
+        "INPUTS ",
+        "STATUS ",
+    ] {
+        assert!(out.contains(row), "row {row:?} was omitted offline");
+    }
+    assert!(
+        out.contains("FEE       UNKNOWN"),
+        "fee must say UNKNOWN, not vanish"
+    );
+    assert!(
+        out.contains("current height UNKNOWN"),
+        "height must say UNKNOWN"
+    );
+}
+
+/// The report NEVER renders a verdict about spendability. §8.4 spends its length
+/// establishing that `mt` cannot make that claim — a BIP-68 relative timelock
+/// lives in `OP_CSV` inside the witness script, and reading it means evaluating
+/// the sending wallet's script.
+#[test]
+fn the_report_never_claims_spendability() {
+    let (out, err) = inspect_offline("even");
+    for forbidden in ["PASSED", "SPENDABLE", "VALID", "SAFE TO BROADCAST"] {
+        assert!(
+            !out.contains(forbidden),
+            "report rendered a verdict: {forbidden}"
+        );
+        assert!(
+            !err.contains(forbidden),
+            "stderr rendered a verdict: {forbidden}"
+        );
+    }
+}
+
+/// §6a's recovery-time warning: the enumeration, the read-vs-verified split, and
+/// **both** ways out. The encode-time wording ("before cutting") is useless to a
+/// recoverer — the engraving already exists.
+#[test]
+fn offline_warning_separates_read_from_verified_and_names_both_ways_out() {
+    let (_, err) = inspect_offline("even");
+    assert!(err.contains("no bitcoind reachable"));
+    assert!(
+        err.contains("what the transaction SAYS") && err.contains("None of it is confirmed"),
+        "the read-vs-verified split is the load-bearing part: {err}"
+    );
+    assert!(
+        err.contains("run mt inspect again with a bitcoind"),
+        "node route missing"
+    );
+    assert!(err.contains("block explorer"), "explorer route missing");
+    assert!(
+        !err.contains("before cutting") && !err.contains("21 minutes"),
+        "this is the ENCODE-time wording, useless to a recoverer: {err}"
+    );
+}
+
+/// The txid must be printed so the explorer route is actionable — and it must be
+/// the **txid**, not the hash of the engraved bytes, which is the wtxid.
+#[test]
+fn the_printed_txid_is_the_txid_not_the_wtxid() {
+    for label in ["even", "uneven"] {
+        let v = corpus()["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["label"] == label)
+            .unwrap()
+            .clone();
+        let (out, err) = inspect_offline(label);
+        let txid = v["txid"].as_str().unwrap();
+        let wtxid = v["wtxid"].as_str().unwrap();
+
+        assert!(
+            out.contains(txid),
+            "{label}: the report does not print the txid"
+        );
+        assert!(
+            !out.contains(wtxid),
+            "{label}: the report printed the WTXID — an explorer lookup would return nothing"
+        );
+        assert!(
+            err.contains(txid),
+            "{label}: the warning must print the txid to look up"
+        );
+    }
+}
+
+/// **Rule 3: `encode` appends, never edits.** The two views must agree on every
+/// row they can both produce — that is what the single-owner rule protects.
+#[test]
+fn encode_and_inspect_agree_on_the_rows_they_share() {
+    let v = &corpus()["vectors"][0];
+    let mut txf = tempfile::NamedTempFile::new().unwrap();
+    txf.write_all(v["raw_hex"].as_str().unwrap().as_bytes())
+        .unwrap();
+    txf.flush().unwrap();
+
+    let enc = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(txf.path())
+        .output()
+        .unwrap();
+    let enc_err = String::from_utf8(enc.stderr).unwrap();
+    let (ins_out, _) = inspect_offline("even");
+
+    // `encode`'s suffix rows are its own; the TX identity must match.
+    assert!(
+        enc_err.contains("CUT       "),
+        "encode's CUT row is missing"
+    );
+    assert!(
+        enc_err.contains("PREFIX    "),
+        "encode's PREFIX row is missing"
+    );
+    assert!(
+        ins_out.contains(v["txid"].as_str().unwrap()),
+        "inspect and encode disagree about the transaction"
+    );
+}
+
+/// Both vectors, so the uneven one — whose last chunk is short — is exercised.
+#[test]
+fn both_vectors_inspect_cleanly() {
+    for label in ["even", "uneven"] {
+        let (out, _) = inspect_offline(label);
+        assert!(
+            out.contains("STATUS    UNKNOWN"),
+            "{label}: offline status wrong"
+        );
+        assert!(out.contains("strings, 1.."), "{label}: set row missing");
+    }
+}
+
+/// A node that cannot be reached is a WARNING, never a refusal — offline
+/// operation is the constellation's posture, and an absent node is an absent
+/// answer rather than a bad one.
+#[test]
+fn an_absent_node_is_never_a_refusal() {
+    let f = strings_file("even");
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "an absent node must not fail the run");
+    assert!(
+        !String::from_utf8(out.stderr).unwrap().contains("REFUSED"),
+        "an absent node was reported as a refusal"
+    );
+}
+
+/// **The third provenance class.** An operator-supplied value is neither
+/// chain-fetched nor absent: it is claimed, and checked by nobody. Collapsing
+/// the report to two classes put an unverified number in the column a reader
+/// takes as verified — and it is the number that decides whether to cut at all.
+#[test]
+fn an_asserted_value_makes_the_fee_say_claimed() {
+    let v = &corpus()["vectors"][0];
+    let mut txf = tempfile::NamedTempFile::new().unwrap();
+    txf.write_all(v["raw_hex"].as_str().unwrap().as_bytes())
+        .unwrap();
+    txf.flush().unwrap();
+
+    let out = mt()
+        .args([
+            "encode",
+            "--bitcoin-cli",
+            OFFLINE,
+            "--input-value",
+            "0:50.0",
+            "--in",
+        ])
+        .arg(txf.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+
+    assert!(
+        err.contains("CLAIMED — no input value verified"),
+        "an asserted value must not be presented as verified: {err}"
+    );
+    assert!(
+        err.contains("OPERATOR-ASSERTED"),
+        "the input row must name its provenance: {err}"
+    );
+}
+
+/// A total is refused: it has two readings that differ by a whole input.
+#[test]
+fn input_value_must_be_per_input() {
+    let v = &corpus()["vectors"][0];
+    let mut txf = tempfile::NamedTempFile::new().unwrap();
+    txf.write_all(v["raw_hex"].as_str().unwrap().as_bytes())
+        .unwrap();
+    txf.flush().unwrap();
+
+    let out = mt()
+        .args([
+            "encode",
+            "--bitcoin-cli",
+            OFFLINE,
+            "--input-value",
+            "50.0",
+            "--in",
+        ])
+        .arg(txf.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a bare total was accepted");
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("REFUSED — §8.2c"), "got: {err}");
+    assert!(err.contains("PER INPUT"), "the refusal must say why: {err}");
+}
+
+/// **`encode` APPENDS, never edits.** Its two rows come after `STATUS`, so the
+/// operator's view is the recoverer's view plus a suffix.
+#[test]
+fn encode_appends_its_rows_below_status() {
+    let v = &corpus()["vectors"][0];
+    let mut txf = tempfile::NamedTempFile::new().unwrap();
+    txf.write_all(v["raw_hex"].as_str().unwrap().as_bytes())
+        .unwrap();
+    txf.flush().unwrap();
+
+    let out = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(txf.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    let status = err.find("STATUS ").expect("no STATUS row");
+    let cut = err.find("CUT ").expect("no CUT row");
+    assert!(
+        cut > status,
+        "encode's rows must come AFTER the shared report"
+    );
+}

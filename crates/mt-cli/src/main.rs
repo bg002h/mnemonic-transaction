@@ -9,8 +9,10 @@
 
 mod blocks;
 mod input;
+mod node;
 mod read_strings;
 mod refusal;
+mod report;
 
 use clap::{Parser, Subcommand};
 use std::io::{Read, Write};
@@ -34,6 +36,8 @@ enum Command {
     Decode(ReadArgs),
     /// Check a set of `mt1` strings — structurally, and never asking a node.
     Verify(ReadArgs),
+    /// Report what is IN a set, consulting a node automatically when one is there.
+    Inspect(ReadArgs),
 }
 
 /// Arguments shared by the two reading verbs.
@@ -58,6 +62,13 @@ struct ReadArgs {
     /// Machine-readable report.
     #[arg(long)]
     json: bool,
+
+    /// Path to `bitcoin-cli`. Pointing this at something absent forces the
+    /// OFFLINE path — the mechanism every air-gapped gate and journey uses,
+    /// because the alternative an implementer reaches for is editing `PATH`,
+    /// which is process-global and would silently change neighbouring tests.
+    #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
+    bitcoin_cli: std::path::PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -135,6 +146,7 @@ fn main() -> std::process::ExitCode {
         Command::Encode(args) => run(encode(args)),
         Command::Decode(args) => run(decode(args)),
         Command::Verify(args) => run(verify(args)),
+        Command::Inspect(args) => run(inspect(args)),
     }
 }
 
@@ -228,6 +240,18 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     let _ = writeln!(stderr, "{}", blocks::verify_the_steel());
 
     if !args.quiet {
+        // encode CALLS the report; it does not compose its own. If it did, the
+        // operator's pre-engraving view and the 2040 recoverer's view would be
+        // two implementations of the same thing, free to disagree — and this
+        // artifact has produced that defect twice already.
+        let tx = decode_tx(&tx_bytes, "encode")?;
+        let node = node::Node::find(&args.bitcoin_cli);
+        let asserted = parse_input_values(&args.input_value)?;
+        let r = report::Report::build(&tx, &txid, node.as_ref(), &asserted);
+        let _ = write!(stderr, "{}", r.render());
+
+        // ...and APPENDS its two rows below STATUS. Anything encode needed to
+        // CHANGE about a row would be a defect in the row, fixable in one place.
         let prefix = pipeline::invariant_prefix(&strings[0]).unwrap_or_default();
         let total: usize = lengths.iter().sum();
         let _ = writeln!(
@@ -487,4 +511,102 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
         let _ = writeln!(stderr, "  --transaction matches, on the full txid.");
     }
     Ok(())
+}
+
+fn inspect(args: ReadArgs) -> Result<(), Refusal> {
+    let text = read_input(&args.r#in, "inspect")?;
+    let strings = read_strings::read(&text)?;
+    let (bytes, chunks) = pipeline::decode(&strings).map_err(|e| {
+        Refusal::new(
+            "inspect",
+            "§1.1",
+            "cannot reassemble the set",
+            format!("{e}"),
+        )
+    })?;
+
+    let tx = decode_tx(&bytes, "inspect")?;
+    let txid = tx.compute_txid().to_string();
+
+    // §6a: the node is consulted AUTOMATICALLY when one is reachable. The
+    // operator is asked for nothing, because bitcoin-cli already holds
+    // everything needed to reach it.
+    let node = node::Node::find(&args.bitcoin_cli);
+
+    let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
+    r.set = Some((chunks.len(), chunks.len()));
+
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let _ = write!(out, "{}", r.render());
+
+    // The no-node warning goes to STDERR, in its recovery-time wording.
+    if node.is_none() {
+        let mut stderr = std::io::stderr();
+        let _ = writeln!(stderr);
+        let _ = write!(
+            stderr,
+            "{}",
+            report::no_node_warning(tx.lock_time.to_consensus_u32(), &txid)
+        );
+    }
+    margin_report(&chunks, &mut std::io::stderr());
+    Ok(())
+}
+
+/// Decode raw bytes into a transaction, with a refusal that names the problem.
+fn decode_tx(bytes: &[u8], verb: &str) -> Result<bitcoin::Transaction, Refusal> {
+    use bitcoin::consensus::Decodable;
+    bitcoin::Transaction::consensus_decode(&mut &bytes[..]).map_err(|e| {
+        Refusal::new(
+            verb,
+            "§8.2e",
+            "the reassembled bytes are not a Bitcoin transaction",
+            format!(
+                "The strings reassembled cleanly, but the result does not parse: \
+                 {e}. Every checksum held, so this is not miscut steel — it is \
+                 more likely a chunk from a different set."
+            ),
+        )
+    })
+}
+
+/// Parse `--input-value <index>:<amount>`.
+///
+/// **Per input, never a total.** A supplied total has two readings — "this IS
+/// the input sum" and "this is ADDED to the bound inputs" — that differ by a
+/// whole input, and which one an implementer picked would decide whether §8.2b's
+/// refusals fire at all.
+fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
+    raw.iter()
+        .map(|s| {
+            let (i, v) = s.split_once(':').ok_or_else(|| {
+                Refusal::new(
+                    "encode",
+                    "§8.2c",
+                    format!("--input-value {s:?} is not <index>:<amount>"),
+                    "Values are supplied PER INPUT, as `--input-value 0:0.05`. A \
+                     single total is not accepted: it has two readings that differ \
+                     by a whole input.",
+                )
+            })?;
+            let idx: u32 = i.parse().map_err(|_| {
+                Refusal::new(
+                    "encode",
+                    "§8.2c",
+                    format!("--input-value index {i:?} is not a number"),
+                    "The index is the input's position, counting from 0.",
+                )
+            })?;
+            let btc: f64 = v.parse().map_err(|_| {
+                Refusal::new(
+                    "encode",
+                    "§8.2c",
+                    format!("--input-value amount {v:?} is not a number"),
+                    "The amount is in BTC, as a decimal — e.g. 0.05000000.",
+                )
+            })?;
+            Ok((idx, (btc * 100_000_000.0).round() as u64))
+        })
+        .collect()
 }
