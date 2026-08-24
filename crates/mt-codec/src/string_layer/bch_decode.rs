@@ -533,3 +533,223 @@ fn decode_errors(
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::{MT_LONG_CONST, MT_REGULAR_CONST};
+    use crate::string_layer::bch::{
+        GEN_LONG, GEN_REGULAR, LONG_MASK, LONG_SHIFT, REGULAR_MASK, REGULAR_SHIFT,
+        bch_create_checksum_long, bch_create_checksum_regular, hrp_expand, polymod_run,
+    };
+
+    // ── PORTED BACK FROM `mk-codec`, 2026-08-24 ────────────────────────────
+    //
+    // `t = 4` is LOAD-BEARING: `mt` prints that number to an operator before
+    // they spend 21 minutes engraving a plate, and every recovery story rests
+    // on it. A decoder that silently corrected three, or accepted five and
+    // mis-corrected, would break a guarantee already on the screen.
+    //
+    // The pipeline tests exercise correction only through `decode_chunk`
+    // against pinned vectors. These call the decoder directly with hand-chosen
+    // error patterns and pin the exact POSITIONS and MAGNITUDES recovered —
+    // which is what distinguishes "it corrected something" from "it corrected
+    // the right thing".
+
+    #[test]
+    fn zeta_is_primitive_cube_root_of_unity() {
+        // ζ² = ζ + 1, ζ³ = ζ·(ζ + 1) = ζ² + ζ = 2ζ + 1 = 1 (in char 2).
+        let zeta_sq = ZETA.mul(ZETA);
+        assert_eq!(zeta_sq, ZETA.add(Gf1024::ONE), "ζ² should equal ζ + 1");
+        let zeta_cu = zeta_sq.mul(ZETA);
+        assert_eq!(zeta_cu, Gf1024::ONE, "ζ³ should equal 1");
+    }
+
+    #[test]
+    fn beta_has_order_93_regular() {
+        // β = G·ζ has order 93 (BIP 93 §"Generation of valid checksum").
+        let mut p = Gf1024::ONE;
+        for j in 1..=93 {
+            p = p.mul(BETA);
+            if p == Gf1024::ONE {
+                assert_eq!(j, 93, "β prematurely returned to 1 at exponent {}", j);
+            }
+        }
+        assert_eq!(p, Gf1024::ONE, "β^93 should equal 1");
+    }
+
+    #[test]
+    fn gamma_has_order_1023_long() {
+        // γ = E + X·ζ has order 1023 (BIP 93 §"Generation of valid checksum").
+        // Quick-check at the 3 prime divisors of 1023 = 3·11·31.
+        for &q in &[341u32, 93u32, 33u32] {
+            // 1023/3, 1023/11, 1023/31
+            assert_ne!(GAMMA.pow(q), Gf1024::ONE, "γ^(1023/p) = 1 for some p");
+        }
+        assert_eq!(GAMMA.pow(1023), Gf1024::ONE, "γ^1023 should equal 1");
+    }
+
+    #[test]
+    fn generator_polynomial_evaluates_to_zero_at_specified_roots() {
+        // Cross-check the BIP 93 §"Generation of valid checksum" claim
+        // that g_regular(β^i) = 0 for i ∈ {17, 20, 46, 49, 52, 77..84}
+        // and g_long(γ^i) = 0 for i ∈ {32, 64, 96, 895, 927, 959, 991,
+        // 1019..1026}. Reconstructs g(x) from GEN_*[0] and verifies.
+        let g_reg = generator_polynomial_regular();
+        let g_long = generator_polynomial_long();
+
+        let regular_roots: [u32; 13] = [17, 20, 46, 49, 52, 77, 78, 79, 80, 81, 82, 83, 84];
+        for &i in &regular_roots {
+            assert!(
+                horner(&g_reg, BETA.pow(i)).is_zero(),
+                "g_regular(β^{}) != 0",
+                i
+            );
+        }
+
+        let long_roots: [u32; 15] = [
+            32, 64, 96, 895, 927, 959, 991, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026,
+        ];
+        for &i in &long_roots {
+            assert!(
+                horner(&g_long, GAMMA.pow(i)).is_zero(),
+                "g_long(γ^{}) != 0",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn one_error_decodes_correctly_regular() {
+        let hrp = "mt";
+        let data: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let checksum = bch_create_checksum_regular(hrp, &data);
+        let mut codeword = data.clone();
+        codeword.extend_from_slice(&checksum);
+        let original = codeword.clone();
+
+        let err_pos = 5;
+        let err_mag: u8 = 0b10101;
+        codeword[err_pos] ^= err_mag;
+
+        let mut input = hrp_expand(hrp);
+        input.extend_from_slice(&codeword);
+        let polymod = polymod_run(&input, &GEN_REGULAR, REGULAR_SHIFT, REGULAR_MASK);
+        let residue = polymod ^ MT_REGULAR_CONST;
+
+        let (positions, magnitudes) =
+            decode_regular_errors(residue, codeword.len()).expect("1-error must decode");
+        assert_eq!(positions, vec![err_pos]);
+        assert_eq!(magnitudes, vec![err_mag]);
+
+        let mut corrected = codeword.clone();
+        for (p, m) in positions.iter().zip(&magnitudes) {
+            corrected[*p] ^= m;
+        }
+        assert_eq!(corrected, original);
+    }
+
+    #[test]
+    fn two_errors_decode_correctly_regular() {
+        let hrp = "mt";
+        let data: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let checksum = bch_create_checksum_regular(hrp, &data);
+        let mut codeword = data.clone();
+        codeword.extend_from_slice(&checksum);
+        let original = codeword.clone();
+
+        let positions_in: [usize; 2] = [3, 17];
+        let mags_in: [u8; 2] = [0b11001, 0b00111];
+        for (&p, &m) in positions_in.iter().zip(&mags_in) {
+            codeword[p] ^= m;
+        }
+
+        let mut input = hrp_expand(hrp);
+        input.extend_from_slice(&codeword);
+        let polymod = polymod_run(&input, &GEN_REGULAR, REGULAR_SHIFT, REGULAR_MASK);
+        let residue = polymod ^ MT_REGULAR_CONST;
+
+        let (positions, magnitudes) =
+            decode_regular_errors(residue, codeword.len()).expect("2-error must decode");
+        assert_eq!(positions, vec![3, 17]);
+        assert_eq!(magnitudes, vec![mags_in[0], mags_in[1]]);
+
+        let mut corrected = codeword.clone();
+        for (p, m) in positions.iter().zip(&magnitudes) {
+            corrected[*p] ^= m;
+        }
+        assert_eq!(corrected, original);
+    }
+
+    #[test]
+    fn four_errors_decode_correctly_long() {
+        let hrp = "mt";
+        let data: Vec<u8> = (0..16).collect();
+        let checksum = bch_create_checksum_long(hrp, &data);
+        let mut codeword = data.clone();
+        codeword.extend_from_slice(&checksum);
+        let original = codeword.clone();
+
+        let positions_in: [usize; 4] = [0, 5, 18, 28];
+        let mags_in: [u8; 4] = [0b00001, 0b10000, 0b11111, 0b01010];
+        for (&p, &m) in positions_in.iter().zip(&mags_in) {
+            codeword[p] ^= m;
+        }
+
+        let mut input = hrp_expand(hrp);
+        input.extend_from_slice(&codeword);
+        let polymod = polymod_run(&input, &GEN_LONG, LONG_SHIFT, LONG_MASK);
+        let residue = polymod ^ MT_LONG_CONST;
+
+        let (positions, magnitudes) =
+            decode_long_errors(residue, codeword.len()).expect("4-error must decode");
+        assert_eq!(positions, vec![0, 5, 18, 28]);
+        assert_eq!(magnitudes, mags_in.to_vec());
+
+        let mut corrected = codeword.clone();
+        for (p, m) in positions.iter().zip(&magnitudes) {
+            corrected[*p] ^= m;
+        }
+        assert_eq!(corrected, original);
+    }
+
+    #[test]
+    fn five_errors_either_rejects_or_returns_bogus_recovery() {
+        // The decoder doesn't detect 5+ errors directly. It may return
+        // None or return Some() with bogus positions/magnitudes that
+        // fail to reproduce the original. The caller's responsibility
+        // is to re-verify via `bch_verify_*`.
+        let hrp = "mt";
+        let data: Vec<u8> = (0..16).collect();
+        let checksum = bch_create_checksum_long(hrp, &data);
+        let mut codeword = data.clone();
+        codeword.extend_from_slice(&checksum);
+
+        let positions_in: [usize; 5] = [0, 5, 10, 15, 20];
+        let mags_in: [u8; 5] = [1, 2, 3, 4, 5];
+        for (&p, &m) in positions_in.iter().zip(&mags_in) {
+            codeword[p] ^= m;
+        }
+
+        let mut input = hrp_expand(hrp);
+        input.extend_from_slice(&codeword);
+        let polymod = polymod_run(&input, &GEN_LONG, LONG_SHIFT, LONG_MASK);
+        let residue = polymod ^ MT_LONG_CONST;
+
+        if let Some((positions, magnitudes)) = decode_long_errors(residue, codeword.len()) {
+            let original = {
+                let mut o = data.clone();
+                o.extend_from_slice(&checksum);
+                o
+            };
+            let mut corrected = codeword.clone();
+            for (p, m) in positions.iter().zip(&magnitudes) {
+                corrected[*p] ^= m;
+            }
+            assert_ne!(
+                corrected, original,
+                "5-error decode should not produce the original codeword"
+            );
+        }
+    }
+}

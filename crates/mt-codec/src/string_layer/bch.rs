@@ -722,3 +722,134 @@ pub fn decode_string(s: &str) -> Result<DecodedString, crate::Error> {
         data_with_checksum: result.data,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── PORTED BACK FROM `mk-codec`, 2026-08-24 ────────────────────────────
+    //
+    // **These 47 unit tests were deleted during the port and nothing replaced
+    // them at unit granularity.** A conformance review found it: `cargo test
+    // -p mt-codec --lib -- --list` showed ZERO tests under `string_layer::bch`
+    // or `string_layer::bch_decode`, leaving the BCH layer covered only through
+    // the pipeline, against the pinned vector corpus.
+    //
+    // That is the wrong shape of coverage for THIS code. The corpus was
+    // produced by an encoder that uses these very constants, so a corpus test
+    // cannot tell a wrong table from a right one — **it would agree with
+    // itself**. The tests below assert against values published in BIP-93 and
+    // against field properties that hold independently of any implementation,
+    // which is the only kind of pin a foundation can have.
+    //
+    // Adapted from mk's originals: the HRP is `"mt"`, and mt's own NUMS
+    // residues replace mk's. Everything else is the shared BIP-93 mathematics
+    // and is deliberately byte-identical.
+
+    #[test]
+    fn gen_regular_matches_bip93_canonical_values() {
+        // Cross-checked against https://github.com/bitcoin/bips/blob/master/bip-0093.mediawiki
+        // ms32_polymod GEN array. If this fails, the constants drifted from the BIP.
+        assert_eq!(GEN_REGULAR[0], 0x19dc500ce73fde210);
+        assert_eq!(GEN_REGULAR[1], 0x1bfae00def77fe529);
+        assert_eq!(GEN_REGULAR[2], 0x1fbd920fffe7bee52);
+        assert_eq!(GEN_REGULAR[3], 0x1739640bdeee3fdad);
+        assert_eq!(GEN_REGULAR[4], 0x07729a039cfc75f5a);
+    }
+
+    #[test]
+    fn gen_long_matches_bip93_canonical_values() {
+        // Cross-checked against https://github.com/bitcoin/bips/blob/master/bip-0093.mediawiki
+        // ms32_long_polymod GEN array.
+        assert_eq!(GEN_LONG[0], 0x3d59d273535ea62d897);
+        assert_eq!(GEN_LONG[1], 0x7a9becb6361c6c51507);
+        assert_eq!(GEN_LONG[2], 0x543f9b7e6c38d8a2a0e);
+        assert_eq!(GEN_LONG[3], 0x0c577eaeccf1990d13c);
+        assert_eq!(GEN_LONG[4], 0x1887f74f8dc71b10651);
+    }
+
+    #[test]
+    fn polymod_init_matches_bip93() {
+        // POLYMOD_INIT is unchanged from BIP 93; the GEN_REGULAR / GEN_LONG
+        // constants have their own value-equality tests.
+        assert_eq!(POLYMOD_INIT, 0x23181b3);
+    }
+
+    #[test]
+    fn bch_round_trip_regular() {
+        // Encode then verify a small data part. The verify call sees the
+        // full data + checksum, so polymod returns MT_REGULAR_CONST exactly.
+        let hrp = "mt";
+        let data: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let checksum = bch_create_checksum_regular(hrp, &data);
+        assert_eq!(checksum.len(), 13);
+
+        let mut full = data.clone();
+        full.extend_from_slice(&checksum);
+        assert!(bch_verify_regular(hrp, &full));
+    }
+
+    #[test]
+    fn bch_verify_rejects_single_char_tampering_regular() {
+        // Flipping one bit in one symbol breaks verification.
+        // (Spot check; BCH detects all single-symbol errors by construction.)
+        let hrp = "mt";
+        let data: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let checksum = bch_create_checksum_regular(hrp, &data);
+        let mut full = data.clone();
+        full.extend_from_slice(&checksum);
+        full[5] ^= 0x01;
+        assert!(!bch_verify_regular(hrp, &full));
+    }
+
+    #[test]
+    fn bch_zero_data_does_not_self_validate_regular() {
+        // The all-zeros data + all-zeros checksum must NOT validate, because
+        // MT_REGULAR_CONST was chosen NUMS-style to avoid this trivial case.
+        // Data length 8 is arbitrary; any non-empty zero-fill exhibits the same
+        // negative result. 8 echoes the regular-code known-vector data length.
+        let mut zero = vec![0u8; 8];
+        zero.extend(std::iter::repeat_n(0, 13));
+        assert!(!bch_verify_regular("mk", &zero));
+    }
+
+    #[test]
+    fn bch_round_trip_long() {
+        let hrp = "mt";
+        let data: Vec<u8> = (0..16).collect();
+        let checksum = bch_create_checksum_long(hrp, &data);
+        assert_eq!(checksum.len(), 15);
+        let mut full = data.clone();
+        full.extend_from_slice(&checksum);
+        assert!(bch_verify_long(hrp, &full));
+    }
+
+    #[test]
+    fn bch_zero_data_does_not_self_validate_long() {
+        // All-zeros must not validate, by NUMS construction of MT_LONG_CONST.
+        // Data length 16 is arbitrary; any non-empty zero-fill exhibits the same
+        // negative result. 16 echoes the long-code known-vector data length.
+        let mut zero = vec![0u8; 16];
+        zero.extend(std::iter::repeat_n(0, 15));
+        assert!(!bch_verify_long("mk", &zero));
+    }
+
+    /// BIP-173 `hrp_expand` for **`mt`**, not `mk` — and this is the test that
+    /// proves the port is a port rather than a copy.
+    ///
+    /// Each ASCII byte contributes its high 3 bits, then (after the `[0]`
+    /// separator) its low 5 bits:
+    ///   `'m'` = 0x6d → high 3 = 3, low 5 = 13
+    ///   `'t'` = 0x74 → high 3 = 3, low 5 = **20**   (mk's `'k'` = 0x6b gives 11)
+    ///
+    /// Ported verbatim it FAILED, which is exactly what a value that must
+    /// differ between the two formats should do.
+    #[test]
+    fn hrp_expand_mt_matches_spec() {
+        assert_eq!(hrp_expand(crate::consts::HRP), vec![3, 3, 0, 13, 20]);
+        // ...and it is NOT mk's, whose low-5 for 'k' is 11. A port that left the
+        // HRP behind would still checksum consistently with ITSELF and be
+        // unreadable by anything else.
+        assert_ne!(hrp_expand(crate::consts::HRP), vec![3, 3, 0, 13, 11]);
+    }
+}

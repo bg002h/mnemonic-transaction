@@ -1,1 +1,8 @@
 target/
+
+# Scratch test files written by review agents while they work. They live in
+# `tests/` because that is where a `cargo test` harness must be, and `git add
+# -A` swept five of them into a fold commit -- along with a report that should
+# have had its own. Ignored rather than deleted, because an agent may still be
+# mid-run and holding them open.
+crates/*/tests/zz_scratch_*.rs
