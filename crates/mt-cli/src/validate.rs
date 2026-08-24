@@ -608,11 +608,18 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
 /// it badly is the whole remedy. You warn about damage done and refuse damage
 /// you are about to do.
 ///
-/// **A PIPE AND A TERMINAL ARE NOT FILES.** `!is_file()` returns early, so
-/// `mt encode … | anything` and a bare terminal run are untouched. That is the
-/// near miss this guard is most likely to get wrong -- every guard added during
-/// the `mt` cycle broke on the input that merely resembled the hostile one --
-/// and there are tests for both.
+/// **KEYED ON MODE BITS, NOT ON `is_file()`** -- R0 round 0, finding I3. The
+/// first version asked `is_file()`, and this comment claimed a FIFO "is not a
+/// file whose mode means anything". **Measured false:** a NAMED fifo carries a
+/// mode (`mkfifo` gives 0666) and a third party reading it really does receive
+/// the bytes. Only the ANONYMOUS pipe behind `|` is 0600, which the mode test
+/// passes on its own.
+///
+/// **CHARACTER DEVICES ARE EXEMPT, and that exemption is load-bearing:**
+/// `/dev/null` is mode **0666**, so a mode-only check would refuse
+/// `mt encode … > /dev/null`. A terminal and `/dev/null` persist nothing, so
+/// neither can leak. There are tests for the FIFO, for `/dev/null`, and for the
+/// anonymous pipe.
 pub fn world_readable_stdout_guard(allow: bool) -> Result<(), Refusal> {
     if allow {
         return Ok(());
@@ -631,7 +638,8 @@ pub fn world_readable_stdout_guard(allow: bool) -> Result<(), Refusal> {
             // than refusing for a reason we cannot state.
             Err(_) => return Ok(()),
         };
-        if !md.file_type().is_file() {
+        use std::os::unix::fs::FileTypeExt;
+        if md.file_type().is_char_device() {
             return Ok(());
         }
         let mode = md.permissions().mode() & 0o777;

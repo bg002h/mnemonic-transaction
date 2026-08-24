@@ -1551,3 +1551,66 @@ fn does_not_refuse_a_pipe() {
         "the strings must still reach the pipe: {out}"
     );
 }
+
+// ── R0 round 0, finding I3 ───────────────────────────────────────────────────
+// The first §8.2h guard keyed on `is_file()`, and §8.2h's own text claimed a
+// FIFO "is not a file whose mode means anything". MEASURED FALSE: a NAMED fifo
+// carries a mode (0666 from mkfifo) and a third party reading it really does
+// receive the bytes. Only the ANONYMOUS pipe behind `|` is 0600.
+
+#[cfg(unix)]
+fn encode_to_sink(body: &str, extra: &[&str], sink: std::fs::File) -> (String, bool) {
+    let f = tmp(body);
+    let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"));
+    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.args(extra);
+    let out = c
+        .arg("--in")
+        .arg(f.path())
+        .stdout(std::process::Stdio::from(sink))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    (
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
+#[test]
+#[cfg(unix)]
+fn refuses_a_world_readable_named_fifo() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = base();
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("leak");
+    std::process::Command::new("mkfifo").arg(&p).status().unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666)).unwrap();
+    // O_RDWR: opening a FIFO write-only blocks until a reader arrives.
+    let sink = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&p)
+        .unwrap();
+
+    let (err, ok) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
+    assert!(
+        !ok,
+        "a 0666 named FIFO is readable by others and really leaks: {err}"
+    );
+}
+
+/// NEAR MISS, and the sharpest of them: `/dev/null` is mode **0666**. A guard
+/// reading only permission bits refuses `mt encode … > /dev/null`. Character
+/// devices persist nothing, so they are exempt.
+#[test]
+#[cfg(unix)]
+fn does_not_refuse_dev_null() {
+    let v = base();
+    let sink = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let (err, ok) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
+    assert!(ok, "/dev/null is 0666 but persists nothing: {err}");
+}

@@ -247,3 +247,13 @@ check = "src/main.rs::json_unsupported_guard"
 spec  = "§8.2h"
 test  = "refuses_a_world_readable_stdout"
 check = "src/validate.rs::world_readable_stdout_guard"
+
+# The SECOND §8.2h entry, same check, different destination -- R0 round 0 (I3).
+# The first guard keyed on `is_file()` and exempted every FIFO, on the stated
+# grounds that a FIFO "is not a file whose mode means anything". Measured false:
+# a NAMED fifo is 0666 and a third party reading it receives the bytes. Only the
+# ANONYMOUS pipe is 0600. Two destinations, one guard, two tests.
+[[refusal]]
+spec  = "§8.2h"
+test  = "refuses_a_world_readable_named_fifo"
+check = "src/validate.rs::world_readable_stdout_guard"
