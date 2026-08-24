@@ -2537,10 +2537,24 @@ exactly as permanent, as a machine-engraved one.
    way `me` does. A refusal naming a flag that does not exist is worse than one
    naming none: it sends the operator to `--help` to find it.
 
-   **Same test as §8.2g, same three cases.** `mode & 0o077 == 0` passes;
-   `S_ISFIFO` (a pipe) and a terminal are **not files** and MUST NOT be refused
-   — `mt encode … | mt qr` and a bare terminal run are both legitimate, and a
-   guard that catches them is worse than no guard.
+   **KEYED ON MODE BITS, NOT ON "is it a file".** `mode & 0o077 == 0` passes.
+   **CHARACTER DEVICES are exempt** — a terminal and `/dev/null` persist nothing,
+   so neither can leak.
+
+   > **CORRECTED 2026-08-24 by R0 round 0 (finding I3). The first version of this
+   > paragraph said `S_ISFIFO` "is not a file" and exempted every FIFO.** Measured
+   > false, and the measurement was cited as proof it could not happen:
+   >
+   > | destination | mode | leaks? |
+   > | --- | --- | --- |
+   > | anonymous pipe (`\|`) | **0600** | no — the mode test passes it unaided |
+   > | **named FIFO** (`mkfifo`) | **0666** | **yes — a third party reading it receives the bytes, verified** |
+   > | `/dev/null` | **0666** | no — character device, persists nothing |
+   > | regular file | umask-dependent | yes when group/other-readable |
+   >
+   > So the exemption belongs to **character devices**, not to FIFOs. And it is
+   > load-bearing in the other direction too: `/dev/null` is 0666, so a mode-only
+   > check with no `S_ISCHR` exemption refuses `mt encode … > /dev/null`.
 
    **The persistence warning is NOT replaced by this.** A `0600` file still
    outlives the session, so `redirected_output_warning`'s advice to
