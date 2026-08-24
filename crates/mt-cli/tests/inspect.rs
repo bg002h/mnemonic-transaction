@@ -489,8 +489,11 @@ fn json_output_is_actually_json() {
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
 
+    // The WHOLE stream, not a slice: a caller pipes stdout, it does not go
+    // looking for the first brace.
     let v: serde_json::Value =
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON: {e}\n{text}"));
+    assert!(v["warnings"].is_array(), "warnings are not carried as data");
     // The rows a consumer needs, and the ones that must not be collapsed.
     assert!(v["txid"].is_string());
     assert!(v["outputs"].as_array().unwrap().len() == 2);

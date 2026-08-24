@@ -935,19 +935,56 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
         let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
         r.set = Some((set.chunks.len(), set.chunks.len()));
         r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
-        // `--json` is honoured HERE too. It was wired into `inspect` alone, so
-        // on this verb it parsed and did nothing -- the precise defect
-        // render_json's own doc comment condemns, one commit after I wrote the
-        // condemnation.
-        let _ = write!(
-            stderr,
-            "{}",
-            if args.json {
-                report::render_json(&r)
-            } else {
-                r.render()
+        // `--json` is honoured HERE too, and is decided BEFORE anything is
+        // written. It was wired into `inspect` alone, so on this verb it parsed
+        // and did nothing -- the precise defect render_json's own doc comment
+        // condemns. The first fix then wrote the PROSE report and the JSON to
+        // the same stream, which does not parse: a machine-readable flag whose
+        // output has to be sliced before it parses is not machine-readable.
+        //
+        // With --json the prose becomes DATA, inside the one document.
+        if args.json {
+            let mut warnings: Vec<String> = Vec::new();
+            if node.is_none() {
+                warnings.push(
+                    "no bitcoind reachable: nothing here is confirmed against the chain"
+                        .to_string(),
+                );
             }
-        );
+            for n in &read.notes {
+                warnings.push(format!(
+                    "pos {}: you typed {}, mt read it as {}",
+                    n.position, n.from, n.to
+                ));
+            }
+            for u in &set.unreadable {
+                warnings.push(format!(
+                    "string {} could not be read: {}",
+                    u.input_position, u.reason
+                ));
+            }
+            for d in &set.duplicates {
+                warnings.push(format!(
+                    "chunk {} was present twice; kept the copy needing {} corrections",
+                    d.index + 1,
+                    d.kept_corrections
+                ));
+            }
+            let _ = write!(stderr, "{}", report::render_json(&r, &warnings));
+            let out = std::io::stdout();
+            let mut out = out.lock();
+            let mut hex = String::with_capacity(set.bytes.len() * 2);
+            {
+                use core::fmt::Write as _;
+                for b in &set.bytes {
+                    let _ = write!(hex, "{b:02x}");
+                }
+            }
+            let _ = writeln!(out, "{hex}");
+            return Ok(());
+        }
+
+        let _ = write!(stderr, "{}", r.render());
 
         // §6a's no-node warning belongs here for the same reason the report
         // does: this reader is a recoverer, and four rows just said UNKNOWN.
@@ -963,8 +1000,6 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
                 )
             );
         }
-        transliteration_notices(&read, &mut stderr);
-        transliteration_notices(&read, &mut stderr);
         transliteration_notices(&read, &mut stderr);
         set_notices(&set, &mut stderr);
         margin_report(&set.chunks, &mut stderr);
@@ -1101,17 +1136,40 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     r.set = Some((set.chunks.len(), set.chunks.len()));
     r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
 
+    let mut warnings: Vec<String> = Vec::new();
+    if node.is_none() {
+        warnings
+            .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
+    }
+    for n in &read.notes {
+        warnings.push(format!(
+            "pos {}: you typed {}, mt read it as {}",
+            n.position, n.from, n.to
+        ));
+    }
+    for u in &set.unreadable {
+        warnings.push(format!(
+            "string {} could not be read: {}",
+            u.input_position, u.reason
+        ));
+    }
+
     let out = std::io::stdout();
     let mut out = out.lock();
     let _ = write!(
         out,
         "{}",
         if args.json {
-            report::render_json(&r)
+            report::render_json(&r, &warnings)
         } else {
             r.render()
         }
     );
+    // With --json the prose is IN the document; emitting it again as prose
+    // would put non-JSON on the same stream a caller is parsing.
+    if args.json {
+        return Ok(());
+    }
 
     // The no-node warning goes to STDERR, in its recovery-time wording.
     if node.is_none() {
@@ -1214,6 +1272,15 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         let distinct: std::collections::BTreeSet<usize> =
             readable.iter().map(|c| c.header.index).collect();
 
+        // DISTINCT unreadable strings, by content. Two copies of one unreadable
+        // plate are ONE chunk you hold, not two -- counting them twice
+        // reproduced the very false "nothing is necessarily lost" this branch
+        // was rewritten to eliminate, through a duplicate rather than through a
+        // line count.
+        let distinct_unreadable: std::collections::BTreeSet<&str> = unreadable
+            .iter()
+            .filter_map(|&p| strings.get(p - 1).map(String::as_str))
+            .collect();
         let list = unreadable
             .iter()
             .map(usize::to_string)
@@ -1222,12 +1289,12 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         // An unreadable string could be ANY chunk, so the best case is that each
         // one is a chunk not otherwise present.
         let accounted = match count {
-            Some(n) if distinct.len() + unreadable.len() >= n => format!(
+            Some(n) if distinct.len() + distinct_unreadable.len() >= n => format!(
                 "This set has {n} chunks. {} read cleanly and {} did not, so every \
                  chunk COULD be here — nothing is necessarily lost, and one plate \
                  is damaged past what BCH can repair.",
                 distinct.len(),
-                unreadable.len()
+                distinct_unreadable.len()
             ),
             Some(n) => format!(
                 "This set has {n} chunks and only {} distinct ones are present, \
@@ -1235,7 +1302,7 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
                  PLATE IS MISSING AS WELL AS DAMAGED — re-reading the damaged one \
                  will not complete the set.",
                 distinct.len(),
-                unreadable.len()
+                distinct_unreadable.len()
             ),
             None => "mt cannot tell how many chunks this set should have: no string \
                      read cleanly, and the count is written on the strings."

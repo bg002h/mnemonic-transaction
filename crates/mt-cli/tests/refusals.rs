@@ -1220,6 +1220,14 @@ fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
     let f = tmp(&strings.join("\n"));
 
     // decode: a report exists, so --json must produce JSON on stderr.
+    //
+    // **PARSE THE WHOLE STREAM, NOT A SLICE OF IT.** The first version of this
+    // test found the first `{` and the last `}` and parsed between them — which
+    // is what an implementation does, not what a CALLER does. It therefore
+    // passed while `decode --json` was writing the PROSE report and the JSON to
+    // the same stream, in the tool's core offline scenario, so the thing a
+    // caller actually receives did not parse at all. A test shaped to the
+    // implementation instead of to the consumer.
     let out = mt()
         .args(["decode", "--json", "--bitcoin-cli", OFFLINE, "--in"])
         .arg(f.path())
@@ -1227,10 +1235,21 @@ fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
         .unwrap();
     assert!(out.status.success());
     let err = String::from_utf8(out.stderr).unwrap();
-    let brace = err.find('{').expect("no JSON on decode's stderr");
-    let end = err.rfind('}').unwrap();
-    serde_json::from_str::<serde_json::Value>(&err[brace..=end])
-        .unwrap_or_else(|e| panic!("decode --json is not JSON: {e}\n{err}"));
+    let v: serde_json::Value = serde_json::from_str(&err)
+        .unwrap_or_else(|e| panic!("decode --json's stderr is not one JSON document: {e}\n{err}"));
+    // ...and the prose that used to be interleaved is now DATA inside it.
+    assert!(v["warnings"].is_array(), "warnings are not carried: {err}");
+    assert!(
+        v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap_or("").contains("no bitcoind reachable")),
+        "the offline warning was dropped rather than carried: {err}"
+    );
+    // stdout stays the artifact.
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.trim().chars().all(|c| c.is_ascii_hexdigit()));
 
     // verify and encode: no report, so the flag must REFUSE rather than sit inert.
     for verb in ["verify", "encode"] {
