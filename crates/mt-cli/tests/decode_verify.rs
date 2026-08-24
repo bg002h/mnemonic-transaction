@@ -1177,3 +1177,122 @@ fn a_full_string_with_a_misread_separator_is_still_repaired() {
         );
     }
 }
+
+/// **The two-suspect case, which no test covered and whose fix therefore did not
+/// take.** An uneven set has one legitimately short final chunk; a SECOND short
+/// string anywhere used to flip every suspect back into the accusing branch, so
+/// `mt` told the operator that a 79-character chunk designed to be 79 characters
+/// was missing six of them.
+///
+/// The first fix extracted a per-suspect closure and left the whole-set
+/// condition `short_count == 1` inside it — textually the same predicate it
+/// replaced. **Moving code without moving its assumptions.**
+#[test]
+fn two_short_strings_do_not_make_mt_accuse_the_final_chunk() {
+    let mut s = strings_of("uneven");
+    let last = s.len() - 1;
+    let short = s[last].chars().count();
+    let modal = s[0].chars().count();
+    assert!(short < modal, "the fixture is not uneven");
+
+    // The final chunk damaged past t = 4...
+    let mut c: Vec<char> = s[last].chars().collect();
+    for i in [10, 20, 30, 40, 50, 60] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    s[last] = c.into_iter().collect();
+    // ...and a SECOND, independent failure: a dropped character elsewhere.
+    s[1] = format!("{}{}", &s[1][..40], &s[1][41..]);
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+
+    assert!(
+        !err.contains(&format!("{short} characters (expected {modal})")),
+        "mt quantified a deficit on the chunk that is short BY DESIGN:\n{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "string {}: {short} characters, where this set's usual",
+            last + 1
+        )),
+        "the final chunk should be described, not accused:\n{err}"
+    );
+    // The genuinely-dropped character is still named as one.
+    assert!(
+        err.contains("string 2:"),
+        "the real length error is missing:\n{err}"
+    );
+}
+
+/// **`mtl` plus a LENGTH-CHANGING second defect**, which is what the finding
+/// actually reproduced and what the first fix missed: it required the malformed
+/// candidate's length to equal a full string's EXACTLY, so it fired only when
+/// the second defect was a same-length substitution.
+#[test]
+fn a_misread_separator_with_a_dropped_character_is_named_not_treated_as_elided() {
+    let mut s = strings_of("even");
+    let t = format!("mtl{}", &s[0][3..]);
+    s[0] = format!("{}{}", &t[..40], &t[41..]); // one character SHORT
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("the `1` of `mt1` misread"),
+        "mt treated it as an elided line again:\n{err}"
+    );
+    assert!(
+        !err.contains("characters are EXTRA"),
+        "mt prepended a prefix and then blamed the plate for the length:\n{err}"
+    );
+}
+
+/// **A duplicated UNREADABLE line must not be counted as two chunks.** The
+/// distinct-chunk fix counted readable chunks distinctly and then added
+/// `unreadable.len()` — so two copies of one damaged plate reproduced the very
+/// "nothing is necessarily lost" claim the fix was written to eliminate,
+/// through a duplicate instead of through a line count.
+#[test]
+fn a_duplicated_unreadable_line_is_one_chunk_not_two() {
+    let mut s = strings_of("even");
+    let mut c: Vec<char> = s[4].chars().collect();
+    for i in [10, 20, 30, 40, 50, 60] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    let damaged: String = c.into_iter().collect();
+    // Drop chunk 4 entirely, and supply the damaged plate TWICE.
+    s.remove(3);
+    s.pop();
+    s.push(damaged.clone());
+    s.push(damaged);
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        !flat.contains("so every chunk COULD be here"),
+        "two copies of one unreadable plate were counted as two chunks:\n{err}"
+    );
+    assert!(
+        flat.contains("A PLATE IS MISSING AS WELL AS DAMAGED"),
+        "the true state is not named:\n{err}"
+    );
+}

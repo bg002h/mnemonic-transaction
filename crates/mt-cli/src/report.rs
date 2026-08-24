@@ -404,7 +404,7 @@ fn btc(sats: u64) -> String {
 /// is emitted as a STRING per input rather than folded away, because the whole
 /// point of the three columns is that a consumer can tell a fetched value from
 /// a claimed one.
-pub fn render_json(r: &Report) -> String {
+pub fn render_json(r: &Report, warnings: &[String]) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
     let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
@@ -472,7 +472,17 @@ pub fn render_json(r: &Report) -> String {
     let _ = writeln!(s, "  ],");
     // The STATUS string, not a boolean. §6a rules five states and collapsing
     // them is how "pending" becomes "dead".
-    let _ = writeln!(s, "  \"status\": \"{:?}\"", r.status);
+    let _ = writeln!(s, "  \"status\": \"{:?}\",", r.status);
+    // WARNINGS GO INSIDE THE DOCUMENT. `decode --json` wrote valid JSON and then
+    // plain prose to the SAME stream, so the thing a caller actually receives
+    // does not parse -- in the tool's core offline scenario. A machine-readable
+    // flag whose output must be sliced before it parses is not machine-readable.
+    let _ = writeln!(s, "  \"warnings\": [");
+    for (i, w) in warnings.iter().enumerate() {
+        let comma = if i + 1 == warnings.len() { "" } else { "," };
+        let _ = writeln!(s, "    \"{}\"{comma}", esc(w));
+    }
+    let _ = writeln!(s, "  ]");
     let _ = writeln!(s, "}}");
     s
 }

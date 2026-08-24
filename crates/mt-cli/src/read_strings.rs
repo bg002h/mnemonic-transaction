@@ -337,9 +337,18 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
     // accusing branch — mt inventing a character deficit on the one plate that
     // is short by design. The two events are independent: a missing character on
     // one plate says nothing about another.
-    let short_count = strings.iter().filter(|x| x.chars().count() < modal).count();
-    let is_ambiguous =
-        |len: usize| len < modal && short_count == 1 && !final_chunk_seen_at_modal_length;
+    // **NO AGGREGATE CONDITION IN A PER-SUSPECT TEST.** The first attempt at this
+    // extracted a closure and left `short_count == 1` inside it — textually the
+    // same whole-set predicate it replaced — so a SECOND short string anywhere
+    // flipped every suspect back into the accusing branch, and mt again told the
+    // operator that the legitimately-short final chunk was missing 6 characters.
+    // Moving code without moving its assumptions.
+    //
+    // The question per suspect is simply: could THIS string be the final chunk?
+    // It could, if it is short and no readable string has already claimed that
+    // role at modal length. Two short strings means mt can tell even less, not
+    // more — so hedging on both is right, and accusing either is not.
+    let is_ambiguous = |len: usize| len < modal && !final_chunk_seen_at_modal_length;
 
     let mut list = String::new();
     {
@@ -348,7 +357,7 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
             if is_ambiguous(*len) {
                 let _ = writeln!(
                     list,
-                    "string {n}: {len} characters, and every other string is {modal}"
+                    "string {n}: {len} characters, where this set's usual length is {modal}"
                 );
                 continue;
             }
@@ -431,10 +440,22 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
         .filter(|c| c.starts_with("mt1"))
         .map(|c| c.chars().count())
         .max();
+    // **NEARER FULL THAN ELIDED, not exactly full.** Requiring an exact match
+    // meant the guard fired only when the second defect was a same-length
+    // SUBSTITUTION — and the case it was written for is a DROPPED CHARACTER,
+    // which changes the length, so the string fell through to the identical
+    // pre-fix misdiagnosis. A full string and an elided one differ by
+    // ELIDED_DROP characters; anything within half that of full is full.
+    let looks_full = |n: usize| {
+        full_len.is_some_and(|f| {
+            let midpoint = f.saturating_sub(ELIDED_DROP / 2);
+            n >= midpoint
+        })
+    };
     if let Some(bad) = candidates.iter().find(|c| {
         c.len() > 3
             && (c.starts_with("mtl") || c.starts_with("mti"))
-            && full_len.is_some_and(|n| c.chars().count() == n)
+            && looks_full(c.chars().count())
     }) {
         return Err(Refusal::new(
             verb,
