@@ -16,7 +16,45 @@ use mt_codec::string_layer::pipeline;
 const ELIDED_DROP: usize = 3 + INVARIANT_PREFIX_SYMBOLS;
 
 /// Split raw input into candidate strings, normalise, and restore elision.
-pub fn read(raw: &str, verb: &str) -> Result<Vec<String>, Refusal> {
+/// A character `mt` transliterated before the codec ever saw the string.
+///
+/// **Kept separate from BCH's corrections, and reported separately.** They are
+/// different events: BCH repairs DAMAGE, and spends one of four repairs doing
+/// it; this replaces a character that CANNOT OCCUR in a valid string, and costs
+/// nothing. Folding them together made the margin report say `read 6` about a
+/// plate where the operator had typed `b` — naming a symbol that was never
+/// engraved and never typed, which is precisely what a before-and-after exists
+/// to prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transliteration {
+    /// 1-based position in the whole string.
+    pub position: usize,
+    /// What the operator typed.
+    pub from: char,
+    /// What mt read it as, chosen because the result decoded.
+    pub to: char,
+}
+
+/// What `read` produced, and what it had to change to get there.
+#[derive(Debug, Clone, Default)]
+pub struct ReadStrings {
+    /// The strings, restored and transliterated.
+    pub strings: Vec<String>,
+    /// Every character mt replaced, in input order.
+    pub notes: Vec<Transliteration>,
+    /// Did every transliterated string then decode with **zero** BCH
+    /// corrections?
+    ///
+    /// **The notice claimed the reading was free and could not know it.** Where
+    /// a confusable has two candidates and NEITHER is what was engraved — the
+    /// character was simply damaged into a `b` — mt picks one, BCH repairs it,
+    /// and repairs spent on mt's own guess are repairs the operator's real
+    /// damage no longer has. Saying "this cost you nothing" there is false in
+    /// the direction that matters.
+    pub free: bool,
+}
+
+pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
     let mut candidates: Vec<String> = Vec::new();
 
     // 1. SPLIT on any whitespace run containing a newline. Spaces and tabs
@@ -82,20 +120,57 @@ pub fn read(raw: &str, verb: &str) -> Result<Vec<String>, Refusal> {
     let restored = restore_elided(candidates, verb)?;
 
     // §1.1e step 4: only now, and only for strings that did NOT parse.
-    Ok(restored
+    let mut notes = Vec::new();
+    let mut free = true;
+    let strings = restored
         .into_iter()
         .map(|s| {
             if pipeline::decode_chunk(&s, None).is_ok() {
                 return s; // step 3: it parsed as written. STOP.
             }
-            match positional_autocorrect(&s) {
-                Some(fixed) if pipeline::decode_chunk(&fixed, None).is_ok() => fixed,
-                // The repair did not help, so the ORIGINAL is what the operator
-                // typed and what every later message should talk about.
-                _ => s,
+            // **THE CANDIDATE THAT COSTS BCH THE LEAST, not the first that
+            // decodes.** Both readings of `b` may decode — one because it is
+            // right, the other because BCH REPAIRED THE BAD GUESS, spending
+            // repairs the operator's own damage will need later. Taking the
+            // first found meant mt guessed `6`, BCH corrected both positions
+            // back off it, and the notice still claimed the reading was free.
+            //
+            // Fewest corrections is the honest tie-break: a candidate needing
+            // zero is the character that was actually engraved.
+            match positional_autocorrect(&s)
+                .into_iter()
+                .filter_map(|c| {
+                    pipeline::decode_chunk(&c, None)
+                        .ok()
+                        .map(|d| (d.corrected, c))
+                })
+                .min_by_key(|(n, _)| *n)
+                .map(|(_, c)| c)
+            {
+                Some(fixed) => {
+                    if pipeline::decode_chunk(&fixed, None).is_ok_and(|d| d.corrected > 0) {
+                        free = false;
+                    }
+                    for (i, (a, b)) in s.chars().zip(fixed.chars()).enumerate() {
+                        if a != b {
+                            notes.push(Transliteration {
+                                position: i + 1,
+                                from: a,
+                                to: b,
+                            });
+                        }
+                    }
+                    fixed
+                }
+                None => s,
             }
         })
-        .collect())
+        .collect();
+    Ok(ReadStrings {
+        strings,
+        notes,
+        free,
+    })
 }
 
 /// §1.1e's **positional autocorrect** — a repair attempted on FAILURE, never a
@@ -112,26 +187,64 @@ pub fn read(raw: &str, verb: &str) -> Result<Vec<String>, Refusal> {
 /// string as written, and only then attempt correction. A preprocessing pass
 /// would silently rewrite valid input, and `b` → `6` on a string that was
 /// already right changes the payload.
-fn positional_autocorrect(s: &str) -> Option<String> {
-    let mut out: Vec<char> = s.chars().collect();
-    let mut touched = false;
-    for (i, c) in out.iter_mut().enumerate() {
-        let fixed = match (i, *c) {
-            // The separator: `mt1`, misread as `mtl` / `mti`.
-            (2, 'l' | 'i' | 'I') => Some('1'),
-            // Past the prefix, these four cannot occur in bech32 at all.
-            (n, '1') if n > 2 => Some('l'),
-            (n, 'i') if n > 2 => Some('l'),
-            (n, 'o') if n > 2 => Some('0'),
-            (n, 'b') if n > 2 => Some('6'),
-            _ => None,
-        };
-        if let Some(f) = fixed {
-            *c = f;
-            touched = true;
+fn positional_autocorrect(s: &str) -> Vec<String> {
+    // Each confusable, with EVERY in-alphabet character it could have been.
+    // `1`, `b`, `i` and `o` are absent from bech32 precisely because they are
+    // confusable when engraved, so any of them on the page is a misreading —
+    // but `b` has TWO candidates, and mt's own refusal remedy says so: it lists
+    // `b/6` and `8/b`.
+    //
+    // **Guessing one of the two was wrong in both directions.** Picking `6`
+    // reported a symbol that was never engraved and never typed, and a wrong
+    // pick is itself an error that burns one of the four BCH repairs. But
+    // leaving `b` alone is worse than either: `b` IS NOT IN THE ALPHABET, so the
+    // string does not convert to symbols at all and BCH never gets to see it.
+    //
+    // So mt does not choose — it TRIES BOTH and keeps whichever decodes. The
+    // checksum is the arbiter, which is what it is for.
+    fn candidates_for(i: usize, c: char) -> &'static [char] {
+        match (i, c) {
+            // The separator: that position IS the `1` of `mt1`. `I` is
+            // unreachable — `read` lowercases before this runs.
+            (2, 'l' | 'i') => &['1'],
+            (n, '1') if n > 2 => &['l'],
+            (n, 'i') if n > 2 => &['l'],
+            (n, 'o') if n > 2 => &['0'],
+            (n, 'b') if n > 2 => &['6', '8'],
+            _ => &[],
         }
     }
-    touched.then(|| out.into_iter().collect())
+
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: Vec<Vec<char>> = vec![chars.clone()];
+    let mut touched = false;
+    for (i, c) in chars.iter().enumerate() {
+        let cands = candidates_for(i, *c);
+        if cands.is_empty() {
+            continue;
+        }
+        touched = true;
+        // Cross-product, bounded: only `b` branches, and a string needing more
+        // than a handful of repairs is past t = 4 anyway. The cap keeps a
+        // pathological input from exploding the search.
+        const MAX: usize = 64;
+        let mut next = Vec::with_capacity(out.len() * cands.len());
+        for base in &out {
+            for &cand in cands {
+                if next.len() >= MAX {
+                    break;
+                }
+                let mut v = base.clone();
+                v[i] = cand;
+                next.push(v);
+            }
+        }
+        out = next;
+    }
+    if !touched {
+        return Vec::new();
+    }
+    out.into_iter().map(|v| v.into_iter().collect()).collect()
 }
 
 /// Could this line be mt1 material — full or elided?
@@ -205,10 +318,40 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
         return None;
     }
 
+    // **IS IT AMBIGUOUS, OR CAN mt TELL?** Exactly one string per UNEVEN set is
+    // short by design, so a single short string could be a miscount or could be
+    // the final chunk — and guessing either way is a false statement about the
+    // operator's steel.
+    //
+    // The readable strings carry their own `index` and `count`. **If one of them
+    // IS the final chunk** (`index == count − 1`) **and is the modal length**,
+    // then this set's payload divides evenly, no chunk is short, and a short
+    // string is a genuine miscount. If no readable string is the last one, the
+    // short unreadable one may well be it.
+    let final_chunk_seen_at_modal_length = strings.iter().any(|x| {
+        pipeline::decode_chunk(x, None)
+            .is_ok_and(|c| c.header.index + 1 == c.header.count && x.chars().count() == modal)
+    });
+    // **PER SUSPECT, not per set.** Requiring a single suspect meant a SECOND
+    // failure elsewhere flipped the legitimately-short final chunk back into the
+    // accusing branch — mt inventing a character deficit on the one plate that
+    // is short by design. The two events are independent: a missing character on
+    // one plate says nothing about another.
+    let short_count = strings.iter().filter(|x| x.chars().count() < modal).count();
+    let is_ambiguous =
+        |len: usize| len < modal && short_count == 1 && !final_chunk_seen_at_modal_length;
+
     let mut list = String::new();
     {
         use core::fmt::Write as _;
         for (n, len) in &suspect {
+            if is_ambiguous(*len) {
+                let _ = writeln!(
+                    list,
+                    "string {n}: {len} characters, and every other string is {modal}"
+                );
+                continue;
+            }
             let (word, delta) = if *len < modal {
                 ("MISSING", modal - len)
             } else {
@@ -222,25 +365,7 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
         }
     }
 
-    // **IS IT AMBIGUOUS, OR CAN mt TELL?** Exactly one string per UNEVEN set is
-    // short by design, so a single short string could be a miscount or could be
-    // the final chunk — but that is decidable, and guessing either way is a
-    // false statement about the operator's steel.
-    //
-    // The readable strings carry their own `index` and `count`. **If one of them
-    // IS the final chunk** (`index == count − 1`) **and is the modal length**,
-    // then this set's payload divides evenly, no chunk is short, and a short
-    // string is a genuine miscount. If no readable string is the last one, the
-    // short unreadable one may well be it, and mt says so rather than accusing
-    // the plate.
-    let final_chunk_seen_at_modal_length = strings.iter().any(|x| {
-        pipeline::decode_chunk(x, None)
-            .is_ok_and(|c| c.header.index + 1 == c.header.count && x.chars().count() == modal)
-    });
-    let ambiguous = suspect.len() == 1
-        && suspect[0].1 < modal
-        && strings.iter().filter(|x| x.chars().count() < modal).count() == 1
-        && !final_chunk_seen_at_modal_length;
+    let ambiguous = suspect.len() == 1 && is_ambiguous(suspect[0].1);
 
     Some(
         Refusal::new(
@@ -291,6 +416,47 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
 /// elided. **Mixed input is legal** — an operator who elides "after a while"
 /// produces exactly that.
 fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Refusal> {
+    // A line that BEGINS `mt` but is not `mt1` is a misread separator that the
+    // repair could not confirm — because the line carries a second defect too.
+    // It is NOT an elided line, and treating it as one prepends 11 characters
+    // and then accuses the plate of having "10 characters EXTRA" when it is in
+    // fact one SHORT. Recognise the shape and say so.
+    // ...but ONLY when its LENGTH says it is a full string. An elided line is
+    // bare bech32 symbols, and `m`, `t` and `l` are all in that alphabet, so
+    // roughly one in 32,768 begins `mtl` legitimately — and refusing THAT is
+    // the same near-miss defect in the other direction. A full string is
+    // ELIDED_DROP characters longer than an elided one, which settles it.
+    let full_len = candidates
+        .iter()
+        .filter(|c| c.starts_with("mt1"))
+        .map(|c| c.chars().count())
+        .max();
+    if let Some(bad) = candidates.iter().find(|c| {
+        c.len() > 3
+            && (c.starts_with("mtl") || c.starts_with("mti"))
+            && full_len.is_some_and(|n| c.chars().count() == n)
+    }) {
+        return Err(Refusal::new(
+            verb,
+            "§1.1e",
+            format!(
+                "a string begins `{}` — the `1` of `mt1` misread, and something \
+                 else wrong too",
+                &bad[..3]
+            ),
+            "mt tried the obvious repair (that character is the `1` of the `mt1` \
+             prefix) and the string still did not read, so there is a SECOND \
+             defect on the same plate. mt stops rather than treating it as an \
+             ELIDED line — which is what a line not beginning `mt1` normally is, \
+             and which would prepend 11 characters and then report a length error \
+             about a plate that is one character short.",
+        )
+        .with_remedy(
+            "Re-read that plate. Its first three characters are `mt1` — an `m`, a \
+             `t`, and the DIGIT one.",
+        ));
+    }
+
     let full = candidates.iter().find(|s| s.starts_with("mt1"));
 
     let Some(full) = full else {
@@ -370,7 +536,7 @@ mod tests {
 
     #[test]
     fn splits_on_lines() {
-        let got = read(&format!("{A}\n{B}\n"), "decode").unwrap();
+        let got = read(&format!("{A}\n{B}\n"), "decode").unwrap().strings;
         assert_eq!(got, vec![A.to_string(), B.to_string()]);
     }
 
@@ -378,7 +544,7 @@ mod tests {
     /// strings out of a terminal and they arrive as one line.
     #[test]
     fn splits_a_single_line_blob_at_each_prefix() {
-        let got = read(&format!("{A}{B}"), "decode").unwrap();
+        let got = read(&format!("{A}{B}"), "decode").unwrap().strings;
         assert_eq!(got, vec![A.to_string(), B.to_string()]);
     }
 
@@ -392,13 +558,16 @@ mod tests {
             .map(|c| c.iter().collect::<String>())
             .collect::<Vec<_>>()
             .join(" ");
-        assert_eq!(read(&grouped, "decode").unwrap(), vec![A.to_string()]);
+        assert_eq!(
+            read(&grouped, "decode").unwrap().strings,
+            vec![A.to_string()]
+        );
     }
 
     #[test]
     fn normalises_case() {
         assert_eq!(
-            read(&A.to_uppercase(), "decode").unwrap(),
+            read(&A.to_uppercase(), "decode").unwrap().strings,
             vec![A.to_string()]
         );
     }
@@ -407,7 +576,7 @@ mod tests {
     fn restores_an_elided_line() {
         let elided = &B[ELIDED_DROP..];
         assert_eq!(
-            read(&format!("{A}\n{elided}\n"), "decode").unwrap(),
+            read(&format!("{A}\n{elided}\n"), "decode").unwrap().strings,
             vec![A.to_string(), B.to_string()]
         );
     }
@@ -416,7 +585,9 @@ mod tests {
     /// input is legal rather than an error.
     #[test]
     fn accepts_mixed_full_and_elided() {
-        let got = read(&format!("{A}\n{B}\n{}\n", &B[ELIDED_DROP..]), "decode").unwrap();
+        let got = read(&format!("{A}\n{B}\n{}\n", &B[ELIDED_DROP..]), "decode")
+            .unwrap()
+            .strings;
         assert_eq!(got.len(), 3);
         assert!(got.iter().all(|s| s.starts_with("mt1")));
         assert_eq!(got[2], B);

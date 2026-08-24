@@ -268,15 +268,17 @@ pub fn malleability_caveat() -> String {
 /// disk that outlives the session.
 pub fn redirected_output_warning() -> crate::refusal::Warning {
     crate::refusal::Warning::new(
-        "the file you just wrote is BEARER, exactly like the plate.",
-        "mt sent the strings to a file rather than a terminal. Anyone who reads \
-         that file can broadcast this transaction — it is the engraving, in a \
-         form that copies itself.\n\
+        "the strings just left this terminal — and they are BEARER, exactly \
+         like the plate.",
+        "stdout is not a terminal, so the strings went somewhere that keeps them \
+         — a file, a pipe, or another program. Wherever that is, anyone who \
+         reads it can broadcast this transaction: it is the engraving, in a form \
+         that copies itself.\n\
          \n\
-         When the plates are cut and verified, DESTROY IT: `shred -u <file>` on \
-         Linux, `rm -P <file>` on macOS. Plain `rm` unlinks the name and leaves \
-         the bytes. And check it is not already in a backup, a sync folder, or \
-         your editor's undo history.",
+         If it landed in a FILE, destroy it once the plates are cut and \
+         verified: `shred -u <file>` on Linux, `rm -P <file>` on macOS. Plain \
+         `rm` unlinks the name and leaves the bytes. And check it is not already \
+         in a backup, a sync folder, or your editor's undo history.",
     )
 }
 

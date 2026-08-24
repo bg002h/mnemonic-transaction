@@ -218,3 +218,20 @@ check = "src/validate.rs::require_psbt_input_values"
 spec  = "§10.10"
 test  = "refuses_a_pasted_txid_by_name"
 check = "src/main.rs::txid_paste_guard"
+
+# §10.10's txid guard on the READING verbs. A txid reaches them as easily as
+# encode -- more easily, since `inspect` is the verb a recoverer is pointed at
+# and a txid is what a block explorer shows them.
+[[refusal]]
+spec  = "§10.10"
+test  = "a_pasted_txid_is_named_on_every_verb"
+check = "src/main.rs::txid_paste_guard"
+
+# A flag that cannot work must REFUSE rather than sit inert. `--json` was wired
+# into `inspect` alone, so on three verbs it parsed and did nothing -- and a
+# caller who asks for machine output and gets prose with exit 0 will parse
+# something out of the prose.
+[[refusal]]
+spec  = "§10.10"
+test  = "json_works_where_there_is_a_report_and_refuses_where_there_is_not"
+check = "src/main.rs::json_unsupported_guard"

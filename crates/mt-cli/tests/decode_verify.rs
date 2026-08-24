@@ -915,10 +915,19 @@ fn too_many_typos_names_the_string_and_says_every_plate_is_accounted_for() {
         flat.contains("string 2 could not be read"),
         "the unreadable string is not identified:\n{err}"
     );
+    // **THE CLAIM MUST BE ABOUT CHUNKS, NOT LINES TYPED.** An earlier version
+    // said "EVERY PLATE IS ACCOUNTED FOR. Nothing is lost" on the strength of
+    // `strings.len()` — so typing one plate twice and skipping the next, the
+    // likeliest slip in the procedure, kept the count at n while a chunk was
+    // genuinely absent, and mt asserted the opposite categorically.
     assert!(
-        flat.contains("EVERY PLATE IS ACCOUNTED FOR"),
+        flat.contains("so every chunk COULD be here"),
         "the clause that turns 'go and find a plate' into 're-read this one' is \
-         missing:\n{err}"
+         missing, or overclaims:\n{err}"
+    );
+    assert!(
+        !flat.contains("Nothing is lost —") || flat.contains("nothing is necessarily lost"),
+        "mt asserted nothing is lost, categorically:\n{err}"
     );
     assert!(
         flat.contains("0/o") || flat.contains("confusable"),

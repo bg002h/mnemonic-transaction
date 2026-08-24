@@ -1193,3 +1193,205 @@ fn refuses_a_pasted_txid_by_name() {
         "the refusal must name how to get the actual transaction: {err}"
     );
 }
+
+/// **`--json` was wired into `inspect` only** — the precise defect
+/// `render_json`'s own doc comment condemns, one commit after that comment was
+/// written. A caller who asks for machine output and gets prose with exit 0 will
+/// parse *something* out of the prose.
+///
+/// It works where there is a report to serialise, and REFUSES where there is
+/// not. Doing nothing quietly is the defect; the absent feature is not.
+#[test]
+fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
+    let corpus: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let strings: Vec<String> = corpus["vectors"][0]["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    let f = tmp(&strings.join("\n"));
+
+    // decode: a report exists, so --json must produce JSON on stderr.
+    let out = mt()
+        .args(["decode", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    let brace = err.find('{').expect("no JSON on decode's stderr");
+    let end = err.rfind('}').unwrap();
+    serde_json::from_str::<serde_json::Value>(&err[brace..=end])
+        .unwrap_or_else(|e| panic!("decode --json is not JSON: {e}\n{err}"));
+
+    // verify and encode: no report, so the flag must REFUSE rather than sit inert.
+    for verb in ["verify", "encode"] {
+        let out = mt()
+            .args([verb, "--json", "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(!out.status.success(), "{verb} accepted --json silently");
+        assert!(err.contains("--json has no meaning"), "{verb}: {err}");
+    }
+}
+
+/// A pasted txid reaches the READING verbs as easily as `encode` — more easily,
+/// since `inspect` is the verb a recoverer is pointed at and a txid is what an
+/// explorer shows them.
+#[test]
+fn a_pasted_txid_is_named_on_every_verb() {
+    let v = base();
+    let tx: bitcoin::Transaction = deserialize(&hex_to_bytes(&s(&v, "raw_hex"))).unwrap();
+    let txid = tx.compute_txid().to_string();
+    for verb in ["decode", "verify", "inspect"] {
+        let f = tmp(&txid);
+        let out = mt()
+            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(!out.status.success(), "{verb} accepted a txid");
+        assert!(
+            err.contains("REFUSED — §10.10,") && err.contains("transaction ID"),
+            "{verb}: {err}"
+        );
+    }
+}
+
+/// **`b` has TWO in-alphabet originals and mt does not choose between them.**
+/// mt's own refusal remedy lists both `b/6` and `8/b`, so a `b` on the page is a
+/// misread `6` OR a misread `8` — and `b` is not in the bech32 alphabet at all,
+/// so leaving it alone is not an option either: the string would not convert to
+/// symbols and BCH would never see it.
+///
+/// mt tries every candidate and keeps **the one that costs the checksum least**,
+/// then says what it did — in a notice of its own, because this is not damage
+/// and must not be charged to the 4-symbol budget.
+#[test]
+fn b_is_resolved_by_the_checksum_not_by_a_guess() {
+    let corpus: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut strings: Vec<String> = corpus["vectors"][0]["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+
+    // A REALISTIC misreading: replace genuine `6`s, which is what an operator
+    // writing `b` for `6` produces. (Substituting over some other character is
+    // damage, not a misreading, and mt reports it as such — the branch below.)
+    let mut c: Vec<char> = strings[0].chars().collect();
+    let mut n = 0;
+    for ch in c.iter_mut().skip(3) {
+        if n == 2 {
+            break;
+        }
+        if *ch == '6' {
+            *ch = 'b';
+            n += 1;
+        }
+    }
+    assert_eq!(n, 2, "the fixture contains no `6` to misread");
+    strings[0] = c.into_iter().collect();
+
+    let f = tmp(&strings.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        out.status.success(),
+        "two misread `6`s were not resolved:\n{err}"
+    );
+
+    assert!(
+        err.contains("CHARACTERS mt READ DIFFERENTLY"),
+        "the transliteration was not reported:\n{err}"
+    );
+    assert!(
+        err.contains("you typed b, mt read it as 6"),
+        "the notice must name what the OPERATOR typed, not only mt's reading:\n{err}"
+    );
+    // It cost nothing, and mt may say so only because the reading checksums.
+    assert!(
+        err.contains("This cost NONE of the 4-symbol repair budget"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("CORRECTION APPLIED"),
+        "a correct reading should need no BCH repair at all:\n{err}"
+    );
+}
+
+/// The other branch, and the one the claim used to lie about: when the character
+/// was DAMAGED rather than misread, neither candidate checksums on its own, BCH
+/// repairs whichever mt chose, and **those repairs come out of the operator's
+/// budget**. mt must not call that free.
+#[test]
+fn a_damaged_character_reported_as_b_is_not_called_free() {
+    let corpus: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut strings: Vec<String> = corpus["vectors"][0]["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    // Overwrite characters that are NOT `6` or `8`, so neither reading is right.
+    let mut c: Vec<char> = strings[0].chars().collect();
+    let mut n = 0;
+    for ch in c.iter_mut().skip(20) {
+        if n == 2 {
+            break;
+        }
+        if *ch != '6' && *ch != '8' && *ch != 'b' {
+            *ch = 'b';
+            n += 1;
+        }
+    }
+    assert_eq!(n, 2);
+    strings[0] = c.into_iter().collect();
+
+    let f = tmp(&strings.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("NEITHER reading checksummed on its own"),
+        "mt did not say the repair came from the budget:\n{err}"
+    );
+    assert!(
+        !err.contains("This cost NONE"),
+        "mt claimed a reading was free while BCH was repairing it:\n{err}"
+    );
+}
