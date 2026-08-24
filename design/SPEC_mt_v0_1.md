@@ -2505,6 +2505,49 @@ exactly as permanent, as a machine-engraved one.
    and nothing about backups or directories it has passed through. It is the
    check that is available, not a guarantee.
 
+2h. **`stdout` is a world-readable FILE** → **refuse**, unless
+   `--allow-world-readable`. Operator ruling 2026-08-24, from the Goal 1 journey
+   walk (F-244), scoped *"all of `me`, and `mt` too"*.
+
+   §8.2g's other half. `mt` warned in detail that the INPUT file was readable by
+   others and then wrote the strings — *the engraving itself* — to a file it
+   never mentioned again. The warning fired on **any** redirection and never read
+   the mode, so it cried wolf on a `0600` file and warned no harder on a `0644`
+   one.
+
+       mt: stdout is a world-readable file, and these strings are BEARER.
+
+         Anyone who can read that file can broadcast this transaction. It is
+         the engraving, in a form that copies itself.
+
+           umask 077                 then re-run; the shell creates it 0600
+           chmod 600 <file>          then re-run — `>` keeps the mode
+           --allow-world-readable    proceed anyway
+
+   **WARN ON INPUT, REFUSE ON OUTPUT — the asymmetry is deliberate.** An input
+   file's exposure has **already happened**; refusing to read it prevents
+   nothing and blocks the operator's work. An output file's exposure is one
+   `write` away and has not happened yet, so declining to create it badly is the
+   whole of the remedy. **You warn about damage done and refuse damage you are
+   about to do.**
+
+   **THE REMEDIES ARE THE SHELL'S, because `mt encode` HAS NO `--out`** — and a
+   first draft of this section advised one. `mt`'s stdout **is** the strings by
+   ruling (§3b), so there is no path for `mt` to open and create owner-only the
+   way `me` does. A refusal naming a flag that does not exist is worse than one
+   naming none: it sends the operator to `--help` to find it.
+
+   **Same test as §8.2g, same three cases.** `mode & 0o077 == 0` passes;
+   `S_ISFIFO` (a pipe) and a terminal are **not files** and MUST NOT be refused
+   — `mt encode … | mt qr` and a bare terminal run are both legitimate, and a
+   guard that catches them is worse than no guard.
+
+   **The persistence warning is NOT replaced by this.** A `0600` file still
+   outlives the session, so `redirected_output_warning`'s advice to
+   `shred -u` it once the plates are cut and verified still fires on every
+   redirection. The refusal is **additive**: a new check about *who can read it*,
+   beside the existing warning about *how long it lasts*.
+
 3. **An unsigned or unfinalized transaction offered for engraving** → refuse. It
    cannot be broadcast, so it is not a backup.
 4. **Read the locktime FIELDS, compare against the chain if a node is there,
