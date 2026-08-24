@@ -494,7 +494,13 @@ fn json_output_is_actually_json() {
     // The rows a consumer needs, and the ones that must not be collapsed.
     assert!(v["txid"].is_string());
     assert!(v["outputs"].as_array().unwrap().len() == 2);
-    assert!(v["set_id"].is_string(), "the set id is what groups plates");
+    // The PREFIX, not the hex id: what the plates actually share, and what
+    // `encode` prints at cutting time. A hex id is a true fact about the set
+    // that appears nowhere the operator can look.
+    assert!(
+        v["set_prefix"].is_string(),
+        "the set prefix is what groups plates"
+    );
     // §6a rules FIVE liveness states; a boolean would erase the difference
     // between "pending" and "dead", which is the one that matters.
     assert!(v["status"].is_string(), "status must not be a boolean");
@@ -513,12 +519,19 @@ fn json_output_is_actually_json() {
     );
 }
 
-/// The set id is what an operator groups plates BY, and the row omitted it.
+/// The SET row names the set in **the form that is on the steel** — the 8
+/// characters after `mt1` that every plate shares. It omitted the identity
+/// entirely at first, then carried it as a HEX id, which is a true fact about
+/// the set and appears nowhere an operator can see: they are holding plates.
 #[test]
-fn the_set_row_carries_the_set_id() {
+fn the_set_row_names_the_set_the_way_the_steel_does() {
     let (out, _) = inspect_offline("even");
     assert!(
-        out.contains("set 0x2dcf2"),
-        "the set id is missing from the SET row:\n{out}"
+        out.contains("all begin mt1p9h8jqq9"),
+        "the SET row does not name the shared prefix:\n{out}"
+    );
+    assert!(
+        !out.contains("0x2dcf2"),
+        "the row shows a hex id the operator cannot match against steel:\n{out}"
     );
 }

@@ -137,7 +137,14 @@ pub struct Report {
     /// said only how many strings were present, so someone holding two
     /// engravings had nothing on screen to match against their steel — and the
     /// `PREFIX` mt prints at encode time is derived from exactly this id.
-    pub set_id: Option<u32>,
+    /// The 8 characters after `mt1` that every string in this set shares.
+    ///
+    /// **The form that is ON THE STEEL.** The row first printed the 20-bit id in
+    /// HEX, which is a true fact about the set and appears nowhere an operator
+    /// can see — they are holding plates, and what those plates share is the
+    /// PREFIX. `encode` already prints exactly this at cutting time, so the two
+    /// ends of the tool now name the set the same way.
+    pub set_prefix: Option<String>,
     /// Outputs, as (address-or-script, satoshis).
     pub outputs: Vec<(String, u64)>,
     /// Fee in satoshis, and the weakest provenance of any input.
@@ -287,7 +294,7 @@ impl Report {
         Self {
             txid: txid.to_string(),
             set: None,
-            set_id: None,
+            set_prefix: None,
             outputs: tx
                 .output
                 .iter()
@@ -325,10 +332,10 @@ impl Report {
     pub fn render(&self) -> String {
         let mut s = String::new();
         if let Some((n, _)) = self.set {
-            let _ = match self.set_id {
-                Some(id) => writeln!(
+            let _ = match &self.set_prefix {
+                Some(p) => writeln!(
                     s,
-                    "mt1 SET   {n} strings, 1..{n} all present, set {id:#07x}"
+                    "mt1 SET   {n} strings, 1..{n} all present, all begin mt1{p}"
                 ),
                 None => writeln!(s, "mt1 SET   {n} strings, 1..{n} all present"),
             };
@@ -411,12 +418,12 @@ pub fn render_json(r: &Report) -> String {
             let _ = writeln!(s, "  \"strings\": null,");
         }
     }
-    match r.set_id {
-        Some(id) => {
-            let _ = writeln!(s, "  \"set_id\": \"{id:#07x}\",");
+    match &r.set_prefix {
+        Some(p) => {
+            let _ = writeln!(s, "  \"set_prefix\": \"{p}\",");
         }
         None => {
-            let _ = writeln!(s, "  \"set_id\": null,");
+            let _ = writeln!(s, "  \"set_prefix\": null,");
         }
     }
     let _ = writeln!(s, "  \"outputs\": [");
@@ -476,7 +483,7 @@ pub fn render_json(r: &Report) -> String {
 /// cutting"*, which is useless to a recoverer: the engraving already exists, so
 /// that names a decision made years ago. Their decision is **broadcast or
 /// don't** — irreversible in the other direction.
-pub fn no_node_warning(lock: &Lock, txid: &str) -> String {
+pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -543,8 +550,15 @@ pub fn no_node_warning(lock: &Lock, txid: &str) -> String {
     let _ = writeln!(s, "               {txid}");
     // §10.20's caveat, at the ONE moment it is asked: the explorer has just been
     // named, and "no such transaction" is about to look like lost money.
-    let _ = writeln!(s);
-    let _ = write!(s, "{}", crate::blocks::malleability_caveat());
+    // ONLY WHERE IT CAN HAPPEN. Third-party malleability is a LEGACY-input
+    // property: a segwit signature commits to its own encoding, so a
+    // segwit-only transaction's txid cannot be altered this way. Printing the
+    // caveat regardless asserts a hazard the transaction does not have, on the
+    // one screen a recoverer reads in a panic.
+    if has_legacy {
+        let _ = writeln!(s);
+        let _ = write!(s, "{}", crate::blocks::malleability_caveat());
+    }
     s
 }
 
@@ -564,7 +578,7 @@ mod tests {
             let r = Report {
                 txid: "a".into(),
                 set: None,
-                set_id: None,
+                set_prefix: None,
                 outputs: vec![],
                 fee: None,
                 locktime: (lt, Chain { height: h, mtp: h }),
@@ -590,7 +604,7 @@ mod tests {
         let r = Report {
             txid: "abc".into(),
             set: None,
-            set_id: None,
+            set_prefix: None,
             outputs: vec![],
             fee: None,
             locktime: (Lock::Height(900_000), Chain::default()),
@@ -634,7 +648,7 @@ mod tests {
 
     #[test]
     fn no_node_warning_names_both_ways_out() {
-        let w = no_node_warning(&Lock::Height(900_000), "deadbeef");
+        let w = no_node_warning(&Lock::Height(900_000), "deadbeef", true);
         assert!(w.contains("run mt inspect again with a bitcoind"));
         assert!(w.contains("block explorer"));
         assert!(

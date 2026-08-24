@@ -208,6 +208,7 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 
 fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
+    json_unsupported_guard(args.json, "encode")?;
 
     let raw = match &args.r#in {
         Some(path) => std::fs::read(path).map_err(|e| {
@@ -251,7 +252,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
 
     separator_guard(&args.separator)?;
 
-    txid_paste_guard(&raw)?;
+    txid_paste_guard(&raw, "encode")?;
     let sniffed = input::sniff(&raw)?;
     let asserted = parse_input_values(&args.input_value)?;
     check_input_value_indices(&asserted, &args)?;
@@ -511,7 +512,15 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         // chain and printed the fee. What degrades on a raw transaction is
         // narrow, and A NODE CLOSES MOST OF IT; saying otherwise while doing
         // otherwise trains the operator to skim the warning.
-        let body = if fee_sat.is_some() {
+        // GATED ON WHERE THE VALUES CAME FROM, not on whether a fee could be
+        // computed. `--input-value` also produces a fee, and this branch then
+        // said "mt fetched each input's value, so the fee above is real" in the
+        // same run that printed OPERATOR-ASSERTED twice.
+        let all_from_chain = !values.is_empty()
+            && values
+                .iter()
+                .all(|v| v.is_some_and(|(_, p)| p == report::Provenance::ChainFetched));
+        let body = if all_from_chain {
             "A raw transaction carries its inputs' OUTPOINTS but not their VALUES, \
              so mt cannot compute the fee from it alone.\n\
              \n\
@@ -681,6 +690,11 @@ fn read_input(path: &Option<std::path::PathBuf>, verb: &str) -> Result<String, R
             buf
         }
     };
+    // A pasted TXID reaches the reading verbs as easily as `encode` -- more
+    // easily, since `inspect` is the verb a recoverer is pointed at and a txid
+    // is what an explorer shows them.
+    txid_paste_guard(&bytes, verb)?;
+
     // §8.9 binds the READING verbs too, and this is where it has to sit: an
     // operator who reaches for the wrong tool pastes ms1 into `mt decode`, and
     // every refusal below this point quotes what it saw.
@@ -776,6 +790,51 @@ fn symbol_char(v: u8) -> char {
 /// still means one of the two plates is closer to unrecoverable than the other,
 /// and an unreadable string means a plate is already scrap while the set as a
 /// whole is fine.
+/// What `mt` replaced before the codec ever saw the strings.
+///
+/// **Separate from the margin report, deliberately.** BCH repairs DAMAGE and
+/// spends one of four repairs doing it; this replaces a character that CANNOT
+/// OCCUR in a valid string, and costs nothing. Folding them together made the
+/// margin report say `read 6` about a plate where the operator typed `b`.
+fn transliteration_notices(read: &read_strings::ReadStrings, out: &mut impl Write) {
+    let notes = &read.notes;
+    if notes.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nCHARACTERS mt READ DIFFERENTLY. These are not in the mt1 alphabet at \
+         all, so\nthey cannot be what was engraved — mt tried every alternative \
+         and kept the one\nthat cost the checksum least:"
+    );
+    for n in notes {
+        let _ = writeln!(
+            out,
+            "  pos {:>3}   you typed {}, mt read it as {}",
+            n.position, n.from, n.to
+        );
+    }
+    if read.free {
+        let _ = writeln!(
+            out,
+            "\n  This cost NONE of the 4-symbol repair budget — the reading \
+             checksums\n  exactly, so it is what was engraved."
+        );
+    } else {
+        // The honest case, and the one worth saying out loud: neither reading
+        // was right, so BCH had to repair mt's choice — and repairs spent here
+        // are repairs the operator's own damage no longer has.
+        let _ = writeln!(
+            out,
+            "\n  NEITHER reading checksummed on its own, so BCH had to repair the \
+             one mt\n  chose — see the corrections below. That character was \
+             probably DAMAGED\n  rather than misread, and the repair came out of \
+             the 4-symbol budget."
+        );
+    }
+    let _ = writeln!(out);
+}
+
 fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut impl Write) {
     const T: usize = 4;
     for d in &set.duplicates {
@@ -848,7 +907,8 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "decode")?;
-    let strings = read_strings::read(&text, "decode")?;
+    let read = read_strings::read(&text, "decode")?;
+    let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
 
     // §1.1's LAST CHECK, before anything reaches stdout.
@@ -874,8 +934,20 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
         let node = node::Node::find(&args.bitcoin_cli);
         let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
         r.set = Some((set.chunks.len(), set.chunks.len()));
-        r.set_id = Some(set.chunks[0].header.chunk_set_id);
-        let _ = write!(stderr, "{}", r.render());
+        r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
+        // `--json` is honoured HERE too. It was wired into `inspect` alone, so
+        // on this verb it parsed and did nothing -- the precise defect
+        // render_json's own doc comment condemns, one commit after I wrote the
+        // condemnation.
+        let _ = write!(
+            stderr,
+            "{}",
+            if args.json {
+                report::render_json(&r)
+            } else {
+                r.render()
+            }
+        );
 
         // §6a's no-node warning belongs here for the same reason the report
         // does: this reader is a recoverer, and four rows just said UNKNOWN.
@@ -884,9 +956,16 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
             let _ = write!(
                 stderr,
                 "{}",
-                report::no_node_warning(&locktime::read(&tx), &txid)
+                report::no_node_warning(
+                    &locktime::read(&tx),
+                    &txid,
+                    tx.input.iter().any(|i| i.witness.is_empty()),
+                )
             );
         }
+        transliteration_notices(&read, &mut stderr);
+        transliteration_notices(&read, &mut stderr);
+        transliteration_notices(&read, &mut stderr);
         set_notices(&set, &mut stderr);
         margin_report(&set.chunks, &mut stderr);
     }
@@ -909,8 +988,10 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
 }
 
 fn verify(args: ReadArgs) -> Result<(), Refusal> {
+    json_unsupported_guard(args.json, "verify")?;
     let text = read_input(&args.r#in, "verify")?;
-    let strings = read_strings::read(&text, "verify")?;
+    let read = read_strings::read(&text, "verify")?;
+    let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
 
     // ...AND the reassembled transaction re-derives that id. This is the check
@@ -925,6 +1006,7 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
         "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
         set.chunks.len()
     );
+    transliteration_notices(&read, &mut stderr);
     set_notices(&set, &mut stderr);
     margin_report(&set.chunks, &mut stderr);
     let bytes = &set.bytes;
@@ -1001,7 +1083,8 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
 
 fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "inspect")?;
-    let strings = read_strings::read(&text, "inspect")?;
+    let read = read_strings::read(&text, "inspect")?;
+    let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
@@ -1016,7 +1099,7 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
 
     let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
     r.set = Some((set.chunks.len(), set.chunks.len()));
-    r.set_id = Some(set.chunks[0].header.chunk_set_id);
+    r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
 
     let out = std::io::stdout();
     let mut out = out.lock();
@@ -1037,9 +1120,14 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
         let _ = write!(
             stderr,
             "{}",
-            report::no_node_warning(&locktime::read(&tx), &txid)
+            report::no_node_warning(
+                &locktime::read(&tx),
+                &txid,
+                tx.input.iter().any(|i| i.witness.is_empty()),
+            )
         );
     }
+    transliteration_notices(&read, &mut std::io::stderr());
     set_notices(&set, &mut std::io::stderr());
     margin_report(&set.chunks, &mut std::io::stderr());
     Ok(())
@@ -1113,26 +1201,44 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         // did read. Without this mt cannot say "every plate is accounted for",
         // and that clause is the whole difference between "re-read one plate"
         // and "go and find a plate".
-        let count = strings
+        let readable: Vec<_> = strings
             .iter()
             .filter_map(|s| pipeline::decode_chunk(s, None).ok())
-            .map(|c| c.header.count)
-            .next();
+            .collect();
+        let count = readable.first().map(|c| c.header.count);
+        // DISTINCT CHUNKS, not lines typed. `strings.len()` counts what the
+        // operator entered, and the likeliest slip -- working from a stack,
+        // typing one plate twice and skipping the next -- keeps that count at n
+        // while a chunk is genuinely absent. mt then asserted "EVERY PLATE IS
+        // ACCOUNTED FOR. Nothing is lost", categorically, and wrong.
+        let distinct: std::collections::BTreeSet<usize> =
+            readable.iter().map(|c| c.header.index).collect();
 
         let list = unreadable
             .iter()
             .map(usize::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        // An unreadable string could be ANY chunk, so the best case is that each
+        // one is a chunk not otherwise present.
         let accounted = match count {
-            Some(n) if strings.len() >= n => format!(
-                "You typed {} strings and this set has {n} chunks, so EVERY PLATE \
-                 IS ACCOUNTED FOR. Nothing is lost — one of them is damaged past \
-                 what BCH can repair.",
-                strings.len()
+            Some(n) if distinct.len() + unreadable.len() >= n => format!(
+                "This set has {n} chunks. {} read cleanly and {} did not, so every \
+                 chunk COULD be here — nothing is necessarily lost, and one plate \
+                 is damaged past what BCH can repair.",
+                distinct.len(),
+                unreadable.len()
             ),
-            _ => "mt cannot tell how many chunks this set should have, because the \
-                  damaged string is where that count is written."
+            Some(n) => format!(
+                "This set has {n} chunks and only {} distinct ones are present, \
+                 even counting the {} unreadable string(s) as chunks you hold. SO A \
+                 PLATE IS MISSING AS WELL AS DAMAGED — re-reading the damaged one \
+                 will not complete the set.",
+                distinct.len(),
+                unreadable.len()
+            ),
+            None => "mt cannot tell how many chunks this set should have: no string \
+                     read cleanly, and the count is written on the strings."
                 .to_string(),
         };
 
@@ -1149,7 +1255,7 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
                  — a wrong guess produces a valid-looking string carrying the \
                  wrong bytes.\n\
                  \n\
-                 {accounted}"
+                 {accounted}{stack_hint}"
             ),
         )
         .with_remedy(
@@ -1287,7 +1393,7 @@ fn content_id_guard(
 /// itself prints in its `TX` row. Without this it fell through to "the bytes
 /// are valid hex but do not parse as a transaction", which is true and sends
 /// the operator to look at the wrong thing entirely.
-fn txid_paste_guard(raw: &[u8]) -> Result<(), Refusal> {
+fn txid_paste_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
     let text: String = core::str::from_utf8(raw)
         .unwrap_or("")
         .chars()
@@ -1297,7 +1403,7 @@ fn txid_paste_guard(raw: &[u8]) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
-        "encode",
+        verb,
         "§10.10",
         "this is a transaction ID (64 hex characters), not a transaction",
         "A txid NAMES a transaction; it does not contain one. mt engraves the \
@@ -1311,6 +1417,36 @@ fn txid_paste_guard(raw: &[u8]) -> Result<(), Refusal> {
         "Fetch the transaction: `bitcoin-cli getrawtransaction <txid>`, then pass \
          that. Or `bitcoin-cli finalizepsbt <psbt>` if you have not broadcast yet.",
     ))
+}
+
+/// A flag that cannot work must REFUSE, not sit there inert.
+///
+/// `--json` is meaningful on the two verbs that PRINT A REPORT (`inspect` and
+/// `decode`). On `encode` and `verify` there is no report to serialise —
+/// `encode`'s stdout is the strings and `verify`'s output is a verdict — so the
+/// flag has nothing to do.
+///
+/// **Doing nothing quietly is the defect, not the absence of the feature.** A
+/// caller who asks for machine output and receives prose with exit 0 will parse
+/// *something* out of it. Refusing tells them at once, in the only place they
+/// are looking.
+fn json_unsupported_guard(json: bool, verb: &str) -> Result<(), Refusal> {
+    if !json {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        format!("--json has no meaning for `{verb}`"),
+        "`--json` serialises the inspection REPORT, and this verb does not print \
+         one: `encode`'s stdout is the mt1 strings themselves, and `verify` \
+         answers with a verdict and a margin report.\n\
+         \n\
+         mt refuses rather than accepting the flag and ignoring it — a caller who \
+         asks for machine output and gets prose with exit 0 will parse something \
+         out of the prose.",
+    )
+    .with_remedy("Use `mt inspect --json` or `mt decode --json` for the report."))
 }
 
 /// A transaction's txid in display form.
