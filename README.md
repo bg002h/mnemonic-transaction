@@ -47,11 +47,21 @@ cargo nextest run --locked          # the suite
 ./scripts/mutate-refusals.sh        # every refusal test goes RED without its check
 ./scripts/journeys.sh               # three operator journeys, end to end
 ./scripts/check-provenance.sh       # the copied design files still match source
+MT_RT=./rt ./scripts/live-smoke-test.sh   # ...and would a real node accept it?
 ```
 
-The first four run in CI. **`check-provenance.sh` cannot** — it compares against
-a second repository that CI does not check out, and it says so rather than
-pretending otherwise.
+The first four run in CI. The last two **cannot**, and each says so rather than
+pretending otherwise: `check-provenance.sh` compares against a second repository
+CI does not check out, and `live-smoke-test.sh` needs a funded `bitcoind`.
+
+**`live-smoke-test.sh` is the one that answers the question none of the others
+can.** Every gate above tests `mt` against `mt`: the pinned vectors came from an
+encoder using the same constants the decoder does, the journeys assert on `mt`'s
+own output, and the node stubs answer what they were told to. So it runs the
+whole thing end to end against a real node — encode a finalized PSBT, verify the
+strings, inspect them, decode them back — and finishes at
+`testmempoolaccept`. **Bytes recovered from the engraving are a transaction
+Bitcoin Core will accept, or the script exits non-zero.**
 
 `mutate-refusals.sh` is the one worth understanding. A refusal test that passes
 against code with its check deleted is testing nothing, so the script neuters
