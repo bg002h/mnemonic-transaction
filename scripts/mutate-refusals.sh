@@ -25,6 +25,23 @@
 #   - A `check` shared by two entries is neutered twice, once per entry. Both
 #     runs are still valid controls; neither is redundant, since they run
 #     different tests.
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS SCRIPT OWNS THE WORKING TREE WHILE IT RUNS.
+#
+# Between every entry it does `rm -rf <crate>/src` and restores from a copy, so
+# for the whole run the tree is not yours. DO NOT EDIT, FORMAT, COMMIT OR STASH
+# anything in this repository until it exits.
+#
+# What happens if you do (observed 2026-08-24): a restore lands on top of your
+# edit and reverts it, silently and partially -- other changes in the same file
+# survive, so the tree still compiles and nothing announces the loss. Worse, the
+# run reports a FAILURE that is not real, because the tree it tested was half
+# your edit and half its own restore, and "the test is RED before any mutation"
+# looks identical whether the cause is a broken test or a corrupted checkout.
+#
+# Safest is to run it against a COPY of the repo, where it cannot reach your
+# working files at all.
+# ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

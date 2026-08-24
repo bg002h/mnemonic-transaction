@@ -131,6 +131,13 @@ pub struct Report {
     pub txid: String,
     /// Strings in the set, when the caller had strings.
     pub set: Option<(usize, usize)>,
+    /// The 20-bit `chunk_set_id` every string in this set carries.
+    ///
+    /// **Printed, because it is what an operator groups plates BY.** The row
+    /// said only how many strings were present, so someone holding two
+    /// engravings had nothing on screen to match against their steel — and the
+    /// `PREFIX` mt prints at encode time is derived from exactly this id.
+    pub set_id: Option<u32>,
     /// Outputs, as (address-or-script, satoshis).
     pub outputs: Vec<(String, u64)>,
     /// Fee in satoshis, and the weakest provenance of any input.
@@ -280,6 +287,7 @@ impl Report {
         Self {
             txid: txid.to_string(),
             set: None,
+            set_id: None,
             outputs: tx
                 .output
                 .iter()
@@ -317,7 +325,13 @@ impl Report {
     pub fn render(&self) -> String {
         let mut s = String::new();
         if let Some((n, _)) = self.set {
-            let _ = writeln!(s, "mt1 SET   {n} strings, 1..{n} all present");
+            let _ = match self.set_id {
+                Some(id) => writeln!(
+                    s,
+                    "mt1 SET   {n} strings, 1..{n} all present, set {id:#07x}"
+                ),
+                None => writeln!(s, "mt1 SET   {n} strings, 1..{n} all present"),
+            };
         }
         let _ = writeln!(s, "TX        {}", self.txid);
 
@@ -372,13 +386,97 @@ fn btc(sats: u64) -> String {
     format!("{}.{:08} BTC", sats / 100_000_000, sats % 100_000_000)
 }
 
+/// The report as JSON, for `--json`.
+///
+/// **The flag parsed and did nothing**, so a caller who passed it got prose and
+/// no error — worse than the flag not existing, because a script that asks for
+/// machine output and receives human output will parse *something* out of it.
+///
+/// Hand-rolled rather than derived: `serde` is not a dependency of this crate,
+/// and every value here is a number or a string mt already formats. Provenance
+/// is emitted as a STRING per input rather than folded away, because the whole
+/// point of the three columns is that a consumer can tell a fetched value from
+/// a claimed one.
+pub fn render_json(r: &Report) -> String {
+    use core::fmt::Write as _;
+    let mut s = String::new();
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let _ = writeln!(s, "{{");
+    let _ = writeln!(s, "  \"txid\": \"{}\",", esc(&r.txid));
+    match r.set {
+        Some((n, _)) => {
+            let _ = writeln!(s, "  \"strings\": {n},");
+        }
+        None => {
+            let _ = writeln!(s, "  \"strings\": null,");
+        }
+    }
+    match r.set_id {
+        Some(id) => {
+            let _ = writeln!(s, "  \"set_id\": \"{id:#07x}\",");
+        }
+        None => {
+            let _ = writeln!(s, "  \"set_id\": null,");
+        }
+    }
+    let _ = writeln!(s, "  \"outputs\": [");
+    for (i, (addr, sats)) in r.outputs.iter().enumerate() {
+        let comma = if i + 1 == r.outputs.len() { "" } else { "," };
+        let _ = writeln!(
+            s,
+            "    {{ \"to\": \"{}\", \"sats\": {sats} }}{comma}",
+            esc(addr)
+        );
+    }
+    let _ = writeln!(s, "  ],");
+    match r.fee {
+        Some((sats, p)) => {
+            let _ = writeln!(
+                s,
+                "  \"fee\": {{ \"sats\": {sats}, \"verified\": {} }},",
+                p.is_verified()
+            );
+        }
+        None => {
+            let _ = writeln!(s, "  \"fee\": null,");
+        }
+    }
+    let (lock, chain) = &r.locktime;
+    let _ = writeln!(
+        s,
+        "  \"locktime\": {{ \"legend\": \"{}\", \"height\": {}, \"mtp\": {} }},",
+        esc(&lock.legend()),
+        chain.height.map_or("null".into(), |h| h.to_string()),
+        chain.mtp.map_or("null".into(), |m| m.to_string()),
+    );
+    let _ = writeln!(s, "  \"inputs\": [");
+    for (i, (op, val, prov)) in r.inputs.iter().enumerate() {
+        let comma = if i + 1 == r.inputs.len() { "" } else { "," };
+        let _ = writeln!(
+            s,
+            "    {{ \"outpoint\": \"{}\", \"sats\": {}, \"provenance\": \"{:?}\", \
+             \"verified\": {} }}{comma}",
+            esc(op),
+            val.map_or("null".into(), |v| v.to_string()),
+            prov,
+            prov.is_verified()
+        );
+    }
+    let _ = writeln!(s, "  ],");
+    // The STATUS string, not a boolean. §6a rules five states and collapsing
+    // them is how "pending" becomes "dead".
+    let _ = writeln!(s, "  \"status\": \"{:?}\"", r.status);
+    let _ = writeln!(s, "}}");
+    s
+}
+
 /// §6a's no-node warning, in its **recovery-time** wording.
 ///
 /// The encode-time version closes *"consider re-running with a node before
 /// cutting"*, which is useless to a recoverer: the engraving already exists, so
 /// that names a decision made years ago. Their decision is **broadcast or
 /// don't** — irreversible in the other direction.
-pub fn no_node_warning(locktime: u32, txid: &str) -> String {
+pub fn no_node_warning(lock: &Lock, txid: &str) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -397,14 +495,27 @@ pub fn no_node_warning(locktime: u32, txid: &str) -> String {
         s,
         "           - was this transaction already broadcast?           UNKNOWN"
     );
-    let _ = writeln!(
-        s,
-        "           - has the locktime passed?                          UNKNOWN"
-    );
-    let _ = writeln!(
-        s,
-        "             locked to block {locktime}, current height unknown"
-    );
+    // ROUTED THROUGH `Lock`, not the raw u32. This line interpolated
+    // `nLockTime` unconditionally, so a transaction whose own LOCKTIME row read
+    // `NO TIMELOCK` was told, a few lines later in the SAME run, that it was
+    // "locked to block 0" — mt contradicting itself about the one fact §8.4
+    // calls the most actionable on the plate.
+    match lock {
+        Lock::None | Lock::NotEnforced(_) => {
+            let _ = writeln!(
+                s,
+                "           - has the locktime passed?                          N/A"
+            );
+            let _ = writeln!(s, "             {}", lock.report_row(Chain::default()));
+        }
+        _ => {
+            let _ = writeln!(
+                s,
+                "           - has the locktime passed?                          UNKNOWN"
+            );
+            let _ = writeln!(s, "             {}", lock.report_row(Chain::default()));
+        }
+    }
     let _ = writeln!(
         s,
         "           - what fee does it pay?                             UNKNOWN"
@@ -430,6 +541,10 @@ pub fn no_node_warning(locktime: u32, txid: &str) -> String {
     );
     let _ = writeln!(s, "           - look this txid up in any block explorer:");
     let _ = writeln!(s, "               {txid}");
+    // §10.20's caveat, at the ONE moment it is asked: the explorer has just been
+    // named, and "no such transaction" is about to look like lost money.
+    let _ = writeln!(s);
+    let _ = write!(s, "{}", crate::blocks::malleability_caveat());
     s
 }
 
@@ -449,6 +564,7 @@ mod tests {
             let r = Report {
                 txid: "a".into(),
                 set: None,
+                set_id: None,
                 outputs: vec![],
                 fee: None,
                 locktime: (lt, Chain { height: h, mtp: h }),
@@ -474,6 +590,7 @@ mod tests {
         let r = Report {
             txid: "abc".into(),
             set: None,
+            set_id: None,
             outputs: vec![],
             fee: None,
             locktime: (Lock::Height(900_000), Chain::default()),
@@ -517,7 +634,7 @@ mod tests {
 
     #[test]
     fn no_node_warning_names_both_ways_out() {
-        let w = no_node_warning(900_000, "deadbeef");
+        let w = no_node_warning(&Lock::Height(900_000), "deadbeef");
         assert!(w.contains("run mt inspect again with a bitcoind"));
         assert!(w.contains("block explorer"));
         assert!(

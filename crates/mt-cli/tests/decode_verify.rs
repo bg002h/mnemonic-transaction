@@ -979,3 +979,118 @@ fn a_short_string_is_only_called_ambiguous_when_it_really_is() {
         "the honest limit is not stated:\n{err}"
     );
 }
+
+/// §1.1e's **positional autocorrect**, the one Important the folds kept losing.
+///
+/// The bech32 alphabet omits `1`, `b`, `i` and `o` *because they are confusable
+/// when engraved* — which is exactly what makes them repairable: past the `mt1`
+/// prefix each is a misreading with only one candidate. At index 2 the reverse
+/// holds, since that position IS the `1` of `mt1`.
+#[test]
+fn a_confusable_misreading_is_repaired_positionally() {
+    let mut s = strings_of("even");
+    // Substitute the four confusables into one string.
+    let mut c: Vec<char> = s[1].chars().collect();
+    let mut n = 0;
+    for ch in c.iter_mut().skip(3) {
+        match *ch {
+            '0' if n < 2 => {
+                *ch = 'o';
+                n += 1;
+            }
+            '6' if n < 4 => {
+                *ch = 'b';
+                n += 1;
+            }
+            'l' if n < 6 => {
+                *ch = '1';
+                n += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        n > 0,
+        "the fixture contains none of the confusable characters"
+    );
+    s[1] = c.into_iter().collect();
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{n} confusable substitutions were not repaired:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `mtl…` and `mti…` — the separator misread. That position IS the `1`.
+#[test]
+fn a_misread_separator_is_repaired() {
+    for wrong in ['l', 'i'] {
+        let mut s = strings_of("even");
+        s[0] = format!("mt{wrong}{}", &s[0][3..]);
+        let f = tmp_with(&s.join("\n"));
+        let out = mt()
+            .args(["verify", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mt{wrong} was not repaired to mt1:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// **AUTOCORRECT NEVER TOUCHES A STRING THAT ALREADY PARSES.** It is a repair
+/// attempted on failure, not a preprocessing pass — a pass would rewrite valid
+/// input, and `b` → `6` on a string that was already right changes the payload.
+///
+/// Asserted by DECODING: if any clean string were rewritten, the bytes would
+/// differ.
+#[test]
+fn autocorrect_leaves_a_clean_set_byte_identical() {
+    for label in ["even", "uneven"] {
+        let f = tmp_with(&strings_of(label).join("\n"));
+        let out = mt()
+            .args(["decode", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap().trim(),
+            raw_of(label),
+            "{label}: a clean set did not survive the autocorrect pass byte-identically"
+        );
+    }
+}
+
+/// And it must not rescue damage it cannot explain: a string with genuine
+/// substitutions beyond `t = 4` still fails, rather than being quietly rewritten
+/// into some other valid string.
+#[test]
+fn autocorrect_does_not_manufacture_a_valid_string() {
+    let mut s = strings_of("even");
+    let mut c: Vec<char> = s[3].chars().collect();
+    for i in [10, 20, 30, 40, 50, 60, 70] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    s[3] = c.into_iter().collect();
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "damage past t = 4 was silently accepted"
+    );
+}

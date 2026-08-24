@@ -1125,3 +1125,71 @@ fn the_legend_prints_the_amount_when_there_is_only_one_output() {
     );
     assert!(!err.contains("NO AMOUNT on the TO line"), "{err}");
 }
+
+/// **§8.2c's ACTUAL per-input requirement**, which has had no test since it was
+/// written. A fold check found that a `refusals.toml` entry I added claiming to
+/// cover it named `parse_input_values` — a **different guard with a confusingly
+/// similar name** ("per input, never a total"). `require_psbt_input_values` is
+/// live code, called on every PSBT, and sat outside both gates.
+///
+/// The rule: where a UTXO record is absent **from a PSBT**, `mt` requires the
+/// operator to supply that input's value, because §8.2b cannot check the
+/// balance or the fee without it.
+#[test]
+fn refuses_a_psbt_input_with_no_utxo_record_and_no_supplied_value() {
+    let v = base();
+    let mut psbt = bitcoin::Psbt::deserialize(&b64_decode(&s(&v, "finalized_psbt_b64"))).unwrap();
+    // Strip BOTH records from input 0, leaving its value bound by nothing.
+    psbt.inputs[0].non_witness_utxo = None;
+    psbt.inputs[0].witness_utxo = None;
+
+    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
+    assert_refused(&out, &err, ok, "§8.2c");
+    assert!(
+        err.contains("carries no UTXO record and no supplied value"),
+        "got: {err}"
+    );
+    assert!(
+        err.contains("--input-value"),
+        "the refusal must name the way out: {err}"
+    );
+}
+
+/// The control: supplying the value makes the same PSBT encode. Without it, a
+/// guard that refused unconditionally would pass the test above.
+#[test]
+fn supplying_the_missing_value_lets_that_psbt_encode() {
+    let v = base();
+    let mut psbt = bitcoin::Psbt::deserialize(&b64_decode(&s(&v, "finalized_psbt_b64"))).unwrap();
+    psbt.inputs[0].non_witness_utxo = None;
+    psbt.inputs[0].witness_utxo = None;
+
+    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &["--input-value", "0:3.0"]);
+    assert!(ok, "the supplied value was not accepted: {err}");
+    assert!(
+        out.lines().all(|l| l.starts_with("mt1")),
+        "no strings produced"
+    );
+    // ...and it renders as the operator's word, not as anything verified.
+    assert!(err.contains("OPERATOR-ASSERTED"), "{err}");
+}
+
+/// §10.10: a pasted **txid** is a thing an operator reaches for, because it is
+/// what an explorer shows and what `mt`'s own `TX` row prints. It used to fall
+/// through to "valid hex but does not parse as a transaction" — true, and it
+/// sends them to look at the wrong thing.
+#[test]
+fn refuses_a_pasted_txid_by_name() {
+    let v = base();
+    let tx: bitcoin::Transaction = deserialize(&hex_to_bytes(&s(&v, "raw_hex"))).unwrap();
+    let txid = tx.compute_txid().to_string();
+    assert_eq!(txid.len(), 64);
+
+    let (out, err, ok) = encode(&txid, &[]);
+    assert_refused(&out, &err, ok, "§10.10");
+    assert!(err.contains("transaction ID"), "got: {err}");
+    assert!(
+        err.contains("getrawtransaction"),
+        "the refusal must name how to get the actual transaction: {err}"
+    );
+}

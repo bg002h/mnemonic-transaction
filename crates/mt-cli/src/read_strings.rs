@@ -56,10 +56,71 @@ pub fn read(raw: &str, verb: &str) -> Result<Vec<String>, Refusal> {
         .with_remedy("Check the file, or pipe the strings in with `mt decode < file`."));
     }
 
+    // 2b. THE SEPARATOR, BEFORE ANYTHING READS THE PREFIX. `mtl…` and `mti…` are
+    //     the `1` of `mt1` misread, and every step below asks "does this start
+    //     with mt1" — so a candidate repaired later is a candidate that was
+    //     already mistaken for an elided line and had a prefix prepended to it.
+    //     This one substitution has to happen first.
+    for c in &mut candidates {
+        if c.len() > 3 && (c.starts_with("mtl") || c.starts_with("mti")) {
+            c.replace_range(2..3, "1");
+        }
+    }
+
     // 3. Restore elided lines from the set's full string (§3b).
     let restored = restore_elided(candidates, verb)?;
 
-    Ok(restored)
+    // §1.1e step 4: only now, and only for strings that did NOT parse.
+    Ok(restored
+        .into_iter()
+        .map(|s| {
+            if pipeline::decode_chunk(&s, None).is_ok() {
+                return s; // step 3: it parsed as written. STOP.
+            }
+            match positional_autocorrect(&s) {
+                Some(fixed) if pipeline::decode_chunk(&fixed, None).is_ok() => fixed,
+                // The repair did not help, so the ORIGINAL is what the operator
+                // typed and what every later message should talk about.
+                _ => s,
+            }
+        })
+        .collect())
+}
+
+/// §1.1e's **positional autocorrect** — a repair attempted on FAILURE, never a
+/// preprocessing pass.
+///
+/// The bech32 alphabet deliberately omits `1`, `b`, `i` and `o` **because they
+/// are confusable when engraved**, which is exactly what makes them repairable:
+/// past the `mt1` prefix, any of them is a misreading of something else, and
+/// there is only one candidate each. At index 2 the reverse holds — that
+/// position IS the `1` of `mt1`, so an `l`, `i` or `I` there is the same
+/// misreading in the other direction.
+///
+/// **Never touches a string that already parses.** §1.1e's order is: try the
+/// string as written, and only then attempt correction. A preprocessing pass
+/// would silently rewrite valid input, and `b` → `6` on a string that was
+/// already right changes the payload.
+fn positional_autocorrect(s: &str) -> Option<String> {
+    let mut out: Vec<char> = s.chars().collect();
+    let mut touched = false;
+    for (i, c) in out.iter_mut().enumerate() {
+        let fixed = match (i, *c) {
+            // The separator: `mt1`, misread as `mtl` / `mti`.
+            (2, 'l' | 'i' | 'I') => Some('1'),
+            // Past the prefix, these four cannot occur in bech32 at all.
+            (n, '1') if n > 2 => Some('l'),
+            (n, 'i') if n > 2 => Some('l'),
+            (n, 'o') if n > 2 => Some('0'),
+            (n, 'b') if n > 2 => Some('6'),
+            _ => None,
+        };
+        if let Some(f) = fixed {
+            *c = f;
+            touched = true;
+        }
+    }
+    touched.then(|| out.into_iter().collect())
 }
 
 /// Could this line be mt1 material — full or elided?

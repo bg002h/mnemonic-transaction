@@ -474,3 +474,51 @@ fn the_no_node_warning_is_absent_when_a_node_is_there() {
         "control failed"
     );
 }
+
+/// **`--json` parsed and did nothing**, so a caller asking for machine output
+/// got prose and no error — worse than the flag not existing, because a script
+/// will parse *something* out of prose.
+#[test]
+fn json_output_is_actually_json() {
+    let f = strings_file("even");
+    let out = mt()
+        .args(["inspect", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON: {e}\n{text}"));
+    // The rows a consumer needs, and the ones that must not be collapsed.
+    assert!(v["txid"].is_string());
+    assert!(v["outputs"].as_array().unwrap().len() == 2);
+    assert!(v["set_id"].is_string(), "the set id is what groups plates");
+    // §6a rules FIVE liveness states; a boolean would erase the difference
+    // between "pending" and "dead", which is the one that matters.
+    assert!(v["status"].is_string(), "status must not be a boolean");
+    // Provenance survives per input, because the three columns are the point.
+    let i0 = &v["inputs"][0];
+    assert!(i0["provenance"].is_string());
+    assert!(i0["verified"].is_boolean());
+    // ...and no prose leaked into the machine stream.
+    assert!(
+        !text.contains("WARNING"),
+        "prose on the JSON stream:\n{text}"
+    );
+    assert!(
+        !text.contains("UNKNOWN —"),
+        "prose on the JSON stream:\n{text}"
+    );
+}
+
+/// The set id is what an operator groups plates BY, and the row omitted it.
+#[test]
+fn the_set_row_carries_the_set_id() {
+    let (out, _) = inspect_offline("even");
+    assert!(
+        out.contains("set 0x2dcf2"),
+        "the set id is missing from the SET row:\n{out}"
+    );
+}

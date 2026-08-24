@@ -117,6 +117,7 @@ REQUIRED = [
     "§8.2c",  # input values: required when a PSBT lacks them, and PER INPUT
     "§1.1",   # the reassembled transaction must re-derive the content id
     "§1.1e",  # a MISSING or EXTRA character, named as such rather than as a lost plate
+    "§10.10", # a pasted txid, named rather than reported as unparseable hex
 ]
 cited = {e["spec"] for e in entries}
 for r in REQUIRED:
