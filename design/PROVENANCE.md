@@ -39,3 +39,20 @@ is auditable rather than folklore.
 
 **A defect found in any of the three BCH implementations triggers checking the
 other two**, and the check is recorded even when it finds nothing.
+
+## Pushing: no `ci/staging` ritual here, and that is not an oversight
+
+`mnemonic-engrave` requires a staging-branch dance because branch protection
+there demands a status context, and a context binds to a **commit SHA** rather
+than a branch — so a commit pushed straight to the default branch carries no
+check when the rule is evaluated and gets bypassed.
+
+**This repo has no branch protection**, because GitHub does not offer it on a
+private repository under this plan (`gh api …/branches/main/protection` → 403,
+*"Upgrade to GitHub Pro or make this repository public"*). So a direct push to
+`main` is the correct procedure, not a bypass, and there is no rule to satisfy.
+
+**Revisit this the moment the repo goes public.** Protection becomes available,
+and a direct push then starts silently bypassing whatever rule is added — which
+is exactly the failure mode `mnemonic-engrave` hit five times before the ritual
+was written down.
