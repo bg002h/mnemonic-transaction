@@ -146,6 +146,13 @@ struct EncodeArgs {
     #[arg(long)]
     elide_prefix: bool,
 
+    /// Proceed even though stdout is a world-readable file (§8.2h).
+    ///
+    /// `mt` refuses by default: the strings ARE the engraving, and `>` creates
+    /// a file at 0644 under the usual umask.
+    #[arg(long)]
+    allow_world_readable: bool,
+
     /// Suppress the inspection report. **Warnings and refusals are never
     /// suppressed**, on any verb.
     #[arg(long)]
@@ -603,6 +610,12 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         let _ = writeln!(stderr, "{}", blocks::redirected_output_warning());
     }
+
+    // §8.2h. The refusal is ADDITIVE to the warning above, not a replacement:
+    // that one is about how long the file LASTS (a 0600 file still outlives the
+    // session), this one is about who can READ it. Placed before a single byte
+    // of stdout is written, because a refusal must leave no artifact.
+    validate::world_readable_stdout_guard(args.allow_world_readable)?;
 
     // stdout: the strings, lowercase, and nothing else.
     let out = std::io::stdout();

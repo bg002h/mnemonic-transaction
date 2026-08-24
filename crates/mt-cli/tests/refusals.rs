@@ -1452,3 +1452,102 @@ fn a_sibling_format_is_named_rather_than_called_malformed() {
         );
     }
 }
+
+// ── §8.2h — stdout is a world-readable file ──────────────────────────────────
+//
+// §8.2g's other half, ruled 2026-08-24 from the Goal 1 journey walk (F-244).
+// `mt` warned in detail that the INPUT file was readable by others and then
+// wrote the strings -- the engraving itself -- to a file it never mentioned
+// again. The old warning fired on ANY redirection and never read the mode.
+//
+// WARN ON INPUT, REFUSE ON OUTPUT: an input's exposure has already happened, so
+// refusing prevents nothing; an output's has not, so declining to create it
+// badly is the whole remedy.
+
+/// Run `mt encode` with **stdout redirected to a file of the given mode**, which
+/// the shared `encode()` helper cannot do -- it pipes, and a pipe is precisely
+/// the case that must NOT be refused.
+#[cfg(unix)]
+fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let f = tmp(body);
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("strings.txt");
+    let sink = std::fs::File::create(&dest).unwrap();
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode)).unwrap();
+
+    let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"));
+    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.args(extra);
+    let out = c
+        .arg("--in")
+        .arg(f.path())
+        .stdout(std::process::Stdio::from(sink))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    (
+        std::fs::metadata(&dest).unwrap().len(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
+#[test]
+#[cfg(unix)]
+fn refuses_a_world_readable_stdout() {
+    let v = base();
+    let (written, err, ok) = encode_to_file(&s(&v, "finalized_psbt_b64"), &[], 0o644);
+    assert_refused("", &err, ok, "§8.2h");
+    assert_eq!(
+        written, 0,
+        "a refusal must produce NO artifact -- the strings are the engraving"
+    );
+    assert!(
+        err.contains("--allow-world-readable"),
+        "the refusal must name the override: {err}"
+    );
+}
+
+/// The override, so the refusal is a guard and not a wall.
+#[test]
+#[cfg(unix)]
+fn the_override_permits_a_world_readable_stdout() {
+    let v = base();
+    let (written, err, ok) = encode_to_file(
+        &s(&v, "finalized_psbt_b64"),
+        &["--allow-world-readable"],
+        0o644,
+    );
+    assert!(ok, "the override must permit the write: {err}");
+    assert!(written > 0, "the strings must actually be written");
+}
+
+// ── The NEAR MISSES. Both MUST pass. ─────────────────────────────────────────
+// Every guard added during the `mt` cycle broke on the input that merely
+// RESEMBLES the one the finding named. A finding hands you a hostile X and never
+// the legitimate near-X.
+
+/// `mt encode … > private.txt` with a tight umask is already safe.
+#[test]
+#[cfg(unix)]
+fn does_not_refuse_an_owner_only_stdout() {
+    let v = base();
+    let (written, err, ok) = encode_to_file(&s(&v, "finalized_psbt_b64"), &[], 0o600);
+    assert!(ok, "an owner-only file is exactly what we want: {err}");
+    assert!(written > 0, "the strings must actually be written");
+}
+
+/// `mt encode … | anything` has no file mode at all -- `S_ISFIFO`, not
+/// `S_ISREG`. Refusing here would break every pipeline `mt` exists to serve,
+/// including the `stdout is the artifact` contract itself.
+#[test]
+fn does_not_refuse_a_pipe() {
+    let v = base();
+    let (out, err, ok) = encode(&s(&v, "finalized_psbt_b64"), &[]);
+    assert!(ok, "a pipe is not a world-readable file: {err}");
+    assert!(
+        out.contains("mt1"),
+        "the strings must still reach the pipe: {out}"
+    );
+}

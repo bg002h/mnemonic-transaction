@@ -235,3 +235,15 @@ check = "src/main.rs::txid_paste_guard"
 spec  = "§10.10"
 test  = "json_works_where_there_is_a_report_and_refuses_where_there_is_not"
 check = "src/main.rs::json_unsupported_guard"
+
+# §8.2g's OTHER HALF, ruled 2026-08-24 from the Goal 1 journey walk (F-244).
+# `mt` warned that the INPUT file was readable by others and then wrote the
+# strings -- the engraving itself -- to a file it never mentioned again.
+#
+# WARN ON INPUT, REFUSE ON OUTPUT: an input's exposure has already happened, so
+# refusing prevents nothing; an output's has not, so declining to create it badly
+# is the whole remedy.
+[[refusal]]
+spec  = "§8.2h"
+test  = "refuses_a_world_readable_stdout"
+check = "src/validate.rs::world_readable_stdout_guard"

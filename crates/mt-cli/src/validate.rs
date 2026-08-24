@@ -595,6 +595,68 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
     ))
 }
 
+/// §8.2h — refuse when stdout is a **world-readable file**.
+///
+/// §8.2g's other half, ruled 2026-08-24 from the Goal 1 journey walk (F-244).
+/// `mt` warned in detail that the INPUT file was readable by others and then
+/// wrote the strings -- *the engraving itself* -- to a file it never mentioned
+/// again.
+///
+/// **WARN ON INPUT, REFUSE ON OUTPUT.** An input file's exposure has already
+/// happened, so refusing to read it prevents nothing and blocks the operator's
+/// work. An output file's exposure is one `write` away, so declining to create
+/// it badly is the whole remedy. You warn about damage done and refuse damage
+/// you are about to do.
+///
+/// **A PIPE AND A TERMINAL ARE NOT FILES.** `!is_file()` returns early, so
+/// `mt encode … | anything` and a bare terminal run are untouched. That is the
+/// near miss this guard is most likely to get wrong -- every guard added during
+/// the `mt` cycle broke on the input that merely resembled the hostile one --
+/// and there are tests for both.
+pub fn world_readable_stdout_guard(allow: bool) -> Result<(), Refusal> {
+    if allow {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::mem::ManuallyDrop;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::io::FromRawFd;
+        // ManuallyDrop: fd 1 belongs to the process; dropping the File would
+        // CLOSE stdout out from under the strings we are about to write.
+        let f = unsafe { ManuallyDrop::new(std::fs::File::from_raw_fd(1)) };
+        let md = match f.metadata() {
+            Ok(md) => md,
+            // Unreadable stdout is not evidence of exposure. Fail OPEN rather
+            // than refusing for a reason we cannot state.
+            Err(_) => return Ok(()),
+        };
+        if !md.file_type().is_file() {
+            return Ok(());
+        }
+        let mode = md.permissions().mode() & 0o777;
+        if mode & 0o077 == 0 {
+            return Ok(());
+        }
+        return Err(Refusal::new(
+            "encode",
+            "§8.2h",
+            format!("stdout is a file of mode {mode:04o} — readable by other users on this machine."),
+            "These strings ARE the engraving, and a finalized transaction is \
+             BEARER: anyone who can read that file can broadcast it.",
+        )
+        .with_remedy(
+            "mt has no --out: stdout IS the strings, by design (§3b). So the \
+             remedies are the shell's:\n\n  \
+             umask 077                 then re-run; the shell creates it 0600\n  \
+             chmod 600 <file>          then re-run -- `>` truncates but keeps the mode\n  \
+             --allow-world-readable    proceed anyway",
+        ));
+    }
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
 // ── §8.5 / §6a — what a node says about the inputs ───────────────────────────
 
 /// §8.5: `gettxout` returns `null` for an input **AND the parent is confirmed**

@@ -118,6 +118,11 @@ REQUIRED = [
     "§1.1",   # the reassembled transaction must re-derive the content id
     "§1.1e",  # a MISSING or EXTRA character, named as such rather than as a lost plate
     "§10.10", # a pasted txid, named rather than reported as unparseable hex
+    # ADDED 2026-08-24 by the Goal 1 journey walk (F-244). This one did NOT come
+    # from a widening -- the refusal did not exist until the walk found that mt
+    # warned about the INPUT file's mode and then wrote the strings to an output
+    # file it never mentioned again.
+    "§8.2h",  # stdout is a world-readable FILE: warn on input, refuse on output
 ]
 cited = {e["spec"] for e in entries}
 for r in REQUIRED:
