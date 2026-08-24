@@ -877,3 +877,105 @@ fn a_correct_length_string_that_fails_keeps_its_own_message() {
         "a correctly-sized unreadable string was reported as a miscount:\n{err}"
     );
 }
+
+/// **More than 4 typos in one string used to report a MISSING PLATE**, with all
+/// nine plates on the table. `explain_failure` computed the unreadable list,
+/// which was live and correct, and then discarded it whenever the damage was
+/// substitutions rather than length. §1.1e's fold closed that door for the
+/// length branch only; this is the same door, the other hinge.
+#[test]
+fn too_many_typos_names_the_string_and_says_every_plate_is_accounted_for() {
+    let mut s = strings_of("even");
+    let mut c: Vec<char> = s[1].chars().collect();
+    for i in [10, 20, 30, 40, 50, 60, 70] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    s[1] = c.into_iter().collect();
+    assert_eq!(
+        s[1].chars().count(),
+        87,
+        "the damage must not change the length"
+    );
+
+    let f = tmp_with(&s.join("\n"));
+    let out = mt()
+        .args(["verify", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8(out.stderr).unwrap();
+    let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        !flat.contains("is missing"),
+        "mt named a plate as lost while the operator holds all of them:\n{err}"
+    );
+    assert!(
+        flat.contains("string 2 could not be read"),
+        "the unreadable string is not identified:\n{err}"
+    );
+    assert!(
+        flat.contains("EVERY PLATE IS ACCOUNTED FOR"),
+        "the clause that turns 'go and find a plate' into 're-read this one' is \
+         missing:\n{err}"
+    );
+    assert!(
+        flat.contains("0/o") || flat.contains("confusable"),
+        "no help for the re-read:\n{err}"
+    );
+}
+
+/// **A single short string is ambiguous only when it MIGHT be the final chunk.**
+/// Exactly one string per uneven set is short by design — but the readable
+/// strings carry their own index and count, so mt can tell. Both directions are
+/// asserted, because a message that hedges when it could be certain is as wrong
+/// as one that accuses when it cannot be.
+#[test]
+fn a_short_string_is_only_called_ambiguous_when_it_really_is() {
+    // EVEN set: every chunk the same length, and the final chunk reads fine.
+    // mt can prove a short string is a miscount.
+    let mut s = strings_of("even");
+    s[2] = format!("{}{}", &s[2][..40], &s[2][41..]);
+    let f = tmp_with(&s.join("\n"));
+    let err = String::from_utf8(
+        mt().args(["verify", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap()
+            .stderr,
+    )
+    .unwrap();
+    assert!(
+        err.contains("the wrong length for this set"),
+        "mt hedged where it could be certain:\n{err}"
+    );
+
+    // UNEVEN set with the FINAL chunk damaged past t = 4: mt cannot tell a
+    // miscount from the chunk that is legitimately shorter.
+    let mut s = strings_of("uneven");
+    let last = s.len() - 1;
+    let mut c: Vec<char> = s[last].chars().collect();
+    for i in [10, 20, 30, 40, 50, 60] {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    s[last] = c.into_iter().collect();
+    let f = tmp_with(&s.join("\n"));
+    let err = String::from_utf8(
+        mt().args(["verify", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap()
+            .stderr,
+    )
+    .unwrap();
+    let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("which is also what a final chunk looks like"),
+        "mt accused a plate of a miscount it cannot demonstrate:\n{err}"
+    );
+    assert!(
+        flat.contains("will not accuse your steel"),
+        "the honest limit is not stated:\n{err}"
+    );
+}

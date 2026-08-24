@@ -59,12 +59,18 @@ struct ReadArgs {
     #[arg(long, value_name = "PATH")]
     r#in: Option<std::path::PathBuf>,
 
-    /// Compare against a transaction, by FULL txid.
+    /// Compare against a transaction, by FULL txid. Takes a **PATH**.
     ///
     /// `verify` only. Comparing against the 20-bit set id would report a match
     /// for any transaction sharing those bits — 1 in 1,048,576 by accident, and
     /// under a second to construct deliberately.
-    #[arg(long, value_name = "PSBT|HEX")]
+    ///
+    /// **The value name used to read `PSBT|HEX`, and mt's own help therefore
+    /// invited the §8.2f leak it refuses.** An operator following it pastes the
+    /// transaction, which lands in shell history and in `ps` — and then trips
+    /// the refusal, having already leaked. It has always taken a path; nothing
+    /// said so.
+    #[arg(long, value_name = "PATH")]
     transaction: Option<std::path::PathBuf>,
 
     /// Suppress the report. Warnings and refusals are never suppressed.
@@ -548,7 +554,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         let _ = writeln!(stderr);
 
         // §0a / §5: the five suggested legend fields.
-        let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let outs: Vec<u64> = tx.output.iter().map(|o| o.value.to_sat()).collect();
         let _ = write!(
             stderr,
             "{}",
@@ -557,10 +563,18 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
                 args.from.as_deref(),
                 args.to.as_deref(),
                 args.to_label.as_deref(),
-                out_total,
+                &outs,
             )
         );
         let _ = writeln!(stderr);
+    }
+
+    // §8.2g's other half: mt warns about the INPUT file's permissions and then
+    // writes the strings to an output file it never mentions again. Only when
+    // stdout is REDIRECTED — on a terminal the strings scroll past and there is
+    // no file to destroy.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let _ = writeln!(stderr, "{}", blocks::redirected_output_warning());
     }
 
     // stdout: the strings, lowercase, and nothing else.
@@ -762,18 +776,26 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
             "  DISCARDED  the copy needing {} of {T} corrections",
             d.discarded_corrections
         );
-        let _ = writeln!(
-            out,
-            "  Both carry the same payload, so nothing is ambiguous. mt kept the\n  \
-             healthier copy — but the discarded plate has {} correction{} left\n  \
-             before it is unrecoverable, and it is the one to re-cut.",
-            T.saturating_sub(d.discarded_corrections),
-            if T.saturating_sub(d.discarded_corrections) == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
+        if d.discarded_corrections == 0 {
+            // A PRISTINE PLATE IS NOT A RE-CUT CANDIDATE. Advising 21 minutes of
+            // engraving on a copy that spent NONE of its budget contradicts the
+            // two lines directly above it — and mt does not know why the string
+            // was typed twice. Usually it is a stack, not a defect.
+            let _ = writeln!(
+                out,
+                "  Both copies are clean and carry the same payload, so nothing is\n  \
+                 wrong with either plate. You most likely typed one twice."
+            );
+        } else {
+            let left = T.saturating_sub(d.discarded_corrections);
+            let _ = writeln!(
+                out,
+                "  Both carry the same payload, so nothing is ambiguous. mt kept the\n  \
+                 healthier copy — but the discarded plate has {left} correction{}\n  \
+                 left before it is unrecoverable, and it is the one to re-cut.",
+                if left == 1 { "" } else { "s" }
+            );
+        }
     }
     for u in &set.unreadable {
         let _ = writeln!(
@@ -808,7 +830,7 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "decode")?;
-    let strings = read_strings::read(&text)?;
+    let strings = read_strings::read(&text, "decode")?;
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
 
     // §1.1's LAST CHECK, before anything reaches stdout.
@@ -869,7 +891,7 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
 
 fn verify(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "verify")?;
-    let strings = read_strings::read(&text)?;
+    let strings = read_strings::read(&text, "verify")?;
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
 
     // ...AND the reassembled transaction re-derives that id. This is the check
@@ -960,7 +982,7 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
 
 fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "inspect")?;
-    let strings = read_strings::read(&text)?;
+    let strings = read_strings::read(&text, "inspect")?;
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
@@ -1018,7 +1040,101 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
     if let Some(r) = read_strings::length_report(strings, &unreadable, verb) {
         return r;
     }
-    Refusal::new(verb, "§1.1", "the set does not verify", format!("{e}"))
+
+    // **THE SAME DOOR, THE OTHER HINGE.** §1.1e's length check closed this for a
+    // MISSING or EXTRA character; a string with more than four SUBSTITUTIONS is
+    // the same operator holding the same complete set, and it fell through to
+    // `chunk 2 of 9 is missing` — nine plates on the table and mt naming one as
+    // lost. `unreadable` is live, correct and in scope at this very line, and
+    // the earlier version discarded it.
+    // ONE CHUNK TWICE WHILE ANOTHER IS ABSENT is the fingerprint of the single
+    // likeliest mechanical slip in the whole procedure: working from a stack,
+    // typing one plate twice and skipping the next. The statement "chunk 5 is
+    // missing" is TRUE, so the operator is not misdirected — merely left to find
+    // the cause by counting. The hint is nearly free, because the duplicate is
+    // already detected on the way through.
+    let mut seen: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for c in strings
+        .iter()
+        .filter_map(|s| pipeline::decode_chunk(s, None).ok())
+    {
+        *seen.entry(c.header.index + 1).or_default() += 1;
+    }
+    let doubled: Vec<usize> = seen
+        .iter()
+        .filter(|&(_, n)| *n > 1)
+        .map(|(&i, _)| i)
+        .collect();
+    let stack_hint = if doubled.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nChunk {} arrived TWICE. If you are working from a stack, check \
+             whether you typed one plate twice and skipped another — that single \
+             slip produces exactly this.",
+            doubled
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    if !unreadable.is_empty() {
+        // How many chunks the set SHOULD have, according to the strings that
+        // did read. Without this mt cannot say "every plate is accounted for",
+        // and that clause is the whole difference between "re-read one plate"
+        // and "go and find a plate".
+        let count = strings
+            .iter()
+            .filter_map(|s| pipeline::decode_chunk(s, None).ok())
+            .map(|c| c.header.count)
+            .next();
+
+        let list = unreadable
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let accounted = match count {
+            Some(n) if strings.len() >= n => format!(
+                "You typed {} strings and this set has {n} chunks, so EVERY PLATE \
+                 IS ACCOUNTED FOR. Nothing is lost — one of them is damaged past \
+                 what BCH can repair.",
+                strings.len()
+            ),
+            _ => "mt cannot tell how many chunks this set should have, because the \
+                  damaged string is where that count is written."
+                .to_string(),
+        };
+
+        return Refusal::new(
+            verb,
+            "§1.1",
+            format!(
+                "string {list} could not be read: more than 4 characters differ \
+                 from what was engraved"
+            ),
+            format!(
+                "BCH repairs up to 4 wrong characters per string. Past that it \
+                 cannot tell which are wrong, so it refuses rather than guessing \
+                 — a wrong guess produces a valid-looking string carrying the \
+                 wrong bytes.\n\
+                 \n\
+                 {accounted}"
+            ),
+        )
+        .with_remedy(
+            "Re-read that plate from the steel, character by character. Confusable \
+             pairs to check first: 0/o, 1/l/i, b/6, 2/z, 5/s, 8/b.",
+        );
+    }
+    Refusal::new(
+        verb,
+        "§1.1",
+        "the set does not verify",
+        format!("{e}{stack_hint}"),
+    )
 }
 
 /// §1.1's last check: **the reassembled transaction must re-derive the id every

@@ -10,12 +10,13 @@
 
 use crate::refusal::Refusal;
 use mt_codec::consts::INVARIANT_PREFIX_SYMBOLS;
+use mt_codec::string_layer::pipeline;
 
 /// The `mt1` prefix plus the invariant symbols an elided line omits.
 const ELIDED_DROP: usize = 3 + INVARIANT_PREFIX_SYMBOLS;
 
 /// Split raw input into candidate strings, normalise, and restore elision.
-pub fn read(raw: &str) -> Result<Vec<String>, Refusal> {
+pub fn read(raw: &str, verb: &str) -> Result<Vec<String>, Refusal> {
     let mut candidates: Vec<String> = Vec::new();
 
     // 1. SPLIT on any whitespace run containing a newline. Spaces and tabs
@@ -46,7 +47,7 @@ pub fn read(raw: &str) -> Result<Vec<String>, Refusal> {
 
     if candidates.is_empty() {
         return Err(Refusal::new(
-            "decode",
+            verb,
             "§1.1e",
             "no strings found in the input",
             "mt splits input on line breaks, and on each `mt1` prefix within a \
@@ -56,9 +57,22 @@ pub fn read(raw: &str) -> Result<Vec<String>, Refusal> {
     }
 
     // 3. Restore elided lines from the set's full string (§3b).
-    let restored = restore_elided(candidates)?;
+    let restored = restore_elided(candidates, verb)?;
 
     Ok(restored)
+}
+
+/// Could this line be mt1 material — full or elided?
+///
+/// Only the CHARSET, deliberately. An elided line has no `mt1` prefix and no
+/// structure mt can check before restoring it, so the one thing that separates
+/// it from a mnemonic or a descriptor is that every character is a bech32
+/// symbol. `1`, `b`, `i` and `o` are absent from that charset precisely because
+/// they are confusable when engraved, which is what makes it discriminating:
+/// English words are full of them.
+fn looks_like_mt1_material(s: &str) -> bool {
+    const ALPHABET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    !s.is_empty() && s.chars().all(|c| ALPHABET.contains(c))
 }
 
 /// §1.1e: **the expected length comes from the strings themselves — the MODAL
@@ -136,19 +150,64 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
         }
     }
 
+    // **IS IT AMBIGUOUS, OR CAN mt TELL?** Exactly one string per UNEVEN set is
+    // short by design, so a single short string could be a miscount or could be
+    // the final chunk — but that is decidable, and guessing either way is a
+    // false statement about the operator's steel.
+    //
+    // The readable strings carry their own `index` and `count`. **If one of them
+    // IS the final chunk** (`index == count − 1`) **and is the modal length**,
+    // then this set's payload divides evenly, no chunk is short, and a short
+    // string is a genuine miscount. If no readable string is the last one, the
+    // short unreadable one may well be it, and mt says so rather than accusing
+    // the plate.
+    let final_chunk_seen_at_modal_length = strings.iter().any(|x| {
+        pipeline::decode_chunk(x, None)
+            .is_ok_and(|c| c.header.index + 1 == c.header.count && x.chars().count() == modal)
+    });
+    let ambiguous = suspect.len() == 1
+        && suspect[0].1 < modal
+        && strings.iter().filter(|x| x.chars().count() < modal).count() == 1
+        && !final_chunk_seen_at_modal_length;
+
     Some(
         Refusal::new(
-        verb,
-        "§1.1e",
-        format!(
-            "{} string{} the wrong length for this set (most are {modal})",
-            suspect.len(),
-            if suspect.len() == 1 { " is" } else { "s are" }
-        ),
-        "A character is MISSING or EXTRA, not wrong. BCH repairs SUBSTITUTIONS —          up to 4 per string — but an omission or an insertion shifts every symbol          after it and cannot be corrected. mt stops here rather than decoding,          because a length error reports as a MISSING PLATE once it reaches the          codec, and that sends you looking for steel that is not lost.\n\
-         \n\
-         The expected length is the most common one in this set: every string but          the last carries the same payload, so exactly one may be shorter.",
-    )
+            verb,
+            "§1.1e",
+            if ambiguous {
+                format!(
+                    "string {} did not read, and it is the only one shorter than \
+                 {modal} — which is also what a final chunk looks like",
+                    suspect[0].0
+                )
+            } else {
+                format!(
+                    "{} string{} the wrong length for this set (most are {modal})",
+                    suspect.len(),
+                    if suspect.len() == 1 { " is" } else { "s are" }
+                )
+            },
+            if ambiguous {
+                "This string is shorter than the others, AND every set has one \
+             legitimately short chunk — the last one, whenever the payload does \
+             not divide evenly. So mt cannot tell whether characters are missing \
+             from this string or whether this simply IS the final chunk, and it \
+             will not accuse your steel of a miscount it cannot demonstrate. \
+             What it can tell you: the string did not read, and a length error \
+             is not something BCH repairs — it corrects substitutions, and an \
+             omission shifts every symbol after it."
+            } else {
+                "A character is MISSING or EXTRA, not wrong. BCH repairs SUBSTITUTIONS \
+             — up to 4 per string — but an omission or an insertion shifts every \
+             symbol after it and cannot be corrected. mt stops here rather than \
+             decoding, because a length error reports as a MISSING PLATE once it \
+             reaches the codec, and that sends you looking for steel that is not \
+             lost.\n\
+             \n\
+             The expected length is the most common one in this set: every string \
+             but the last carries the same payload, so exactly one may be shorter."
+            },
+        )
         .with_remedy("Re-read these from the plate, counting characters:")
         .with_verbatim(list),
     )
@@ -159,12 +218,36 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
 /// Detection needs no flag: a line beginning `mt1` is full, anything else is
 /// elided. **Mixed input is legal** — an operator who elides "after a while"
 /// produces exactly that.
-fn restore_elided(candidates: Vec<String>) -> Result<Vec<String>, Refusal> {
+fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Refusal> {
     let full = candidates.iter().find(|s| s.starts_with("mt1"));
 
     let Some(full) = full else {
+        // **IS THIS AN mt1 SET AT ALL?** Asked FIRST, because the answer decides
+        // whether "no prefix to restore" is help or nonsense. A BIP-39 mnemonic,
+        // an `md1` string or any text file has no `mt1` line either — and the
+        // elision refusal then tells the operator to go and find 8 characters of
+        // a set that does not exist. The bech32 charset separates the cases for
+        // free: an elided mt1 line is 5-bit symbols and nothing else.
+        if !candidates.iter().any(|c| looks_like_mt1_material(c)) {
+            return Err(Refusal::new(
+                verb,
+                "§1.1e",
+                format!(
+                    "this input is not an mt1 set ({} line(s), none of them mt1)",
+                    candidates.len()
+                ),
+                "mt reads mt1 strings — the codex32 form mt encode produces. Every \
+                 line here contains characters outside the bech32 alphabet, so none \
+                 of them is an mt1 string, elided or otherwise.\n\
+                 \n\
+                 If you have a MNEMONIC, a DESCRIPTOR, an xpub, or an md1/mk1 \
+                 string: those belong to other tools in this family, not to mt. mt \
+                 engraves signed TRANSACTIONS.",
+            )
+            .with_remedy("If you meant to encode a transaction, that is `mt encode < tx.psbt`."));
+        }
         return Err(Refusal::new(
-            "decode",
+            verb,
             "§3b",
             format!(
                 "all {} lines are elided; no prefix to restore",
@@ -183,7 +266,7 @@ fn restore_elided(candidates: Vec<String>) -> Result<Vec<String>, Refusal> {
 
     if full.len() < ELIDED_DROP {
         return Err(Refusal::new(
-            "decode",
+            verb,
             "§3b",
             format!("the full string is only {} characters", full.len()),
             "A full string must carry `mt1` plus at least the 8-symbol invariant \
@@ -215,7 +298,7 @@ mod tests {
 
     #[test]
     fn splits_on_lines() {
-        let got = read(&format!("{A}\n{B}\n")).unwrap();
+        let got = read(&format!("{A}\n{B}\n"), "decode").unwrap();
         assert_eq!(got, vec![A.to_string(), B.to_string()]);
     }
 
@@ -223,7 +306,7 @@ mod tests {
     /// strings out of a terminal and they arrive as one line.
     #[test]
     fn splits_a_single_line_blob_at_each_prefix() {
-        let got = read(&format!("{A}{B}")).unwrap();
+        let got = read(&format!("{A}{B}"), "decode").unwrap();
         assert_eq!(got, vec![A.to_string(), B.to_string()]);
     }
 
@@ -237,19 +320,22 @@ mod tests {
             .map(|c| c.iter().collect::<String>())
             .collect::<Vec<_>>()
             .join(" ");
-        assert_eq!(read(&grouped).unwrap(), vec![A.to_string()]);
+        assert_eq!(read(&grouped, "decode").unwrap(), vec![A.to_string()]);
     }
 
     #[test]
     fn normalises_case() {
-        assert_eq!(read(&A.to_uppercase()).unwrap(), vec![A.to_string()]);
+        assert_eq!(
+            read(&A.to_uppercase(), "decode").unwrap(),
+            vec![A.to_string()]
+        );
     }
 
     #[test]
     fn restores_an_elided_line() {
         let elided = &B[ELIDED_DROP..];
         assert_eq!(
-            read(&format!("{A}\n{elided}\n")).unwrap(),
+            read(&format!("{A}\n{elided}\n"), "decode").unwrap(),
             vec![A.to_string(), B.to_string()]
         );
     }
@@ -258,7 +344,7 @@ mod tests {
     /// input is legal rather than an error.
     #[test]
     fn accepts_mixed_full_and_elided() {
-        let got = read(&format!("{A}\n{B}\n{}\n", &B[ELIDED_DROP..])).unwrap();
+        let got = read(&format!("{A}\n{B}\n{}\n", &B[ELIDED_DROP..]), "decode").unwrap();
         assert_eq!(got.len(), 3);
         assert!(got.iter().all(|s| s.starts_with("mt1")));
         assert_eq!(got[2], B);
@@ -266,7 +352,11 @@ mod tests {
 
     #[test]
     fn refuses_all_elided_and_names_what_is_missing() {
-        let r = read(&format!("{}\n{}\n", &A[ELIDED_DROP..], &B[ELIDED_DROP..])).unwrap_err();
+        let r = read(
+            &format!("{}\n{}\n", &A[ELIDED_DROP..], &B[ELIDED_DROP..]),
+            "decode",
+        )
+        .unwrap_err();
         assert!(
             r.verdict.contains("all 2 lines are elided"),
             "got: {}",
