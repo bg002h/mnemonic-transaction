@@ -147,6 +147,12 @@ pub struct Report {
     pub set_prefix: Option<String>,
     /// Outputs, as (address-or-script, satoshis).
     pub outputs: Vec<(String, u64)>,
+    /// The network the addresses above are rendered for, when a node said so.
+    ///
+    /// `None` means no node was reachable and mainnet was ASSUMED — which the
+    /// `OUT` row states, because an address under the wrong HRP is not an
+    /// address on any network.
+    pub network: Option<bitcoin::Network>,
     /// Fee in satoshis, and the weakest provenance of any input.
     pub fee: Option<(u64, Provenance)>,
     /// `nLockTime`, and the chain height if a node answered.
@@ -165,6 +171,12 @@ impl Report {
         node: Option<&Node>,
         claimed: &[(u32, u64, Provenance)],
     ) -> Self {
+        // The operator's network, from the node. With none reachable mt falls
+        // back to mainnet and SAYS SO in the row — an address rendered under the
+        // wrong HRP is not an address anywhere, and silently showing one is
+        // worse than admitting the assumption.
+        let chain = node.and_then(Node::chain);
+        let network = chain.unwrap_or(bitcoin::Network::Bitcoin);
         // ASKED FIRST: did THIS transaction already confirm? Every other row is
         // a guess about *why* the inputs are gone; this answers it exactly.
         let already = node.is_some_and(|n| n.is_confirmed(txid) == ParentState::Confirmed);
@@ -295,13 +307,13 @@ impl Report {
             txid: txid.to_string(),
             set: None,
             set_prefix: None,
+            network: chain,
             outputs: tx
                 .output
                 .iter()
                 .map(|o| {
-                    let spk =
-                        bitcoin::Address::from_script(&o.script_pubkey, bitcoin::Network::Bitcoin)
-                            .map_or_else(|_| o.script_pubkey.to_string(), |a| a.to_string());
+                    let spk = bitcoin::Address::from_script(&o.script_pubkey, network)
+                        .map_or_else(|_| o.script_pubkey.to_string(), |a| a.to_string());
                     (spk, o.value.to_sat())
                 })
                 .collect(),
@@ -342,7 +354,17 @@ impl Report {
         }
         let _ = writeln!(s, "TX        {}", self.txid);
 
-        let _ = writeln!(s, "OUT       {} output(s)", self.outputs.len());
+        let _ = match self.network {
+            Some(bitcoin::Network::Bitcoin) | None if self.network.is_none() => writeln!(
+                s,
+                "OUT       {} output(s)   (addresses shown as MAINNET — no node to ask)",
+                self.outputs.len()
+            ),
+            Some(n) if n != bitcoin::Network::Bitcoin => {
+                writeln!(s, "OUT       {} output(s)   ({n})", self.outputs.len())
+            }
+            _ => writeln!(s, "OUT       {} output(s)", self.outputs.len()),
+        };
         for (addr, sats) in &self.outputs {
             let _ = writeln!(s, "            {addr}   {}", btc(*sats));
         }
@@ -590,6 +612,7 @@ mod tests {
                 set: None,
                 set_prefix: None,
                 outputs: vec![],
+                network: None,
                 fee: None,
                 locktime: (lt, Chain { height: h, mtp: h }),
                 inputs: vec![],
@@ -616,6 +639,7 @@ mod tests {
             set: None,
             set_prefix: None,
             outputs: vec![],
+            network: None,
             fee: None,
             locktime: (Lock::Height(900_000), Chain::default()),
             inputs: vec![("x:0".into(), None, Provenance::Unknown)],

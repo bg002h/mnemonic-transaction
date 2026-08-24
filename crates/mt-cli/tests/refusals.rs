@@ -1414,3 +1414,41 @@ fn a_damaged_character_reported_as_b_is_not_called_free() {
         "mt claimed a reading was free while BCH was repairing it:\n{err}"
     );
 }
+
+/// **F-237: a sibling's material is named, not described as bad bech32.** The
+/// operator is holding the RIGHT material for the WRONG TOOL, and `mt` knows
+/// which tool — keyed on the literal prefix, so nothing is imported from the
+/// sibling and the fork-per-codec ruling stands.
+#[test]
+fn a_sibling_format_is_named_rather_than_called_malformed() {
+    for (prefix, tool, what) in [
+        ("md1", "md", "descriptor material"),
+        ("mk1", "mk", "key material"),
+    ] {
+        let body = format!(
+            "{prefix}qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\n{prefix}qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+        );
+        let f = tmp(&body);
+        let out = mt()
+            .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let err = String::from_utf8(out.stderr).unwrap();
+        let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(&format!("begin `{prefix}`")) && flat.contains(what),
+            "{prefix}: the sibling is not named:\n{err}"
+        );
+        assert!(
+            flat.contains(&format!("`{tool}` reads")),
+            "{prefix}: the right tool is not named:\n{err}"
+        );
+        // ...and mt must not echo the material back, sibling or not.
+        assert!(
+            !err.contains("qqqqqqqqqqqqqqqqq"),
+            "{prefix}: mt echoed the input:\n{err}"
+        );
+    }
+}
