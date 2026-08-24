@@ -147,3 +147,21 @@ check = "src/main.rs::parse_input_values"
 spec  = "§8.2e"
 test  = "unrecognised_input_shows_the_bytes"
 check = "src/input.rs::recognised_guard"
+
+# §1.1's LAST CHECK, and the one with no code behind it until two independent
+# reviews found it from opposite directions. verify printed "transaction
+# re-derives" on every run without ever deriving it, and decode emitted the
+# WRONG transaction's broadcastable hex for a forged set.
+[[refusal]]
+spec  = "§1.1"
+test  = "verify_refuses_a_set_that_does_not_re_derive_its_id"
+check = "src/main.rs::content_id_guard"
+
+# §8.2c's AMOUNT parsing, a distinct guard from its per-input requirement:
+# `--input-value 0:inf` panicked, and `-5`/`NaN` produced a silent nonsense
+# value that tripped §8.2b, so the operator got a refusal about their outputs
+# when the fault was what they had just typed.
+[[refusal]]
+spec  = "§8.2c"
+test  = "a_hostile_input_value_is_refused_by_name_and_never_panics"
+check = "src/main.rs::parse_btc"
