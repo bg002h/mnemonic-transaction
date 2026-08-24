@@ -75,26 +75,37 @@ pub fn sniff(raw: &[u8]) -> Result<Input, Refusal> {
         && hex_body.chars().all(|c| c.is_ascii_hexdigit())
     {
         let bytes = hex_to_bytes(hex_body);
-        // A hex-encoded PSBT is valid hex AND a PSBT. It is the one genuinely
-        // ambiguous input, and the refusal must name the REAL problem — telling
-        // someone "invalid transaction" sends them to look at the wrong thing.
-        if bytes.starts_with(PSBT_MAGIC) {
-            return Err(Refusal::new(
-                "encode",
-                "§8.2e",
-                "input is a hex-encoded PSBT, not a raw transaction",
-                "These bytes are valid hex, and decoding them yields the `psbt\\xff` \
-                 magic — so this is a PSBT that has been hex-encoded rather than a \
-                 raw signed transaction. mt reads PSBTs in binary or base64.",
-            )
-            .with_remedy("Pass the .psbt file directly with --in, or convert it to base64."));
-        }
+        hex_psbt_guard(&bytes)?;
         return Ok(Input::RawHex(bytes));
     }
 
     // 4. Nothing matched.
     recognised_guard(false, trimmed)?;
     unreachable!("recognised_guard(false, ..) returns Err")
+}
+
+/// §8.2e's genuinely ambiguous input: **valid hex AND a PSBT.**
+///
+/// The refusal must name the REAL problem — telling someone *"invalid
+/// transaction"* sends them to look at the wrong thing entirely.
+///
+/// A named guard rather than an inline branch, so `refusals.toml` can declare
+/// it and `mutate-refusals.sh` can neuter it. It had a test and no entry, which
+/// is the exact gap the coverage gate exists to close — and the gate could not
+/// see it, because it looked in one file and the test lives in another.
+pub fn hex_psbt_guard(bytes: &[u8]) -> Result<(), Refusal> {
+    if !bytes.starts_with(PSBT_MAGIC) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        "encode",
+        "§8.2e",
+        "input is a hex-encoded PSBT, not a raw transaction",
+        "These bytes are valid hex, and decoding them yields the `psbt\\xff` \
+         magic — so this is a PSBT that has been hex-encoded rather than a raw \
+         signed transaction. mt reads PSBTs in binary or base64.",
+    )
+    .with_remedy("Pass the .psbt file directly with --in, or convert it to base64."))
 }
 
 /// §8.2e step 4, as a **guard** rather than an inline `return`.

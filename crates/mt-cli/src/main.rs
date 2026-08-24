@@ -287,7 +287,27 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     // becomes a bound one, so it runs BEFORE §8.2b's arithmetic.
     let node = node::Node::find(&args.bitcoin_cli);
     let mut bound_by_chain = vec![false; tx.input.len()];
-    if let Some(nd) = &node {
+
+    // ASKED FIRST, exactly as `Report::build` asks it: has THIS transaction
+    // already confirmed?
+    //
+    // **Every input of a confirmed transaction is spent — by itself — and every
+    // parent is confirmed, which is bit-for-bit the §8.5 condition.** Without
+    // this question the success case is reported as the theft case, and the
+    // refusal tells an operator whose payment WENT THROUGH that it "can never be
+    // broadcast" and to build a new transaction. An operator who follows that
+    // pays twice.
+    //
+    // §6a's five states already ruled the ordering and `report.rs` already
+    // implements it; this was the SECOND SITE asking the weaker question. Found
+    // by running against a real node — no offline or stubbed test could see it,
+    // because all three §8.5 cases share `gettxout -> null` and differ only in
+    // `getrawtransaction` on a txid the stub was never asked about.
+    let already_confirmed = node
+        .as_ref()
+        .is_some_and(|nd| nd.is_confirmed(&txid_of(&tx)) == node::ParentState::Confirmed);
+
+    if let (Some(nd), false) = (&node, already_confirmed) {
         for (n, inp) in tx.input.iter().enumerate() {
             let op = inp.previous_output;
             match nd.txout(&op.txid.to_string(), op.vout) {
@@ -324,6 +344,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
 
     // §8.7b — before chunking, so the ceiling is named rather than a codec error.
     let tx_bytes = bitcoin::consensus::serialize(&tx);
+    debug_assert_eq!(txid_of(&tx), tx.compute_txid().to_string());
     validate::chunk_ceiling_guard(
         tx_bytes
             .len()
@@ -784,6 +805,16 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     set_notices(&set, &mut std::io::stderr());
     margin_report(&set.chunks, &mut std::io::stderr());
     Ok(())
+}
+
+/// A transaction's txid in display form.
+///
+/// Named rather than inlined because §8.5's guard and the report must ask about
+/// **the same** txid — and the one thing that must never be used here is the
+/// double-SHA of the engraved bytes, which is the *wtxid* for any segwit
+/// transaction.
+fn txid_of(tx: &bitcoin::Transaction) -> String {
+    tx.compute_txid().to_string()
 }
 
 /// Decode raw bytes into a transaction, with a refusal that names the problem.
