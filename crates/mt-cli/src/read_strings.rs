@@ -61,9 +61,20 @@ pub fn read(raw: &str, verb: &str) -> Result<Vec<String>, Refusal> {
     //     with mt1" — so a candidate repaired later is a candidate that was
     //     already mistaken for an elided line and had a prefix prepended to it.
     //     This one substitution has to happen first.
+    //     **KEPT ONLY IF IT DECODES**, exactly like every other autocorrect.
+    //     The unguarded version silently corrupted a legitimate input: an
+    //     ELIDED line carries bare bech32 symbols, and `m`, `t` and `l` are all
+    //     in that alphabet — so roughly one elided line in 32,768 begins `mtl`
+    //     by chance and was rewritten into a full-looking string with a wrong
+    //     prefix. About one set in four thousand, on the RECOVERY path, silently.
+    //     Speculate, verify, and discard the speculation if it does not decode.
     for c in &mut candidates {
         if c.len() > 3 && (c.starts_with("mtl") || c.starts_with("mti")) {
-            c.replace_range(2..3, "1");
+            let mut fixed = c.clone();
+            fixed.replace_range(2..3, "1");
+            if pipeline::decode_chunk(&fixed, None).is_ok() {
+                *c = fixed;
+            }
         }
     }
 

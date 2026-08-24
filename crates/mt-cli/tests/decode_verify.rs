@@ -1094,3 +1094,77 @@ fn autocorrect_does_not_manufacture_a_valid_string() {
         "damage past t = 4 was silently accepted"
     );
 }
+
+/// **The autocorrect I had just added silently corrupted legitimate input.**
+///
+/// An ELIDED line carries bare bech32 symbols, and `m`, `t` and `l` are all in
+/// that alphabet — so roughly one elided line in 32,768 begins `mtl` by chance.
+/// The unguarded separator repair rewrote it to `mt1…`, which made it look like
+/// a FULL string with a wrong prefix, and the set then failed with a message
+/// about miscounted characters. About one set in four thousand, on the recovery
+/// path, silently.
+///
+/// The fix is the rule every other autocorrect already followed: speculate,
+/// verify, and discard the speculation if it does not decode.
+#[test]
+fn an_elided_line_that_happens_to_begin_mtl_is_left_alone() {
+    let elided: Vec<String> = corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == "even")
+        .unwrap()["strings_elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+
+    let mut lines = elided.clone();
+    // Force the collision on an elided line.
+    lines[1] = format!("mtl{}", &elided[1][3..]);
+    assert!(!lines[1].starts_with("mt1"));
+
+    let f = tmp_with(&lines.join("\n"));
+    let out = mt()
+        .args(["decode", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an elided line beginning `mtl` was corrupted by the separator repair:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        raw_of("even"),
+        "the set decoded, but not to the right bytes"
+    );
+}
+
+/// The control: a genuinely misread separator on a FULL string is still
+/// repaired. Only the pair shows the guard narrowed the repair rather than
+/// removing it.
+#[test]
+fn a_full_string_with_a_misread_separator_is_still_repaired() {
+    for wrong in ['l', 'i'] {
+        let mut s = strings_of("even");
+        s[0] = format!("mt{wrong}{}", &s[0][3..]);
+        let f = tmp_with(&s.join("\n"));
+        let out = mt()
+            .args(["decode", "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mt{wrong} was not repaired:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap().trim(),
+            raw_of("even")
+        );
+    }
+}
