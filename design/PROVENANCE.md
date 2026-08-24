@@ -5,9 +5,9 @@ repo. The design lives there; this repo implements it.
 
 | file | source | source commit |
 | --- | --- | --- |
-| `design/SPEC_mt_v0_1.md` | `mnemonic-engrave/design/SPEC_mt_v0_1.md` | `ddc4e087248d90423e9c0f0c1e25108277b1e1d8` |
-| `design/vectors/mt1_v1_vectors.md` | `mnemonic-engrave/design/vectors/` | `ddc4e087248d90423e9c0f0c1e25108277b1e1d8` |
-| `crates/mt-codec/src/test_vectors/mt1_v1.json` | same generator run | `ddc4e087248d90423e9c0f0c1e25108277b1e1d8` |
+| `design/SPEC_mt_v0_1.md` | `mnemonic-engrave/design/SPEC_mt_v0_1.md` | `aa232ca8386eb0f866632d87f186e6b712d4fc2f` |
+| `design/vectors/mt1_v1_vectors.md` | `mnemonic-engrave/design/vectors/` | `aa232ca8386eb0f866632d87f186e6b712d4fc2f` |
+| `crates/mt-codec/src/test_vectors/mt1_v1.json` | same generator run | `aa232ca8386eb0f866632d87f186e6b712d4fc2f` |
 
 ## The vectors are NOT regenerated here
 

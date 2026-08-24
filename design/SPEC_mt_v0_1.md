@@ -658,7 +658,7 @@ overturned an earlier assumption and are marked.
        OUT       1 output
                    bc1p8rrz...s6n0vcl        0.05000000 BTC
        FEE       0.00012000 BTC   (12 sat/vB over 1000 vB)
-       LOCKTIME  block 1383520, ~FALL 2034   current height 1402887
+       LOCKTIME  block 1383520, ~SUMMER 2034   current height 1402887
        INPUTS    1 input
                    9a3f21c0:0   0.05012000 BTC   from node       LIVE
        STATUS    LIVE — every input unspent in the UTXO set (mempool not
@@ -666,7 +666,17 @@ overturned an earlier assumption and are marked.
 
    | row | present when | source |
    | --- | --- | --- |
-   | `mt1 SET` | the caller had strings — `inspect`, `decode`, `verify` | the chunk headers (§10.13 a2) |
+   | `mt1 SET` | the caller had strings — `inspect` and `decode` | the chunk headers (§10.13 a2) |
+
+   > **`verify` WAS IN THAT LIST AND SHOULD NOT HAVE BEEN — F-240.** §1.1's own
+   > worked `verify` output, above, is a single `OK` line plus the margin report:
+   > no report rows at all. And §1.1 rules `verify` **structural only**, never
+   > consulting a node — which is exactly what lets it run on an air-gapped
+   > machine. A table naming it as a report caller contradicts both, and the
+   > table is what an implementer reads first.
+   >
+   > `decode` and `inspect` are the report's two callers. `verify` prints its
+   > verdict, its duplicate and unreadable notices, and its margin report.
    | `TX` | **always** | the **txid** — double-SHA-256 of the decoded transaction **with marker, flag and witnesses stripped**. Needs no node and no network. **Not** a hash of the engraved bytes; see the note below |
    | `OUT` | **always** | the transaction itself |
    | `FEE` | a node is reachable, **or** the input was a PSBT carrying values | inputs minus outputs — the transaction alone carries no input values (§6a). **Carries the WEAKEST provenance of any input, inline**: `(CLAIMED — no input value verified)` when any input's value is neither chain-fetched nor txid-bound |
@@ -2549,6 +2559,24 @@ exactly as permanent, as a machine-engraved one.
        nLockTime 900000 present but NOT ENFORCED (all inputs final)
        LOCKED TO BLOCK 900000           current height unknown (no node)
 
+   > **THESE FIVE ARE THE `stderr` REPORT'S SPELLINGS. THE LEGEND'S ARE
+   > DIFFERENT, AND THIS SECTION NEVER SAID SO — F-239.** Forty lines below,
+   > §8.4 rules that *"`NO TIMELOCK` is reserved for a transaction with
+   > `nLockTime = 0` **or with all inputs final**"* — so for one state, an
+   > unenforced non-zero `nLockTime`, this list says `nLockTime 900000 present
+   > but NOT ENFORCED` and that sentence says `NO TIMELOCK`. Both are correct,
+   > **on different surfaces**, and nothing stated the split until an
+   > implementer had to choose:
+   >
+   > | surface | spelling | why |
+   > | --- | --- | --- |
+   > | the `stderr` REPORT | `nLockTime 900000 present but NOT ENFORCED (all inputs final)` | disposable, and can afford the value — it tells the operator WHY the lock does not bind |
+   > | the engraved LEGEND | `NO TIMELOCK` | 11 characters, cut into steel, and precisely true about the fields `mt` read |
+   >
+   > **This is the same two-spellings-one-input class §8.4 calls a real defect**
+   > (R6 implementability I-8), landing on §8.4 itself. `mt` implements the split
+   > (`Lock::report_row` versus `Lock::legend`).
+
    **Why facts beat a verdict here.** *"May be immediately spendable"* is true of
    almost any transaction and tells the operator nothing they can act on — it
    cannot distinguish a lock that has already passed from one that was never
@@ -2565,12 +2593,31 @@ exactly as permanent, as a machine-engraved one.
    defined, and re-derivable forever — and the estimate rides beside it as an
    orientation aid:
 
-       LOCKED TO BLOCK 1383520 ~FALL 2034
+       LOCKED TO BLOCK 1383520 ~SUMMER 2034
 
    **The height is the fact; the season is the courtesy.** A height alone is
    meaningless to a human (§8.4's original problem) and a season alone is
    unverifiable, so the plate carries both and a reader can always fall back to
    the number.
+
+   > **THE WORKED EXAMPLE SAID `~FALL 2034` UNTIL 2026-08-24, AND THE ALGORITHM
+   > ABOVE SAYS SUMMER — F-238, found by implementing it.** Block 1,383,520 is
+   > 419,761 blocks past `MT_REF_HEIGHT`, so the projection is
+   > `MT_REF_TIME + 419_761 × 600 s` = **2034-08-16**, and August is SUMMER under
+   > the northern meteorological quarters this section also rules.
+   >
+   > **The example was wrong and the rule was right, which is the only ordering
+   > that could be corrected safely** — the rule governs every plate and the
+   > example is one datum. `mt` implements the rule and pins it
+   > (`locktime::tests::the_worked_example_projects_to_summer_not_the_spec_s_fall`,
+   > with the season boundaries pinned separately).
+   >
+   > **It is a MINOR because this section predicted it.** The projection lands
+   > **15 days** from the September boundary, against a drift this same paragraph
+   > measures at "+16 to −34 days" — so it is exactly the *"projection landing
+   > near a season boundary, which can tip"* that the `~` was put there for. The
+   > height beside it is unambiguous and settles any dispute, which is why the
+   > height is mandatory and the season is the courtesy.
 
    **Season precision is supported by the measured block rate, and this was
    checked rather than assumed.** Over three windows ending at height 963,759 the
@@ -2583,11 +2630,11 @@ exactly as permanent, as a machine-engraved one.
 
    **Seasons are NORTHERN-HEMISPHERE, by ruling.** Operator, 2026-08-23. So
    `SPRING` / `SUMMER` / `FALL` / `WINTER` are the meteorological quarters of the
-   northern year — `~FALL 2034` means roughly September to November 2034 —
+   northern year — `~FALL 2034` would mean roughly September to November —
    regardless of where the plate is read.
 
    > **The residual, stated because a plate cannot be asked a question.** A
-   > reader in Sydney sees `~FALL 2034` and, reading it locally, is wrong by
+   > reader in Sydney sees `~SUMMER 2034` and, reading it locally, is wrong by
    > about six months. The harm is bounded and small for one reason: **the
    > mandatory block height sits beside it and is unambiguous everywhere.** The
    > height is the fact and the season is the courtesy, so a misread courtesy
