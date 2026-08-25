@@ -91,7 +91,13 @@ anything.
   an accepted, recorded hazard.
 - **No transaction construction**, and no redundancy coding — the mitigation for
   a lost plate is cutting a second copy, which `mt` supports on the reading side.
-- **Publishes nothing.** No crates.io, no tags, no releases.
+- **`mt-cli` publishes nothing.** No tags, no releases for the tool.
+  **`mt-codec` DOES publish**, from v0.1.0 — every constellation repo splits
+  `X-cli` / `X-codec` and publishes the codec half (`md-codec`, `mk-codec`,
+  `ms-codec` are all on crates.io), and `mnemonic-engrave`'s `me` depends on
+  those to satisfy the payload container's DECODE requirement. `mt-codec` is the
+  fourth instance of that line, not a new posture: the **tool** stays unreleased,
+  the **format** is already public in `SPEC_mt_v0_1.md` and its vectors.
 
 ## Licence
 
