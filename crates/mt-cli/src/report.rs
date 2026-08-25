@@ -515,7 +515,39 @@ pub fn render_json(r: &Report, warnings: &[String]) -> String {
 /// cutting"*, which is useless to a recoverer: the engraving already exists, so
 /// that names a decision made years ago. Their decision is **broadcast or
 /// don't** — irreversible in the other direction.
-pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool) -> String {
+/// Where the transaction under report came from.
+///
+/// The warning names it TWICE, and both sentences were written for the strings
+/// path. `mt inspect` over a scanned raw transaction has no strings at all, and
+/// telling that operator mt "read this transaction from the strings" describes
+/// a step they did not take -- on the one screen a recoverer reads in a panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadFrom {
+    /// An `mt1` chunk set, typed or scanned back off steel.
+    Strings,
+    /// Raw transaction (or PSBT) bytes the operator supplied directly.
+    SuppliedBytes,
+}
+
+impl ReadFrom {
+    /// The noun for "mt read this transaction from the ___".
+    fn noun(self) -> &'static str {
+        match self {
+            ReadFrom::Strings => "strings",
+            ReadFrom::SuppliedBytes => "bytes you supplied",
+        }
+    }
+
+    /// The noun for "everything above this line was read from ___".
+    fn origin(self) -> &'static str {
+        match self {
+            ReadFrom::Strings => "the engraving itself",
+            ReadFrom::SuppliedBytes => "those bytes",
+        }
+    }
+}
+
+pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool, from: ReadFrom) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -523,7 +555,8 @@ pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool) -> String {
     );
     let _ = writeln!(
         s,
-        "         strings, but could confirm NOTHING about it against the chain:"
+        "         {}, but could confirm NOTHING about it against the chain:",
+        from.noun()
     );
     let _ = writeln!(s);
     let _ = writeln!(
@@ -566,7 +599,8 @@ pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool) -> String {
     let _ = writeln!(s);
     let _ = writeln!(
         s,
-        "         Everything above this line was read from the engraving itself"
+        "         Everything above this line was read from {}",
+        from.origin()
     );
     let _ = writeln!(
         s,
@@ -682,7 +716,7 @@ mod tests {
 
     #[test]
     fn no_node_warning_names_both_ways_out() {
-        let w = no_node_warning(&Lock::Height(900_000), "deadbeef", true);
+        let w = no_node_warning(&Lock::Height(900_000), "deadbeef", true, ReadFrom::Strings);
         assert!(w.contains("run mt inspect again with a bitcoind"));
         assert!(w.contains("block explorer"));
         assert!(

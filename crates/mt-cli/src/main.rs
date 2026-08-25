@@ -1010,6 +1010,7 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
                     &locktime::read(&tx),
                     &txid,
                     tx.input.iter().any(|i| i.witness.is_empty()),
+                    report::ReadFrom::Strings,
                 )
             );
         }
@@ -1076,7 +1077,14 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
         // half of its own ruling and refused the other half. The PSBT is the
         // form a wallet exports; the hex is what `finalizepsbt` returns. An
         // operator checking their steel against what they built has the PSBT.
-        let supplied = match input::sniff(&supplied)? {
+        // Same wart as `inspect`'s: sniff hard-codes the verb `encode` in every
+        // refusal it builds, so `mt verify --transaction <a truncated hex file>`
+        // told the operator about `mt encode`. Fixed here rather than left as
+        // the surviving half of one defect.
+        let supplied = match input::sniff(&supplied).map_err(|mut r| {
+            r.verb = "verify".into();
+            r
+        })? {
             input::Input::RawHex(b) => b,
             input::Input::Psbt(bytes) => {
                 let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
@@ -1129,8 +1137,143 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// `mt inspect` over a RAW TRANSACTION (or a PSBT) rather than `mt1` strings.
+///
+/// **This is what the post-cut verify step actually needs.** The device tells
+/// the operator to scan the engraved QR with a phone and run `mt inspect` on
+/// what they get -- and what a scanner hands back is the transaction's BYTES.
+/// No verb could read one, so the device was about to instruct a step no tool
+/// could perform, and a plate whose verification cannot be carried out has not
+/// been verified.
+///
+/// It reuses `report::Report` VERBATIM. Composing a second report here would
+/// give the operator's pre-engraving view and the recoverer's post-cut view two
+/// implementations of one thing, free to disagree -- and the two views
+/// disagreeing is precisely the failure the post-cut step exists to catch.
+///
+/// **The SET rows are absent, and that is correct**: there are no chunks here.
+/// A row reading "1 of 1" would claim a set that does not exist.
+fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
+    // The sniffing helpers were written for `encode` and hard-code that verb in
+    // every refusal they build. Left alone, an operator who typed `mt inspect`
+    // would be told about `mt encode` -- a different command, for the opposite
+    // direction of this journey.
+    let as_inspect = |mut r: Refusal| {
+        r.verb = "inspect".into();
+        r
+    };
+    let tx = match input::sniff(raw).map_err(as_inspect)? {
+        input::Input::Psbt(bytes) => {
+            let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
+                Refusal::new(
+                    "inspect",
+                    "§8.2e",
+                    "input carries the PSBT magic but does not parse",
+                    format!("Decoding the PSBT failed: {e}."),
+                )
+            })?;
+            // `unsigned_tx`, not an extraction: the txid is identical either
+            // way (it is defined over exactly these bytes), and every row this
+            // report prints -- outputs, fee, locktime -- comes from them. An
+            // extraction would additionally require the PSBT to be finalized,
+            // which is a demand `inspect` has no reason to make of someone
+            // asking what a file contains.
+            psbt.unsigned_tx.clone()
+        }
+        input::Input::RawHex(bytes) => decode_tx(&bytes, "inspect")?,
+    };
+    let txid = tx.compute_txid().to_string();
+    let node = node::Node::find(&args.bitcoin_cli);
+    let r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
+
+    let mut warnings: Vec<String> = Vec::new();
+    if node.is_none() {
+        warnings
+            .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
+    }
+    // THE LIMIT, STATED. `inspect` over scanned bytes sees the bytes and
+    // nothing else: it cannot know they came off the plate they were meant to,
+    // and a txid identifies a transaction without proving every byte -- it is
+    // blind to the entire witness region, where the signatures live.
+    warnings.push(
+        "this is the transaction the bytes you supplied describe. It says nothing about \
+         which PLATE they came from, and the txid identifies a transaction without \
+         proving every byte."
+            .to_string(),
+    );
+
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let _ = write!(
+        out,
+        "{}",
+        if args.json {
+            report::render_json(&r, &warnings)
+        } else {
+            r.render()
+        }
+    );
+    // With --json the prose is IN the document; emitting it again as prose
+    // would put non-JSON on the stream a caller is parsing.
+    if args.json {
+        return Ok(());
+    }
+    let mut stderr = std::io::stderr();
+    if node.is_none() {
+        let _ = writeln!(stderr);
+        let _ = write!(
+            stderr,
+            "{}",
+            report::no_node_warning(
+                &locktime::read(&tx),
+                &txid,
+                tx.input.iter().any(|i| i.witness.is_empty()),
+                // NOT Strings: this operator supplied bytes. Telling them mt
+                // "read this transaction from the strings" describes a step
+                // they did not take, on the one screen a recoverer reads in a
+                // panic.
+                report::ReadFrom::SuppliedBytes,
+            )
+        );
+    }
+    let _ = writeln!(stderr);
+    let _ = writeln!(
+        stderr,
+        "WARNING: this is the transaction the bytes you supplied describe."
+    );
+    let _ = writeln!(
+        stderr,
+        "         It says nothing about which PLATE they came from, and the"
+    );
+    let _ = writeln!(
+        stderr,
+        "         txid identifies a transaction without proving every byte."
+    );
+    Ok(())
+}
+
 fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     let text = read_input(&args.r#in, "inspect")?;
+    // WALK O -- `mt inspect` GAINS A RAW-TRANSACTION SUBJECT.
+    //
+    // The post-cut test is "scan the QR, then run `mt inspect` on what you
+    // get", and what a scanner hands back is the raw transaction, not `mt1`
+    // strings. Without this branch the device instructs a step no verb can
+    // perform.
+    //
+    // THE DISCRIMINATOR IS THE LITERAL `mt1`, AND IT IS SAFE BY A BECH32
+    // PROPERTY: the data charset `qpzry9x8gf2tvdw0s3jn54khce6mua7l` excludes
+    // `1`, `b`, `i` and `o`, so `1` occurs in an `mt1` string ONLY as the HRP
+    // separator -- and a hex transaction contains no `m` or `t` at all, while a
+    // base64 PSBT begins `cHNidP8`.
+    //
+    // EMPTY INPUT STAYS ON THE STRINGS PATH: "no strings found in the input"
+    // is the better sentence for it than anything the sniffer would produce,
+    // and routing it here would trade a good message for a worse one.
+    let lower = text.to_ascii_lowercase();
+    if !text.trim().is_empty() && !lower.contains("mt1") {
+        return inspect_transaction(text.as_bytes(), &args);
+    }
     let read = read_strings::read(&text, "inspect")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
@@ -1195,6 +1338,7 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
                 &locktime::read(&tx),
                 &txid,
                 tx.input.iter().any(|i| i.witness.is_empty()),
+                report::ReadFrom::Strings,
             )
         );
     }

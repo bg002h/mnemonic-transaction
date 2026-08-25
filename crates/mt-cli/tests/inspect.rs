@@ -569,3 +569,249 @@ fn an_unknown_network_is_stated_not_assumed_silently() {
         "mt assumed a network without saying so:\n{out}"
     );
 }
+
+// ─── GRAFT 6 — `mt inspect` over a RAW TRANSACTION ──────────────────────────
+//
+// The post-cut verify step is "scan the engraved QR with a phone, then run
+// `mt inspect` on what you get" — and what a scanner hands back is the
+// transaction's BYTES, not `mt1` strings. No verb could read one, so the
+// device was about to instruct a step no tool could perform. A plate whose
+// verification cannot be carried out has not been verified.
+
+fn raw_hex(label: &str) -> String {
+    corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == label)
+        .unwrap()["raw_hex"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn txid_of(label: &str) -> String {
+    corpus()["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == label)
+        .unwrap()["txid"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// The whole point: the bytes off a scanner reach a report, and the report
+/// carries the txid the operator is comparing against the plate.
+#[test]
+fn inspect_reads_a_raw_transaction_and_reports_its_txid() {
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .write_stdin(raw_hex("even"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "inspect over raw hex failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains(&txid_of("even")),
+        "the report must carry the FULL txid — that is the value being compared \
+         against the plate:\n{stdout}"
+    );
+    // The rows a recoverer needs are the same rows the strings path prints:
+    // ONE report implementation, not a second view free to disagree.
+    for row in ["TX ", "OUT ", "FEE ", "LOCKTIME "] {
+        assert!(stdout.contains(row), "row {row:?} missing:\n{stdout}");
+    }
+    // ...and the SET rows are ABSENT, because there are no chunks here. A row
+    // reading "1 of 1" would claim a set that does not exist.
+    assert!(
+        !stdout.contains("mt1 SET"),
+        "a raw transaction has no chunk set; the report claimed one:\n{stdout}"
+    );
+    // THE LIMIT, STATED. These bytes say nothing about which PLATE they came
+    // off, and a txid identifies a transaction without proving every byte.
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("PLATE") || stderr.contains("plate"),
+        "inspect over loose bytes must say what it cannot know:\n{stderr}"
+    );
+}
+
+/// The strings path is UNTOUCHED. The discriminator is the literal `mt1`, and
+/// it is safe by a bech32 property: the data charset excludes `1`, `b`, `i`
+/// and `o`, so `1` occurs in an mt1 string only as the HRP separator — and a
+/// hex transaction contains no `m` or `t` at all.
+#[test]
+fn the_strings_path_is_unchanged_by_the_raw_subject() {
+    let (out, _) = inspect_offline("even");
+    assert!(out.contains("mt1 SET"), "the strings path lost its SET row:\n{out}");
+    assert!(out.contains(&txid_of("even")));
+}
+
+/// A REFUSAL FROM `inspect` MUST SAY `inspect`. The sniffing helpers were
+/// written for `encode` and hard-code that verb, so routing through them
+/// unchanged would tell an operator about a command they did not run.
+#[test]
+fn a_refused_raw_subject_names_the_verb_the_operator_typed() {
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .write_stdin("abababab")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "junk hex must be refused");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("mt inspect:"),
+        "the refusal names the wrong verb:\n{stderr}"
+    );
+    // NON-VACUOUS: `abababab` is valid HEX, so after the routing exists it is
+    // judged as a transaction and refused for not parsing as one. Before it,
+    // this input was refused as "not an mt1 set" — which passes the verb
+    // assertion above while proving nothing about the raw subject.
+    assert!(
+        !stderr.contains("not an mt1 set"),
+        "valid hex was still judged as a set of mt1 strings:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("not a Bitcoin transaction") || stderr.contains("transaction"),
+        "the refusal must name what it tried to read:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("mt encode:"),
+        "the refusal names a command the operator did not run:\n{stderr}"
+    );
+    assert!(out.stdout.is_empty(), "a refusal must leave no artifact");
+}
+
+/// THE VERB REWRITE, EXERCISED WHERE IT ACTUALLY BINDS. The two cases above
+/// are refused by `decode_tx` and by the PSBT-parse arm, both of which name
+/// their own verb -- so neither can see the defect. `input::sniff` builds its
+/// refusals with the verb hard-coded to `encode`, and these two inputs are
+/// refused BY SNIFF: a hex string that lost a character (odd length, so not a
+/// transaction and not a PSBT) and a hex-encoded PSBT. Both are things an
+/// operator does; neither may mention a command they did not run.
+#[test]
+fn refusals_raised_inside_the_sniffer_still_name_inspect() {
+    for (input, want) in [
+        ("abababa", "is not a PSBT or a raw transaction"),
+        ("70736274ff01007502000000", "hex-encoded PSBT"),
+    ] {
+        let out = mt()
+            .args(["inspect", "--bitcoin-cli", OFFLINE])
+            .write_stdin(input)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{input:?} must be refused");
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            stderr.contains(want),
+            "{input:?} took the wrong path:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("mt inspect:"),
+            "{input:?}: the refusal names the wrong verb:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("mt encode:"),
+            "{input:?}: the refusal names a command the operator did not run:\n{stderr}"
+        );
+    }
+}
+
+/// A PSBT is a legitimate subject too — the operator may be checking what they
+/// are about to engrave rather than what they just cut.
+#[test]
+fn inspect_reads_a_base64_psbt_subject() {
+    // The corpus carries raw transactions only, so this asserts the ROUTING:
+    // a base64-PSBT-shaped input must not be read as a set of mt1 strings.
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .write_stdin("cHNidP8BAHUCAAAA")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    // NON-VACUOUS: before the routing existed this refused as "not an mt1 set",
+    // and told the operator to run `mt encode` — a different command, for the
+    // opposite direction of the journey.
+    assert!(
+        !stderr.contains("not an mt1 set"),
+        "a PSBT was routed down the mt1-strings path:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no strings found in the input"),
+        "a PSBT was routed down the mt1-strings path:\n{stderr}"
+    );
+    assert!(stderr.contains("mt inspect:"), "wrong verb:\n{stderr}");
+    assert!(
+        stderr.to_lowercase().contains("psbt"),
+        "the refusal must name what it read the input AS:\n{stderr}"
+    );
+}
+
+/// The no-node warning names WHERE the transaction was read from, and the raw
+/// subject has no strings. Telling that operator mt "read this transaction
+/// from the strings" describes a step they did not take -- on the one screen a
+/// recoverer reads in a panic.
+#[test]
+fn the_no_node_warning_names_the_source_it_actually_read() {
+    let raw = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .write_stdin(raw_hex("even"))
+        .output()
+        .unwrap();
+    let raw_err = String::from_utf8(raw.stderr).unwrap();
+    assert!(
+        raw_err.contains("bytes you supplied, but could confirm NOTHING"),
+        "the raw path claims strings it never read:\n{raw_err}"
+    );
+    assert!(
+        !raw_err.contains("from the\n         strings"),
+        "the raw path claims strings it never read:\n{raw_err}"
+    );
+
+    // ...and the STRINGS path is byte-for-byte what it was.
+    let (_, str_err) = inspect_offline("even");
+    assert!(
+        str_err.contains("strings, but could confirm NOTHING"),
+        "the strings path lost its own wording:\n{str_err}"
+    );
+    assert!(
+        str_err.contains("read from the engraving itself"),
+        "the strings path lost its own wording:\n{str_err}"
+    );
+}
+
+/// `verify` had the SAME wart, and fixing one half of a defect is how the
+/// other half survives review. `mt verify --transaction <truncated hex>` is
+/// refused by the sniffer too.
+#[test]
+fn verify_also_names_its_own_verb_on_a_sniffer_refusal() {
+    use std::io::Write as _;
+    let mut supplied = tempfile::NamedTempFile::new().unwrap();
+    supplied.write_all(b"abababa").unwrap();
+    supplied.flush().unwrap();
+    let f = strings_file("even");
+    let out = mt()
+        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(f.path())
+        .arg("--transaction")
+        .arg(supplied.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "truncated hex must be refused");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("is not a PSBT or a raw transaction"),
+        "the refusal took a different path than expected:\n{stderr}"
+    );
+    assert!(stderr.contains("mt verify:"), "wrong verb:\n{stderr}");
+    assert!(
+        !stderr.contains("mt encode:"),
+        "the refusal names a command the operator did not run:\n{stderr}"
+    );
+}
