@@ -580,11 +580,28 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
         );
     }
 
+    // WHICH ARTIFACT THIS RUN PRODUCED. The strings are built either way --
+    // the pipeline is one pipeline -- but what reaches stdout is what the
+    // operator will hold, and every block below that names a string, a
+    // correction budget, a plate number or a way to check the engraving is
+    // making a claim about THAT. See `blocks::Form`.
+    let form = if args.raw {
+        blocks::Form::RawRecord
+    } else {
+        blocks::Form::Strings
+    };
+
     // stderr: everything the operator must see, before the artifact.
     let _ = writeln!(stderr, "{}", blocks::bearer_warning());
     let lengths: Vec<usize> = strings.iter().map(|s| s.chars().count()).collect();
-    let _ = writeln!(stderr, "{}", blocks::correction_coverage(&lengths));
-    let _ = writeln!(stderr, "{}", blocks::verify_the_steel());
+    // BCH corrects CHARACTERS IN AN mt1 STRING. A raw record is engraved as a
+    // QR symbol, which carries its own Reed-Solomon and none of this budget, so
+    // "mt corrects up to 4 wrong characters per string" is a promise about an
+    // artifact that is not on the plate.
+    if form == blocks::Form::Strings {
+        let _ = writeln!(stderr, "{}", blocks::correction_coverage(&lengths));
+    }
+    let _ = writeln!(stderr, "{}", blocks::verify_the_steel(form));
 
     if !args.quiet {
         // encode CALLS the report; it does not compose its own. If it did, the
@@ -601,19 +618,39 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
 
         // ...and APPENDS its two rows below STATUS. Anything encode needed to
         // CHANGE about a row would be a defect in the row, fixable in one place.
-        let prefix = pipeline::invariant_prefix(&strings[0]).unwrap_or_default();
-        let total: usize = lengths.iter().sum();
-        let _ = writeln!(
-            stderr,
-            "CUT       {} strings, {total} characters",
-            strings.len()
-        );
-        let _ = writeln!(
-            stderr,
-            "PREFIX    all {} strings begin mt1{prefix} — strings sharing that",
-            strings.len()
-        );
-        let _ = writeln!(stderr, "          prefix belong together");
+        //
+        // CUT and PREFIX describe the SET OF STRINGS. On the raw form there is
+        // no set: one record goes to one QR job, and "all 6 strings begin
+        // mt1p9h8jqq9" beside it names an artifact the operator does not have.
+        if form == blocks::Form::Strings {
+            let prefix = pipeline::invariant_prefix(&strings[0]).unwrap_or_default();
+            let total: usize = lengths.iter().sum();
+            let _ = writeln!(
+                stderr,
+                "CUT       {} strings, {total} characters",
+                strings.len()
+            );
+            let _ = writeln!(
+                stderr,
+                "PREFIX    all {} strings begin mt1{prefix} — strings sharing that",
+                strings.len()
+            );
+            let _ = writeln!(stderr, "          prefix belong together");
+        } else {
+            // What was produced, in the same column as CUT. Its LENGTH and
+            // nothing more: whether a record fits an NFC tag is a separate
+            // ruling the operator has not made (F-246), and a bare number
+            // must not be mistaken for that verdict.
+            let _ = writeln!(
+                stderr,
+                "RECORD    one tx: record, {} characters — for QR plates",
+                3 + tx_bytes.len() * 2
+            );
+            let _ = writeln!(
+                stderr,
+                "          the device chooses the plate layout; mt does not"
+            );
+        }
         let _ = writeln!(stderr);
 
         // §0a / §5: the five suggested legend fields.
@@ -628,6 +665,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
                 args.to_label.as_deref(),
                 &outs,
                 strings.len(),
+                form,
             )
         );
         let _ = writeln!(stderr);
@@ -638,14 +676,14 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     // stdout is REDIRECTED — on a terminal the strings scroll past and there is
     // no file to destroy.
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        let _ = writeln!(stderr, "{}", blocks::redirected_output_warning());
+        let _ = writeln!(stderr, "{}", blocks::redirected_output_warning(form));
     }
 
     // §8.2h. The refusal is ADDITIVE to the warning above, not a replacement:
     // that one is about how long the file LASTS (a 0600 file still outlives the
     // session), this one is about who can READ it. Placed before a single byte
     // of stdout is written, because a refusal must leave no artifact.
-    validate::world_readable_stdout_guard(args.allow_world_readable)?;
+    validate::world_readable_stdout_guard(args.allow_world_readable, form)?;
 
     // stdout: the strings, lowercase, and nothing else — or, with
     // `--record --raw`, the one `tx:` record instead.

@@ -330,3 +330,152 @@ fn a_failing_run_contributes_nothing_to_stdout() {
         );
     }
 }
+
+// ── What the RAW form says it made ───────────────────────────────────────────
+
+/// **THE RAW FORM MUST NOT DESCRIBE THE ARTIFACT IT DID NOT MAKE.**
+///
+/// Found by regenerating `mnemonic-engrave`'s host journey against the new
+/// verb and reading the transcript, which is the only place it is visible:
+/// every unit test passed while `--record --raw` printed the whole `mt1`
+/// apparatus. It emits ONE `tx:` record for a QR plate, and stderr said
+///
+/// - *"mt corrects up to 4 wrong CHARACTERS per string … strings 1-6 are 87"*
+///   — BCH per-string correction, on an artifact carrying no `mt1` string;
+/// - *"Type the strings back from the steel and run `mt verify`"* — you cannot
+///   type a QR symbol back, and there are no strings on the plate;
+/// - `CUT 6 strings, 522 characters` and `PREFIX all 6 strings begin mt1p9h8jqq9`;
+/// - a legend reading `FORMAT: mt1 codex32` and *"on EACH plate, its number:
+///   1/6, 2/6, … 6/6"* — for a job that produces one plate of a different kind.
+///
+/// Every one of those is an instruction for a **21-minute-per-plate,
+/// irreversible** operation, and each names a different artifact than the one
+/// on stdout. The strings are still computed (the pipeline builds them either
+/// way); they are simply not what this run emitted.
+#[test]
+fn the_raw_form_does_not_describe_the_mt1_strings_it_did_not_emit() {
+    let v = even();
+    let raw_hex = v["raw_hex"].as_str().unwrap();
+    let raw = encode(&["--record", "--raw"], raw_hex).success();
+    let err = String::from_utf8_lossy(&raw.get_output().stderr).to_string();
+
+    // Each of these is a claim about `mt1` strings. NONE may appear.
+    for lie in [
+        "corrects up to 4 wrong CHARACTERS",
+        "typed-from-steel",
+        "mt verify",
+        "mt1 codex32",
+        "1/6",
+        "CUT       6 strings",
+        "PREFIX    all 6 strings",
+        "strings 1-6 are 87",
+    ] {
+        assert!(
+            !err.contains(lie),
+            "the raw form printed {lie:?}, which describes the mt1 strings it \
+             did NOT emit:\n{err}"
+        );
+    }
+
+    // …and it must say what it DID make, and how to check it. `mt inspect`
+    // over a scanned QR is the command the device's own post-cut screen names.
+    assert!(err.contains("RECORD"), "say what was produced: {err}");
+    assert!(
+        err.contains("mt inspect"),
+        "the post-cut check for a QR plate is `mt inspect` over what the \
+         scanner hands back — `mt verify` reads mt1 strings: {err}"
+    );
+
+    // THE CONTROL, on the same fixture: the CHUNKS form still says all of it,
+    // so this is about the FORM and not about a block that was deleted.
+    let chunks = encode(&["--record", "--chunks"], raw_hex).success();
+    let cerr = String::from_utf8_lossy(&chunks.get_output().stderr).to_string();
+    for kept in [
+        "corrects up to 4 wrong CHARACTERS",
+        "typed-from-steel",
+        "mt verify",
+        "mt1 codex32",
+        "1/6",
+        "CUT       6 strings",
+        "PREFIX    all 6 strings",
+    ] {
+        assert!(
+            cerr.contains(kept),
+            "the chunks form must keep {kept:?} — it DOES cut six strings:\n{cerr}"
+        );
+    }
+    assert!(!cerr.contains("mt inspect"), "chunks are verified by typing back");
+}
+
+/// The bearer warning about a redirected stdout names the right NOUN. It is
+/// the same hazard either way — the artifact copies itself — but "the strings
+/// just left this terminal" after emitting one record is the wording that
+/// makes an operator look for six of something.
+#[test]
+fn the_redirected_warning_names_what_actually_left() {
+    let v = even();
+    let raw_hex = v["raw_hex"].as_str().unwrap();
+    let raw = encode(&["--record", "--raw"], raw_hex).success();
+    let err = String::from_utf8_lossy(&raw.get_output().stderr).to_string();
+    assert!(err.contains("the record just left this terminal"), "{err}");
+    // …and the BODY agrees with the subject. The first substitution left
+    // "so the record went somewhere that keeps them".
+    assert!(err.contains("the record went somewhere that keeps it"), "{err}");
+    assert!(!err.contains("keeps them"), "singular subject, singular body: {err}");
+    let chunks = encode(&["--record", "--chunks"], raw_hex).success();
+    let cerr = String::from_utf8_lossy(&chunks.get_output().stderr).to_string();
+    assert!(cerr.contains("the strings just left this terminal"), "{cerr}");
+}
+
+/// The §8.2h refusal names the artifact THAT RUN produced.
+///
+/// It said *"These **strings** ARE the engraving"* and *"stdout IS the
+/// strings"* on a run that emitted one `tx:` record — the same defect class as
+/// the block above, in the one message an operator meets while their file
+/// already exists. Reached by the commonest divergence there is: `mt encode
+/// --record --raw > rec.txt`, where `>` creates the file 0644 under the usual
+/// umask.
+#[test]
+fn the_world_readable_refusal_names_the_artifact_this_run_made() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let f = tmp_with(even()["raw_hex"].as_str().unwrap().as_bytes());
+
+    // `std::process::Command`, not `assert_cmd`: the refusal under test is
+    // about the MODE OF FD 1, so stdout has to be a real 0644 file.
+    let out = |form: &str| -> String {
+        let sink = dir.path().join(format!("out{form}.txt"));
+        let handle = std::fs::File::create(&sink).unwrap();
+        std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+            .args(["encode", "--record", form])
+            .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+            .arg("--in")
+            .arg(f.path())
+            .stdout(std::process::Stdio::from(handle))
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(!o.status.success(), "{form}: §8.2h must refuse a 0644 stdout");
+        assert_eq!(
+            std::fs::metadata(&sink).unwrap().len(),
+            0,
+            "{form}: a refusal must leave no artifact"
+        );
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+
+    let raw = out("--raw");
+    assert!(raw.contains("§8.2h"), "{raw}");
+    assert!(raw.contains("This record IS the engraving"), "{raw}");
+    assert!(raw.contains("stdout IS the record"), "{raw}");
+    assert!(
+        !raw.contains("These strings ARE") && !raw.contains("stdout IS the strings"),
+        "the raw form emitted ONE record, not strings: {raw}"
+    );
+
+    // THE CONTROL: the chunks form keeps the plural, because it is true there.
+    let chunks = out("--chunks");
+    assert!(chunks.contains("These strings ARE the engraving"), "{chunks}");
+    assert!(chunks.contains("stdout IS the strings"), "{chunks}");
+}

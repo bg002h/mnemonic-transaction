@@ -18,6 +18,28 @@ use std::io::IsTerminal;
 ///
 /// This exists because the operator, walking the encode journey, asked *"stdin
 /// doesn't mean from the command line?"* — **the confusion was the finding**.
+/// **Which artifact this run produced**, for the blocks whose wording depends
+/// on it — and only those.
+///
+/// `mt encode` builds the `mt1` strings either way, because the pipeline is one
+/// pipeline; what changes with `--record --raw` is what reaches **stdout**, and
+/// therefore what the operator will hold. Every block below that names a
+/// string, a per-string correction budget, a plate number or a way to check the
+/// engraving is making a claim about the artifact, so it has to ask.
+///
+/// **It exists because a journey transcript, not a unit test, caught the
+/// alternative.** `--record --raw` printed *"Type the strings back from the
+/// steel and run `mt verify`"* beside a record destined for one QR plate, with
+/// the whole suite green: nothing asserted on the relationship between what
+/// stdout carried and what stderr described.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Form {
+    /// `mt1` strings on stdout — text plates, engraved and typed back.
+    Strings,
+    /// One `tx:` record on stdout — a QR plate, scanned back.
+    RawRecord,
+}
+
 pub fn welcome_if_tty() -> Option<String> {
     if std::io::stdin().is_terminal() {
         Some(
@@ -97,12 +119,28 @@ pub fn correction_coverage(lengths: &[usize]) -> Warning {
 /// the ones on stdout and the ones they cut. Verifying the file proves nothing
 /// about the engraving — it re-checks `mt`'s own output, which was correct by
 /// construction. The whole point of BCH is to catch what the *hand* got wrong.
-pub fn verify_the_steel() -> Warning {
-    Warning::new(
-        "when you are done, verify the ENGRAVING — not this output.",
-        "Type the strings back from the steel and run:\n\n    mt verify < typed-from-steel.txt\n\n\
-         Verifying the file mt just produced tests nothing that can fail.",
-    )
+pub fn verify_the_steel(form: Form) -> Warning {
+    // THE COMMAND DIFFERS BECAUSE THE PLATE DOES. A QR plate has no strings to
+    // type, and `mt verify` reads `mt1` — so pointing a QR operator at it names
+    // a check they cannot perform. `mt inspect` over what a scanner hands back
+    // is the raw-transaction subject P1 added for exactly this step, and it is
+    // the command the device's own post-cut screen names.
+    match form {
+        Form::Strings => Warning::new(
+            "when you are done, verify the ENGRAVING — not this output.",
+            "Type the strings back from the steel and run:\n\n    mt verify < typed-from-steel.txt\n\n\
+             Verifying the file mt just produced tests nothing that can fail.",
+        ),
+        Form::RawRecord => Warning::new(
+            "when you are done, verify the ENGRAVING — not this output.",
+            "SCAN the cut symbol with an ordinary QR reader and run:\n\n    \
+             mt inspect --in scanned.hex\n\n\
+             It must report the same txid as the report above. Inspecting the \
+             file mt just produced tests nothing that can fail — and this \
+             machine has no camera, so nothing but you will ever look at the \
+             plate.",
+        ),
+    }
 }
 
 /// §5's legend — the **suggested text an operator may cut beside their
@@ -128,17 +166,31 @@ pub fn legend(
     to_label: Option<&str>,
     outputs: &[u64],
     count: usize,
+    form: Form,
 ) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "SUGGESTED LEGEND — cut this beside the strings. mt cannot see your\n\
+        "SUGGESTED LEGEND — cut this beside the {}. mt cannot see your\n\
          plate, so the layout is yours (§3b); these are the five facts a\n\
-         stranger needs BEFORE they can do anything with the steel.\n"
+         stranger needs BEFORE they can do anything with the steel.\n",
+        match form {
+            Form::Strings => "strings",
+            Form::RawRecord => "symbol",
+        }
     );
     let _ = writeln!(s, "    BEARER - ANYONE HOLDING THIS CAN BROADCAST IT");
-    let _ = writeln!(s, "    FORMAT: mt1 codex32");
+    // What a stranger must be told to READ it. `mt1 codex32` on a QR plate
+    // sends them looking for a string that is not there.
+    let _ = writeln!(
+        s,
+        "    FORMAT: {}",
+        match form {
+            Form::Strings => "mt1 codex32",
+            Form::RawRecord => "raw transaction, QR — scan it, then broadcast",
+        }
+    );
 
     match from {
         Some(f) => {
@@ -189,7 +241,12 @@ pub fn legend(
     // like the rest of the legend. Without it a recoverer holding a pile of
     // steel has to decode a string to learn which one they are looking at, and
     // the header that carries the index is the part BCH repairs LAST.
-    if count > 1 {
+    //
+    // **Only for the strings form.** `mt` knows how many `mt1` strings there
+    // are, and each is one engraved unit. It does NOT know how many plates a
+    // raw record becomes: the device searches for a QR layout that fits, so a
+    // count printed here would be a number mt invented for permanent steel.
+    if form == Form::Strings && count > 1 {
         let _ = writeln!(
             s,
             "\n  ...and on EACH plate, its number:  1/{count}, 2/{count}, … {count}/{count}"
@@ -266,11 +323,22 @@ pub fn malleability_caveat() -> String {
 /// Printed only when stdout is REDIRECTED. On a terminal the strings scroll
 /// past and the advice would be noise; redirected, there is a file sitting on
 /// disk that outlives the session.
-pub fn redirected_output_warning() -> crate::refusal::Warning {
+pub fn redirected_output_warning(form: Form) -> crate::refusal::Warning {
+    // The NOUN is the artifact that actually left. Same hazard either way; a
+    // warning about "the strings" after emitting one record makes an operator
+    // go looking for six of something.
+    let (subject, keeps) = match form {
+        Form::Strings => ("the strings", "keeps them"),
+        Form::RawRecord => ("the record", "keeps it"),
+    };
     crate::refusal::Warning::new(
-        "the strings just left this terminal — and they are BEARER, exactly \
-         like the plate.",
-        "stdout is not a terminal, so the strings went somewhere that keeps them \
+        format!(
+            "{subject} just left this terminal — and {} BEARER, exactly \
+             like the plate.",
+            if form == Form::Strings { "they are" } else { "it is" }
+        ),
+        format!(
+        "stdout is not a terminal, so {subject} went somewhere that {keeps} \
          — a file, a pipe, or another program. Wherever that is, anyone who \
          reads it can broadcast this transaction: it is the engraving, in a form \
          that copies itself.\n\
@@ -278,7 +346,8 @@ pub fn redirected_output_warning() -> crate::refusal::Warning {
          If it landed in a FILE, destroy it once the plates are cut and \
          verified: `shred -u <file>` on Linux, `rm -P <file>` on macOS. Plain \
          `rm` unlinks the name and leaves the bytes. And check it is not already \
-         in a backup, a sync folder, or your editor's undo history.",
+         in a backup, a sync folder, or your editor's undo history."
+        ),
     )
 }
 
@@ -349,6 +418,57 @@ mod tests {
 
     #[test]
     fn steel_instruction_names_the_command() {
-        assert!(verify_the_steel().to_string().contains("mt verify <"));
+        assert!(
+            verify_the_steel(Form::Strings)
+                .to_string()
+                .contains("mt verify <")
+        );
+    }
+
+    /// **The two forms must not name each other's command.** `mt verify` reads
+    /// `mt1` strings and `mt inspect` reads a transaction's bytes, so each is
+    /// a check the other's operator cannot perform — and this is an
+    /// instruction for an irreversible cut. Asserted BOTH WAYS: one direction
+    /// alone passes if the function simply always says both.
+    #[test]
+    fn each_form_names_only_its_own_post_cut_check() {
+        let strings = verify_the_steel(Form::Strings).to_string();
+        let record = verify_the_steel(Form::RawRecord).to_string();
+        assert!(strings.contains("mt verify <") && !strings.contains("mt inspect"));
+        assert!(record.contains("mt inspect") && !record.contains("mt verify"));
+        assert!(
+            record.contains("SCAN"),
+            "a QR plate is read by scanning it: {record}"
+        );
+    }
+
+    /// The legend's FORMAT line tells a stranger how to READ the plate, so it
+    /// is the one line that cannot be shared between the forms.
+    #[test]
+    fn the_legend_format_line_follows_the_form() {
+        let lock = crate::locktime::read(&sample_tx());
+        let strings = legend(&lock, None, None, None, &[1], 6, Form::Strings);
+        let record = legend(&lock, None, None, None, &[1], 6, Form::RawRecord);
+        assert!(strings.contains("FORMAT: mt1 codex32"));
+        assert!(!record.contains("mt1 codex32"), "got: {record}");
+        assert!(record.contains("raw transaction, QR"), "got: {record}");
+        // The per-plate numbering is knowledge mt has only for the strings.
+        assert!(strings.contains("1/6"), "got: {strings}");
+        assert!(
+            !record.contains("1/6"),
+            "the device chooses the QR layout; mt must not invent a plate \
+             count for steel: {record}"
+        );
+    }
+
+    /// A transaction to hand `locktime::read`. Content is irrelevant here —
+    /// only the legend's form-dependent lines are under test.
+    fn sample_tx() -> bitcoin::Transaction {
+        bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        }
     }
 }

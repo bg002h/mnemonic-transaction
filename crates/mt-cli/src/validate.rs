@@ -620,7 +620,10 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
 /// `mt encode … > /dev/null`. A terminal and `/dev/null` persist nothing, so
 /// neither can leak. There are tests for the FIFO, for `/dev/null`, and for the
 /// anonymous pipe.
-pub fn world_readable_stdout_guard(allow: bool) -> Result<(), Refusal> {
+pub fn world_readable_stdout_guard(
+    allow: bool,
+    form: crate::blocks::Form,
+) -> Result<(), Refusal> {
     if allow {
         return Ok(());
     }
@@ -650,15 +653,32 @@ pub fn world_readable_stdout_guard(allow: bool) -> Result<(), Refusal> {
             "encode",
             "§8.2h",
             format!("stdout is a file of mode {mode:04o} — readable by other users on this machine."),
-            "These strings ARE the engraving, and a finalized transaction is \
-             BEARER: anyone who can read that file can broadcast it.",
+            // THE NOUN IS THIS RUN'S ARTIFACT. `--record --raw` puts ONE
+            // `tx:` record on stdout, and an operator reading "these strings"
+            // beside a file they can see holding one line is being told about
+            // a different run. Same defect as the block warnings above it,
+            // found in the same journey transcript.
+            format!(
+                "{} the engraving, and a finalized transaction is \
+                 BEARER: anyone who can read that file can broadcast it.",
+                match form {
+                    crate::blocks::Form::Strings => "These strings ARE",
+                    crate::blocks::Form::RawRecord => "This record IS",
+                }
+            ),
         )
         .with_remedy(
-            "mt has no --out: stdout IS the strings, by design (§3b). So the \
+            format!(
+            "mt has no --out: stdout IS the {}, by design (§3b). So the \
              remedies are the shell's:\n\n  \
              umask 077                 then re-run; the shell creates it 0600\n  \
              chmod 600 <file>          then re-run -- `>` truncates but keeps the mode\n  \
              --allow-world-readable    proceed anyway",
+            match form {
+                crate::blocks::Form::Strings => "strings",
+                crate::blocks::Form::RawRecord => "record",
+            }
+            ),
         ));
     }
     #[allow(unreachable_code)]
