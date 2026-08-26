@@ -586,12 +586,16 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
         return None;
     }
     Some(Warning::new(
-        format!("{label} is mode {mode:04o} — readable by other users on this machine."),
+        format!("{label} is mode {mode:04o} — its permissions grant read to group and others."),
         "A finalized transaction is BEARER. Anyone who can read this file can \
          broadcast it. It is exactly as dangerous as the plate you are about to \
-         cut.\n\nIt says nothing about who read the file BEFORE now, and nothing \
-         about backups or directories it has passed through. It is the check that \
-         is available, not a guarantee.",
+         cut.\n\nWHAT THIS DID NOT CHECK (F-252): only the file's own mode was \
+         measured. If a directory above it denies search to others — a 0700 home \
+         directory does — then nobody else can open it today, and this warning is \
+         about a mode that becomes dangerous the moment the file is moved, copied \
+         or its parent relaxed.\n\nIt also says nothing about who read the file \
+         BEFORE now, nor about backups. It is the check that is available, not a \
+         guarantee.",
     ))
 }
 
@@ -652,7 +656,7 @@ pub fn world_readable_stdout_guard(
         return Err(Refusal::new(
             "encode",
             "§8.2h",
-            format!("stdout is a file of mode {mode:04o} — readable by other users on this machine."),
+            format!("stdout is a file of mode {mode:04o} — its permissions grant read to group or others."),
             // THE NOUN IS THIS RUN'S ARTIFACT. `--qr` puts ONE
             // `tx:` record on stdout, and an operator reading "these strings"
             // beside a file they can see holding one line is being told about
@@ -669,7 +673,11 @@ pub fn world_readable_stdout_guard(
         )
         .with_remedy(
             format!(
-            "mt has no --out: stdout IS the {}, by design (§3b). So the \
+            "Only the file's OWN mode was checked. If a directory above it \
+             denies search to others -- a 0700 home directory does -- nobody \
+             else can open it today; the mode still becomes dangerous the \
+             moment the file is moved, copied, or its parent relaxed (F-252).\n\n\
+             mt has no --out: stdout IS the {}, by design (§3b). So the \
              remedies are the shell's:\n\n  \
              umask 077                 then re-run; the shell creates it 0600\n  \
              chmod 600 <file>          then re-run -- `>` truncates but keeps the mode\n  \

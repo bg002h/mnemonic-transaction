@@ -400,3 +400,51 @@ fn the_qr_form_cannot_be_grouped_or_elided() {
         assert!(a.get_output().stdout.is_empty(), "{args:?}: stdout");
     }
 }
+
+// ── F-252: the refusal must state the MODE, not assert reachability ──────────
+
+/// **§8.2h checks a MODE and must not claim a FACT it never established.**
+///
+/// The guard is `fstat(1)` + `mode & 0o077`. POSIX requires search permission on
+/// every directory in a path, so a 0644 file beneath a 0700 ancestor cannot be
+/// opened by anyone else — and `$HOME` is 0700 on the operator's machine, which
+/// makes *"readable by other users on this machine"* false for the commonest
+/// destination there is. Measured 2026-08-25: a `mktemp -d` (0700) holding a
+/// 0644 file is unreachable, and `mt` refused it anyway.
+///
+/// **The guard stays.** A 0644 file is a latent hazard the moment it is moved,
+/// tarred, backed up, or its parent is chmod'd. Only the SENTENCE changes: say
+/// what was measured, so the refusal does not cry wolf in the majority case and
+/// train the operator to reach for `--allow-world-readable` by reflex.
+#[test]
+fn the_world_readable_refusal_states_the_mode_and_claims_no_more() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let f = tmp_with(even()["raw_hex"].as_str().unwrap().as_bytes());
+    let sink = dir.path().join("out.txt");
+    let handle = std::fs::File::create(&sink).unwrap();
+    std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+        .args(["encode", "--qr"])
+        .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .arg("--in")
+        .arg(f.path())
+        .stdout(std::process::Stdio::from(handle))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "§8.2h must still refuse");
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+
+    assert!(err.contains("0644"), "it must name the mode it measured: {err}");
+    assert!(
+        !err.contains("readable by other users on this machine"),
+        "it must NOT assert reachability the guard never checked -- the \
+         containing directory is 0700 here, so no other user can open this \
+         file at all: {err}"
+    );
+    assert!(
+        err.contains("a directory above it") || err.contains("directory above"),
+        "and it must say what it did NOT check, so the operator can judge: {err}"
+    );
+}
