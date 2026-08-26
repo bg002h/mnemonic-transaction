@@ -126,7 +126,11 @@ struct EncodeArgs {
     ///
     /// Opt-in and never the default: grouping affects **stdout**, and the
     /// canonical artifact is ungrouped.
-    #[arg(long, value_name = "N")]
+    ///
+    /// Refused with `--record`, structurally: a record is engraved VERBATIM and
+    /// EPD §6.4 requires the canonical unbroken string, so a grouped record is
+    /// one `me sysw pack` cannot classify.
+    #[arg(long, value_name = "N", conflicts_with = "record")]
     group_size: Option<usize>,
 
     /// Separator to use with `--group-size`. **Whitespace only.**
@@ -143,8 +147,33 @@ struct EncodeArgs {
     ///
     /// The first string stays full, so the output is self-describing and
     /// `decode` needs no flag of its own.
-    #[arg(long)]
+    ///
+    /// Refused with `--record`, for the same reason as `--group-size`: an
+    /// elided string is not the canonical record the container admits.
+    #[arg(long, conflicts_with = "record")]
     elide_prefix: bool,
+
+    /// Emit a `tx:` RECORD for `me sysw pack` instead of bare `mt1` strings.
+    ///
+    /// Needs a FORM — `--raw` or `--chunks`. There is no default, and the
+    /// refusal says why, because a bare blocking refusal is what gets aliased
+    /// away (§2.2, R3).
+    #[arg(long)]
+    record: bool,
+
+    /// `--record`: carry the transaction's BYTES, as `tx:` + lowercase hex.
+    /// QR plates; the device needs no `mt1` decoder.
+    #[arg(long, requires = "record")]
+    raw: bool,
+
+    /// `--record`: carry the `mt1` strings as BARE sibling records. Text
+    /// plates; the device engraves them verbatim.
+    ///
+    /// This is `mt encode`'s ordinary output, unchanged — a chunk set rides the
+    /// container as bare records the way `md1`/`mk1` already do, so the flag
+    /// selects a form rather than transforming the artifact.
+    #[arg(long, requires = "record", conflicts_with = "raw")]
+    chunks: bool,
 
     /// Proceed even though stdout is a world-readable file (§8.2h).
     ///
@@ -216,6 +245,7 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
+    record_form_guard(&args)?;
 
     let raw = match &args.r#in {
         Some(path) => std::fs::read(path).map_err(|e| {
@@ -617,14 +647,84 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     // of stdout is written, because a refusal must leave no artifact.
     validate::world_readable_stdout_guard(args.allow_world_readable)?;
 
-    // stdout: the strings, lowercase, and nothing else.
+    // stdout: the strings, lowercase, and nothing else — or, with
+    // `--record --raw`, the one `tx:` record instead.
     let out = std::io::stdout();
     let mut out = out.lock();
-    let rendered = render(&strings, &args);
+    let rendered = if args.raw {
+        vec![encode_tx_record(&tx_bytes)]
+    } else {
+        // `--record --chunks` lands here too, and lands here UNCHANGED: a
+        // chunk set rides the container as BARE `mt1` records, the same route
+        // `md1`/`mk1` already take, so there is nothing to wrap. `--group-size`
+        // and `--elide-prefix` cannot reach this path with `--record` set, so
+        // what `render` returns is already canonical.
+        render(&strings, &args)
+    };
     for line in rendered {
         let _ = writeln!(out, "{line}");
     }
     Ok(())
+}
+
+/// R3 (spec §5, §2.2) — `--record` with neither `--raw` nor `--chunks` is
+/// REFUSED, **and the refusal TEACHES**, because a bare blocking refusal is
+/// what gets aliased away.
+///
+/// **This handles the one case clap cannot express.** `requires = "record"`
+/// already refuses a form without `--record`, and `conflicts_with = "raw"`
+/// already refuses both at once; neither can say "this flag needs one of these
+/// two". So the guard is the remainder, not a re-check.
+///
+/// It runs before the transaction is read, so a refusal costs no work and
+/// leaves no artifact.
+fn record_form_guard(args: &EncodeArgs) -> Result<(), Refusal> {
+    if !args.record || args.raw || args.chunks {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        "encode",
+        // NAMED, not bare `§2.2`. Every other refusal here cites SPEC_mt_v0_1,
+        // whose §2 is "What `mt-codec` actually specifies" — so a bare §2.2
+        // would send the one reader who follows it to the wrong document, in
+        // the same repo, at a section that exists.
+        "SPEC_engrave §2.2",
+        "--record needs a form",
+        "A `tx:` record carries the transaction ONE of two ways, and they \
+         produce different plates. There is no default, because the choice is \
+         the operator's and it is not reversible once the steel is cut.",
+    )
+    .with_remedy("Say which:")
+    .with_verbatim(
+        "  --raw      the transaction's bytes. QR plates only.\n\
+         \x20            The device needs no mt1 decoder.\n\
+         \n\
+         \x20 --chunks   mt1 strings. Text plates.\n\
+         \x20            The device engraves them verbatim.",
+    ))
+}
+
+/// The `tx:` record: the reserved prefix and the transaction's canonical
+/// serialization in lowercase hex. **Concatenation, and nothing else.**
+///
+/// This is `me`'s `sysw::record::encode_tx` (`crates/me-cli/src/sysw/record.rs`)
+/// re-stated in three lines rather than shared, because the two repos do not
+/// depend on each other; `tests/tx_record.rs` pins the result against the
+/// prefix and the vector's own bytes so the two cannot drift silently.
+///
+/// **There is no frame.** A parallel implementation put a magic, a version, a
+/// form byte, a carried txid, a wtxid and a flags word in front of the body;
+/// that format is retired. The txid is derived from these bytes by anyone
+/// holding them, and the wtxid was superseded by the signature predicate, so a
+/// frame would carry nothing that is not already here.
+fn encode_tx_record(tx_bytes: &[u8]) -> String {
+    use core::fmt::Write as _;
+    let mut s = String::with_capacity(3 + tx_bytes.len() * 2);
+    s.push_str("tx:");
+    for b in tx_bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// Apply `--elide-prefix` and `--group-size` to what goes on stdout.

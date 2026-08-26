@@ -257,3 +257,13 @@ check = "src/validate.rs::world_readable_stdout_guard"
 spec  = "§8.2h"
 test  = "refuses_a_world_readable_named_fifo"
 check = "src/validate.rs::world_readable_stdout_guard"
+
+# R3, and it did NOT come from §8: `mt encode --record` is P2 of
+# SPEC_engrave_transaction, whose §2.2 rules that the form has NO DEFAULT and
+# that the refusal must TEACH. The entry is here rather than in that repo
+# because this gate checks the coupling between a rule and the test that proves
+# it fires, and the test lives here.
+[[refusal]]
+spec  = "SPEC_engrave §2.2"
+test  = "record_without_a_form_is_refused_and_the_refusal_teaches"
+check = "src/main.rs::record_form_guard"

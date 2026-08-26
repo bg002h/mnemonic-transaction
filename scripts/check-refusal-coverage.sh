@@ -123,6 +123,11 @@ REQUIRED = [
     # warned about the INPUT file's mode and then wrote the strings to an output
     # file it never mentioned again.
     "§8.2h",  # stdout is a world-readable FILE: warn on input, refuse on output
+    # ADDED 2026-08-25 with P3b, the `me tx` -> `mt encode --record` graft. The
+    # ONLY entry whose rule is ruled OUTSIDE SPEC_mt_v0_1, so it is cited by
+    # document as well as by number -- a bare "§2.2" resolves to a real and
+    # entirely unrelated section of mt's own spec.
+    "SPEC_engrave §2.2",  # --record needs a form: no default, and the refusal teaches
 ]
 cited = {e["spec"] for e in entries}
 for r in REQUIRED:
