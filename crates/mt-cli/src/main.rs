@@ -1265,6 +1265,22 @@ fn verify(args: ReadArgs) -> Result<(), Refusal> {
 ///
 /// **The SET rows are absent, and that is correct**: there are no chunks here.
 /// A row reading "1 of 1" would claim a set that does not exist.
+/// Does this input open an `mt1` set? — P5 M-5.
+///
+/// **Keyed on how the input STARTS, which the codec guarantees**, not on a
+/// substring anywhere in it. The previous test was `contains("mt1")`,
+/// case-folded, over the whole text. Its comment argued that hex carries no
+/// `m`/`t` and that a base64 PSBT "begins `cHNidP8`" — both true, and neither
+/// is what `contains` tests. The base64 alphabet includes `m`, `M`, `t`, `T`
+/// and `1`, so the substring turns up by chance in roughly 6% of
+/// 4,000-character PSBTs, and every one of those was routed to the strings
+/// path and refused with a strings-shaped error instead of being inspected.
+///
+/// Leading whitespace is skipped because operators paste with it.
+fn looks_like_an_mt1_set(text: &str) -> bool {
+    text.trim_start().to_ascii_lowercase().starts_with("mt1")
+}
+
 fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
     // The sniffing helpers were written for `encode` and hard-code that verb in
     // every refusal they build. Left alone, an operator who typed `mt inspect`
@@ -1382,8 +1398,7 @@ fn inspect(args: ReadArgs) -> Result<(), Refusal> {
     // EMPTY INPUT STAYS ON THE STRINGS PATH: "no strings found in the input"
     // is the better sentence for it than anything the sniffer would produce,
     // and routing it here would trade a good message for a worse one.
-    let lower = text.to_ascii_lowercase();
-    if !text.trim().is_empty() && !lower.contains("mt1") {
+    if !text.trim().is_empty() && !looks_like_an_mt1_set(&text) {
         return inspect_transaction(text.as_bytes(), &args);
     }
     let read = read_strings::read(&text, "inspect")?;
@@ -1991,4 +2006,33 @@ fn parse_btc(v: &str) -> Result<u64, Refusal> {
         return Err(bad("It exceeds 21,000,000 BTC, the entire supply."));
     }
     Ok(sats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_an_mt1_set;
+
+    /// P5 M-5 — the inspect routing predicate, pinned directly.
+    ///
+    /// A unit test rather than a CLI one on purpose: constructing a base64 PSBT
+    /// that is BOTH valid and contains "mt1" is fixture gymnastics, and the
+    /// defect is entirely in this predicate.
+    #[test]
+    fn an_mt1_set_is_recognised_by_how_it_starts_not_by_a_substring() {
+        assert!(looks_like_an_mt1_set("mt1qqqqq"));
+        assert!(
+            looks_like_an_mt1_set("  \n mt1qqqqq"),
+            "operators paste with leading whitespace"
+        );
+        assert!(looks_like_an_mt1_set("MT1QQQQQ"), "case-folded");
+
+        // THE DEFECT: base64's alphabet contains m, M, t, T and 1, so a PSBT
+        // body turns up the substring by chance and was routed to the strings
+        // path and refused with a strings-shaped error.
+        assert!(
+            !looks_like_an_mt1_set("cHNidP8BAHsCAAAAmt1AAAAA"),
+            "a PSBT that merely CONTAINS mt1 is not a set"
+        );
+        assert!(!looks_like_an_mt1_set(""), "empty stays on the strings path");
+    }
 }
