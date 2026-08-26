@@ -50,6 +50,10 @@ pub fn welcome_if_tty() -> Option<String> {
                 "  then press Ctrl-D on a new line. Or pass a file with --in.\n",
                 "\n",
                 "  Nothing has happened yet.\n",
+                "\n",
+                "  This writes `mt1` strings to engrave BY HAND. For a SeedHammer II,\n",
+                "  add --record --raw (QR plates) or --record --chunks (text plates)\n",
+                "  and pipe into `me sysw pack`.\n",
             )
             .to_string(),
         )

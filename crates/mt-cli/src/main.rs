@@ -42,13 +42,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Turn a signed transaction into `mt1` strings for hand engraving.
+    /// Turn a signed transaction into engravable form.
+    ///
+    /// Default: `mt1` strings, for hand engraving or text plates.
+    /// `--record --chunks`: the same strings, as records for `me sysw pack`.
+    /// `--record --raw`: a `tx:` record carrying the raw bytes, for QR plates.
     Encode(EncodeArgs),
     /// Read `mt1` strings back and emit BROADCASTABLE HEX on stdout.
     Decode(ReadArgs),
     /// Check a set of `mt1` strings — structurally, and never asking a node.
     Verify(ReadArgs),
-    /// Report what is IN a set, consulting a node automatically when one is there.
+    /// Report what is IN a set. Queries a local node AUTOMATICALLY if one is reachable.
     Inspect(ReadArgs),
 }
 
@@ -153,7 +157,7 @@ struct EncodeArgs {
     #[arg(long, conflicts_with = "record")]
     elide_prefix: bool,
 
-    /// Emit a `tx:` RECORD for `me sysw pack` instead of bare `mt1` strings.
+    /// Emit a RECORD for `me sysw pack` — the SeedHammer II path — instead of bare `mt1` strings to engrave by hand.
     ///
     /// Needs a FORM — `--raw` or `--chunks`. There is no default, and the
     /// refusal says why, because a bare blocking refusal is what gets aliased

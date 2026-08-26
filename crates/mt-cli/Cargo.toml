@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The mt CLI — encode, decode, verify and inspect mt1 engravable transaction backups"
+description = "The mt CLI — turn a signed Bitcoin transaction into engravable form: mt1 strings to engrave by hand, or a record for `me` to pack for a SeedHammer II. And read it back."
 
 [lints]
 workspace = true
