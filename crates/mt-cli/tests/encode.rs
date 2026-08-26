@@ -339,3 +339,75 @@ fn there_is_no_way_to_pass_a_transaction_as_an_argument() {
         "a positional transaction argument was accepted — §8.2f refuses this"
     );
 }
+
+// ── F-250: `-` means stdin, which is already the default ─────────────────────
+
+/// **`mt encode -` must WORK, not error.** `-` meaning *read stdin* is honoured
+/// by `cat`, `tar`, `curl`, `gpg` and `jq`, so an operator carrying that habit
+/// types it on their first try. `mt` already reads stdin by default, so the
+/// intent was satisfied before the argument was parsed — the command failed for
+/// asking politely.
+///
+/// Asserted as EQUALITY with the flagless run, not merely `success()`: a `-`
+/// that were silently treated as a filename, or that suppressed the strings,
+/// would pass a bare success check.
+#[test]
+fn a_bare_dash_means_stdin_and_changes_nothing() {
+    let v = &corpus()["vectors"][0];
+    let raw = v["raw_hex"].as_str().unwrap();
+
+    let plain = mt()
+        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .write_stdin(raw)
+        .output()
+        .unwrap();
+    let dashed = mt()
+        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+        .write_stdin(raw)
+        .output()
+        .unwrap();
+
+    assert!(dashed.status.success(), "`mt encode -` must succeed");
+    assert_eq!(
+        String::from_utf8_lossy(&dashed.stdout),
+        String::from_utf8_lossy(&plain.stdout),
+        "`-` must change NOTHING about the artifact"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&dashed.stderr),
+        String::from_utf8_lossy(&plain.stderr),
+        "`-` must not add or remove a single line of the report"
+    );
+}
+
+/// It composes with the flag, because an operator who learned `-` uses it
+/// everywhere.
+#[test]
+fn a_bare_dash_composes_with_qr() {
+    let v = &corpus()["vectors"][0];
+    let raw = v["raw_hex"].as_str().unwrap();
+    let a = mt()
+        .args(["encode", "--qr", "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+        .write_stdin(raw)
+        .output()
+        .unwrap();
+    assert!(a.status.success(), "`mt encode --qr -` must succeed");
+    assert_eq!(
+        String::from_utf8_lossy(&a.stdout),
+        format!("tx:{raw}\n"),
+        "the record is unchanged by the dash"
+    );
+}
+
+/// **`-` is the ONLY positional admitted.** Anything else must still be an
+/// error, or the §8.2f pre-clap guard would be the only thing standing between
+/// a mistyped argument and silent acceptance.
+#[test]
+fn a_dash_does_not_open_the_door_to_other_positionals() {
+    let a = mt()
+        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli", "wat"])
+        .write_stdin("00")
+        .output()
+        .unwrap();
+    assert!(!a.status.success(), "a stray positional must still be refused");
+}

@@ -177,6 +177,20 @@ struct EncodeArgs {
     #[arg(long)]
     qr: bool,
 
+    /// Accepted and IGNORED: `-` means stdin, which is already the default.
+    ///
+    /// F-250. `-` is the stdin idiom in `cat`, `tar`, `curl`, `gpg` and `jq`, so
+    /// an operator carrying that habit types it on their first try — and got
+    /// clap's `unexpected argument '-'` for asking politely, when the intent was
+    /// already satisfied.
+    ///
+    /// **`value_parser` admits the literal `-` and NOTHING else**, so this does
+    /// not open a general positional. A mistyped argument still fails, and any
+    /// bearer material still dies earlier: `validate::command_line_guard` runs on
+    /// raw argv BEFORE clap (§8.2f), so it is unaffected by what is declared here.
+    #[arg(value_name = "-", value_parser = ["-"], hide = true)]
+    stdin_dash: Option<String>,
+
     /// Proceed even though stdout is a world-readable file (§8.2h).
     ///
     /// `mt` refuses by default: the strings ARE the engraving, and `>` creates
