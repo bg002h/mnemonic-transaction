@@ -258,12 +258,11 @@ spec  = "§8.2h"
 test  = "refuses_a_world_readable_named_fifo"
 check = "src/validate.rs::world_readable_stdout_guard"
 
-# R3, and it did NOT come from §8: `mt encode --record` is P2 of
-# SPEC_engrave_transaction, whose §2.2 rules that the form has NO DEFAULT and
-# that the refusal must TEACH. The entry is here rather than in that repo
-# because this gate checks the coupling between a rule and the test that proves
-# it fires, and the test lives here.
-[[refusal]]
-spec  = "SPEC_engrave §2.2"
-test  = "record_without_a_form_is_refused_and_the_refusal_teaches"
-check = "src/main.rs::record_form_guard"
+# R3 (SPEC_engrave §2.2 -- "the record form has NO DEFAULT, and the refusal must
+# TEACH") is RETIRED, not merely untested. It refused `--record` without a form
+# because two forms existed to choose between; `--chunks` then turned out to be
+# a byte-for-byte no-op -- it re-emitted exactly what bare `mt encode` already
+# gives you -- so the choice had one side and the guard had nothing to guard.
+# The family collapsed to a single `--qr`. `the_retired_record_family_is_unknown
+# _to_the_parser` in tests/tx_record.rs is what now holds the line: all three
+# dead flags must be UNKNOWN to clap rather than silently accepted as aliases.

@@ -1,4 +1,4 @@
-//! `mt encode --record` — P2 of `SPEC_engrave_transaction`.
+//! `mt encode --qr` — P2 of `SPEC_engrave_transaction`.
 //!
 //! **`mt` owns transactions, so `mt` manufactures the `tx:` record.** `me` has
 //! no verb that manufactures any other constellation string — `md1`, `mk1` and
@@ -111,134 +111,9 @@ fn encode(args: &[&str], hexstr: &str) -> assert_cmd::assert::Assert {
     c.arg("--in").arg(f.path()).assert()
 }
 
-// ── R3: no default, and the refusal teaches ──────────────────────────────────
-
-/// R3 (spec §5, §2.2) — `--record` with neither form. **The refusal TEACHES**,
-/// because a bare blocking refusal is what gets aliased away.
-#[test]
-fn record_without_a_form_is_refused_and_the_refusal_teaches() {
-    let a = encode(&["--record"], even()["raw_hex"].as_str().unwrap()).failure();
-    let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
-    assert!(err.contains("--record needs a form"), "{err}");
-    // The citation NAMES its document. `mt`'s own spec has a §2.2-shaped
-    // section about `mt-codec`, so a bare `§2.2` resolves to the wrong file.
-    assert!(err.contains("SPEC_engrave §2.2"), "{err}");
-    assert!(err.contains("--raw"), "it must NAME both forms: {err}");
-    assert!(err.contains("--chunks"), "{err}");
-    assert!(
-        err.contains("QR plates") && err.contains("Text plates"),
-        "and say what each one PRODUCES — the choice is not reversible once \
-         the steel is cut: {err}"
-    );
-    assert!(
-        a.get_output().stdout.is_empty(),
-        "nothing on stdout on a refusal"
-    );
-}
-
-/// It runs BEFORE the transaction is read, so a refusal costs no work and can
-/// never leave a partial artifact. Asserted with a path that does not exist: if
-/// the form guard ran second, the message would be about the missing file.
-#[test]
-fn the_form_refusal_runs_before_anything_is_read() {
-    let a = mt()
-        .args(["encode", "--record", "--in", "/nonexistent/tx.hex"])
-        .assert()
-        .failure();
-    let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
-    assert!(err.contains("--record needs a form"), "{err}");
-    assert!(!err.contains("cannot read"), "{err}");
-}
-
-/// The other two halves of the same rule are STRUCTURAL — clap enforces them,
-/// so `record_form_guard` only ever handles the one case clap cannot express.
-/// If either `requires`/`conflicts_with` is dropped, this goes red.
-#[test]
-fn a_form_without_record_and_both_forms_at_once_are_refused_by_clap() {
-    for args in [
-        vec!["--raw"],
-        vec!["--chunks"],
-        vec!["--record", "--raw", "--chunks"],
-    ] {
-        let a = encode(&args, even()["raw_hex"].as_str().unwrap()).failure();
-        let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
-        assert!(
-            err.contains("error:") && (err.contains("--record") || err.contains("--raw")),
-            "{args:?} must be refused by the parser, not silently accepted: {err}"
-        );
-        assert!(a.get_output().stdout.is_empty(), "{args:?}: stdout");
-    }
-}
-
-// ── The two forms ────────────────────────────────────────────────────────────
-
-/// **The RAW form is `tx:` + the transaction's hex and NOTHING else.** Asserted
-/// as one string equality rather than a set of `contains` checks: a framed
-/// record would satisfy every `contains` here and still be the retired format.
-#[test]
-fn the_raw_form_is_the_prefix_and_the_transaction_hex_and_nothing_else() {
-    let v = even();
-    let raw_hex = v["raw_hex"].as_str().unwrap();
-    let a = encode(&["--record", "--raw"], raw_hex).success();
-    let out = String::from_utf8_lossy(&a.get_output().stdout).to_string();
-    assert_eq!(out, format!("tx:{raw_hex}\n"), "the record IS concatenation");
-    assert_eq!(out.lines().count(), 1, "ONE record, one line");
-}
-
-/// The CHUNKS form is exactly what `mt encode` already emits, byte for byte.
-///
-/// **This is a finding, not an implementation choice.** Under the shipped
-/// design a chunk set rides as BARE `mt1` records — no prefix, no hex, the
-/// container's own LF between them, the same route `md1`/`mk1` already take —
-/// and the `tx:` metadata record that an earlier draft put beside them was
-/// dropped because nothing survives for it to carry. So `--chunks` selects a
-/// form; it does not transform the artifact. Wrapping the strings in anything
-/// here would be inventing a container the consumer does not parse.
-#[test]
-fn the_chunks_form_is_exactly_what_bare_encode_emits() {
-    let v = even();
-    let raw_hex = v["raw_hex"].as_str().unwrap();
-    let with = encode(&["--record", "--chunks"], raw_hex).success();
-    let without = encode(&[], raw_hex).success();
-    assert_eq!(
-        with.get_output().stdout,
-        without.get_output().stdout,
-        "`--record --chunks` must not transform the strings"
-    );
-    let out = String::from_utf8_lossy(&with.get_output().stdout).to_string();
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 6, "the even vector's six chunks");
-    for l in &lines {
-        assert!(l.starts_with("mt1"), "a BARE record, no prefix and no hex");
-        assert!(!l.contains(' '), "no interior whitespace: {l}");
-        assert_eq!(*l, l.to_ascii_lowercase());
-    }
-}
-
-/// A record is engraved VERBATIM and `EPD` §6.4 forbids interior whitespace and
-/// requires the canonical unbroken string, so the two flags that make stdout
-/// non-canonical cannot be combined with `--record`.
-///
-/// Structural, via clap, rather than a guard: the alternative is silently
-/// ignoring a flag the operator typed, which is how a grouped `mt1` string
-/// reaches `me sysw pack` and comes back as "record 3 unrecognised" naming the
-/// wrong tool.
-#[test]
-fn the_record_forms_cannot_be_grouped_or_elided() {
-    for extra in [vec!["--group-size", "4"], vec!["--elide-prefix"]] {
-        let mut args = vec!["--record", "--chunks"];
-        args.extend(extra.iter().copied());
-        let a = encode(&args, even()["raw_hex"].as_str().unwrap()).failure();
-        assert!(
-            a.get_output().stdout.is_empty(),
-            "{extra:?}: a non-canonical record must never reach stdout"
-        );
-    }
-}
-
 // ── §8.3 on the new path ─────────────────────────────────────────────────────
 
-/// **`--record --raw` inherits §8.3, and this is what the move BUYS.**
+/// **`--qr` inherits §8.3, and this is what the move BUYS.**
 ///
 /// Before it, the producer (`me tx`) emitted a record for a witness-stripped
 /// transaction at exit 0 and `me sysw pack` refused the same bytes at exit 4
@@ -247,9 +122,9 @@ fn the_record_forms_cannot_be_grouped_or_elided() {
 /// witness, per input, so moving the verb here makes the disagreement
 /// unconstructible: the producer never emits what the consumer will refuse.
 #[test]
-fn the_raw_form_inherits_the_signature_guard() {
+fn the_qr_form_inherits_the_signature_guard() {
     let stripped = even_stripped_hex();
-    let a = encode(&["--record", "--raw"], &stripped).failure();
+    let a = encode(&["--qr"], &stripped).failure();
     let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
     assert!(err.contains("§8.3"), "the guard must name its section: {err}");
     assert!(
@@ -262,21 +137,11 @@ fn the_raw_form_inherits_the_signature_guard() {
     );
     // The control: the SAME transaction with its witnesses intact passes, so
     // the refusal is about the signatures and not about the fixture.
-    let ok = encode(&["--record", "--raw"], even()["raw_hex"].as_str().unwrap()).success();
+    let ok = encode(&["--qr"], even()["raw_hex"].as_str().unwrap()).success();
     assert!(
         String::from_utf8_lossy(&ok.get_output().stdout).starts_with("tx:"),
         "the honest form still produces a record"
     );
-}
-
-/// The chunks form reaches the same guard by the same route — one call site,
-/// not two — so neither form can emit a set for a transaction nothing satisfies.
-#[test]
-fn the_chunks_form_inherits_the_signature_guard_too() {
-    let a = encode(&["--record", "--chunks"], &even_stripped_hex()).failure();
-    let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
-    assert!(err.contains("§8.3"), "{err}");
-    assert!(a.get_output().stdout.is_empty());
 }
 
 // ── The pipeline invariant ───────────────────────────────────────────────────
@@ -291,22 +156,21 @@ fn the_chunks_form_inherits_the_signature_guard_too() {
 fn a_failing_run_contributes_nothing_to_stdout() {
     let cases: Vec<(&str, Vec<String>)> = vec![
         (
-            "--record with no form",
+            "a retired flag",
             vec!["encode".into(), "--record".into()],
         ),
         (
             "a file that does not exist",
             vec![
                 "encode".into(),
-                "--record".into(),
-                "--raw".into(),
+                "--qr".into(),
                 "--in".into(),
                 "/nonexistent/tx.hex".into(),
             ],
         ),
         (
             "input that is not a transaction",
-            vec!["encode".into(), "--record".into(), "--raw".into()],
+            vec!["encode".into(), "--qr".into()],
         ),
         (
             "a transaction on argv (§8.2f)",
@@ -331,13 +195,13 @@ fn a_failing_run_contributes_nothing_to_stdout() {
     }
 }
 
-// ── What the RAW form says it made ───────────────────────────────────────────
+// ── What the QR form says it made ───────────────────────────────────────────
 
 /// **THE RAW FORM MUST NOT DESCRIBE THE ARTIFACT IT DID NOT MAKE.**
 ///
 /// Found by regenerating `mnemonic-engrave`'s host journey against the new
 /// verb and reading the transcript, which is the only place it is visible:
-/// every unit test passed while `--record --raw` printed the whole `mt1`
+/// every unit test passed while `--qr` printed the whole `mt1`
 /// apparatus. It emits ONE `tx:` record for a QR plate, and stderr said
 ///
 /// - *"mt corrects up to 4 wrong CHARACTERS per string … strings 1-6 are 87"*
@@ -353,10 +217,10 @@ fn a_failing_run_contributes_nothing_to_stdout() {
 /// on stdout. The strings are still computed (the pipeline builds them either
 /// way); they are simply not what this run emitted.
 #[test]
-fn the_raw_form_does_not_describe_the_mt1_strings_it_did_not_emit() {
+fn the_qr_form_does_not_describe_the_mt1_strings_it_did_not_emit() {
     let v = even();
     let raw_hex = v["raw_hex"].as_str().unwrap();
-    let raw = encode(&["--record", "--raw"], raw_hex).success();
+    let raw = encode(&["--qr"], raw_hex).success();
     let err = String::from_utf8_lossy(&raw.get_output().stderr).to_string();
 
     // Each of these is a claim about `mt1` strings. NONE may appear.
@@ -386,9 +250,10 @@ fn the_raw_form_does_not_describe_the_mt1_strings_it_did_not_emit() {
          scanner hands back — `mt verify` reads mt1 strings: {err}"
     );
 
-    // THE CONTROL, on the same fixture: the CHUNKS form still says all of it,
-    // so this is about the FORM and not about a block that was deleted.
-    let chunks = encode(&["--record", "--chunks"], raw_hex).success();
+    // THE CONTROL, on the same fixture: the STRINGS form still says all of it,
+    // so this is about the FORM and not about a block that was deleted. Bare
+    // `mt encode` IS that form -- which is why `--chunks` was deleted.
+    let chunks = encode(&[], raw_hex).success();
     let cerr = String::from_utf8_lossy(&chunks.get_output().stderr).to_string();
     for kept in [
         "corrects up to 4 wrong CHARACTERS",
@@ -415,14 +280,14 @@ fn the_raw_form_does_not_describe_the_mt1_strings_it_did_not_emit() {
 fn the_redirected_warning_names_what_actually_left() {
     let v = even();
     let raw_hex = v["raw_hex"].as_str().unwrap();
-    let raw = encode(&["--record", "--raw"], raw_hex).success();
+    let raw = encode(&["--qr"], raw_hex).success();
     let err = String::from_utf8_lossy(&raw.get_output().stderr).to_string();
     assert!(err.contains("the record just left this terminal"), "{err}");
     // …and the BODY agrees with the subject. The first substitution left
     // "so the record went somewhere that keeps them".
     assert!(err.contains("the record went somewhere that keeps it"), "{err}");
     assert!(!err.contains("keeps them"), "singular subject, singular body: {err}");
-    let chunks = encode(&["--record", "--chunks"], raw_hex).success();
+    let chunks = encode(&[], raw_hex).success();
     let cerr = String::from_utf8_lossy(&chunks.get_output().stderr).to_string();
     assert!(cerr.contains("the strings just left this terminal"), "{cerr}");
 }
@@ -433,7 +298,7 @@ fn the_redirected_warning_names_what_actually_left() {
 /// strings"* on a run that emitted one `tx:` record — the same defect class as
 /// the block above, in the one message an operator meets while their file
 /// already exists. Reached by the commonest divergence there is: `mt encode
-/// --record --raw > rec.txt`, where `>` creates the file 0644 under the usual
+/// --qr > rec.txt`, where `>` creates the file 0644 under the usual
 /// umask.
 #[test]
 fn the_world_readable_refusal_names_the_artifact_this_run_made() {
@@ -443,12 +308,13 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
 
     // `std::process::Command`, not `assert_cmd`: the refusal under test is
     // about the MODE OF FD 1, so stdout has to be a real 0644 file.
-    let out = |form: &str| -> String {
-        let sink = dir.path().join(format!("out{form}.txt"));
+    let out = |label: &str, extra: &[&str]| -> String {
+        let sink = dir.path().join(format!("out{label}.txt"));
         let handle = std::fs::File::create(&sink).unwrap();
         std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
         let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-            .args(["encode", "--record", form])
+            .arg("encode")
+            .args(extra.iter())
             .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
             .arg("--in")
             .arg(f.path())
@@ -456,16 +322,16 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
             .stderr(std::process::Stdio::piped())
             .output()
             .unwrap();
-        assert!(!o.status.success(), "{form}: §8.2h must refuse a 0644 stdout");
+        assert!(!o.status.success(), "{label}: §8.2h must refuse a 0644 stdout");
         assert_eq!(
             std::fs::metadata(&sink).unwrap().len(),
             0,
-            "{form}: a refusal must leave no artifact"
+            "{label}: a refusal must leave no artifact"
         );
         String::from_utf8_lossy(&o.stderr).into_owned()
     };
 
-    let raw = out("--raw");
+    let raw = out("qr", &["--qr"]);
     assert!(raw.contains("§8.2h"), "{raw}");
     assert!(raw.contains("This record IS the engraving"), "{raw}");
     assert!(raw.contains("stdout IS the record"), "{raw}");
@@ -474,8 +340,63 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
         "the raw form emitted ONE record, not strings: {raw}"
     );
 
-    // THE CONTROL: the chunks form keeps the plural, because it is true there.
-    let chunks = out("--chunks");
+    // THE CONTROL: the strings form keeps the plural, because it is true there.
+    let chunks = out("strings", &[]);
     assert!(chunks.contains("These strings ARE the engraving"), "{chunks}");
     assert!(chunks.contains("stdout IS the strings"), "{chunks}");
+}
+
+// ── `--qr`: one flag, after the record family collapsed ──────────────────────
+
+/// **`--qr` IS the SeedHammer path.** `tx:` + the transaction's hex and nothing
+/// else, asserted as one string equality: a framed record would satisfy every
+/// `contains` check here and still be the retired format.
+#[test]
+fn the_qr_form_is_the_prefix_and_the_transaction_hex_and_nothing_else() {
+    let v = even();
+    let raw_hex = v["raw_hex"].as_str().unwrap();
+    let a = encode(&["--qr"], raw_hex).success();
+    let out = String::from_utf8_lossy(&a.get_output().stdout).to_string();
+    assert_eq!(out, format!("tx:{raw_hex}\n"), "the record IS concatenation");
+    assert_eq!(out.lines().count(), 1, "ONE record, one line");
+}
+
+/// **The record family is GONE, not merely deprecated.** `--record` and
+/// `--chunks` were no-ops on every input — `--chunks` re-emitted exactly what
+/// bare `mt encode` already gives you, and `--record` gated a choice that no
+/// longer has two sides. `--raw` was renamed to the flag an operator reached
+/// for cold. Each must now be an UNKNOWN argument: a silently-accepted alias
+/// would let a stale script keep running while meaning something else.
+#[test]
+fn the_retired_record_family_is_unknown_to_the_parser() {
+    for dead in ["--record", "--raw", "--chunks"] {
+        let a = encode(&[dead], even()["raw_hex"].as_str().unwrap()).failure();
+        let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
+        assert!(
+            err.contains("unexpected argument") && err.contains(dead),
+            "{dead} must be unknown to clap, not accepted: {err}"
+        );
+        assert!(a.get_output().stdout.is_empty(), "{dead}: stdout");
+    }
+}
+
+/// `--qr` emits ONE record, so there are no strings to group or elide. Both
+/// refusals were attached to `--record`; they must have followed the behaviour
+/// to `--qr` rather than being dropped with the flag that used to carry them.
+#[test]
+fn the_qr_form_cannot_be_grouped_or_elided() {
+    for extra in [vec!["--group-size", "4"], vec!["--elide-prefix"]] {
+        let mut args = vec!["--qr"];
+        args.extend(extra.iter());
+        let a = encode(&args, even()["raw_hex"].as_str().unwrap()).failure();
+        let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
+        // NOT merely `contains("error:")` -- that is satisfied by `--qr` being
+        // an unknown argument, so the assertion would pass in a world where the
+        // conflict was never wired at all. Name the conflict.
+        assert!(
+            err.contains("cannot be used with") && err.contains("--qr"),
+            "{args:?} must be refused as a CONFLICT with --qr: {err}"
+        );
+        assert!(a.get_output().stdout.is_empty(), "{args:?}: stdout");
+    }
 }

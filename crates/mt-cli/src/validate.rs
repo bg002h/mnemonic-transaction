@@ -653,7 +653,7 @@ pub fn world_readable_stdout_guard(
             "encode",
             "§8.2h",
             format!("stdout is a file of mode {mode:04o} — readable by other users on this machine."),
-            // THE NOUN IS THIS RUN'S ARTIFACT. `--record --raw` puts ONE
+            // THE NOUN IS THIS RUN'S ARTIFACT. `--qr` puts ONE
             // `tx:` record on stdout, and an operator reading "these strings"
             // beside a file they can see holding one line is being told about
             // a different run. Same defect as the block warnings above it,

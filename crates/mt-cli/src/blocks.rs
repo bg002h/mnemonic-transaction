@@ -22,13 +22,13 @@ use std::io::IsTerminal;
 /// on it — and only those.
 ///
 /// `mt encode` builds the `mt1` strings either way, because the pipeline is one
-/// pipeline; what changes with `--record --raw` is what reaches **stdout**, and
+/// pipeline; what changes with `--qr` is what reaches **stdout**, and
 /// therefore what the operator will hold. Every block below that names a
 /// string, a per-string correction budget, a plate number or a way to check the
 /// engraving is making a claim about the artifact, so it has to ask.
 ///
 /// **It exists because a journey transcript, not a unit test, caught the
-/// alternative.** `--record --raw` printed *"Type the strings back from the
+/// alternative.** `--qr` printed *"Type the strings back from the
 /// steel and run `mt verify`"* beside a record destined for one QR plate, with
 /// the whole suite green: nothing asserted on the relationship between what
 /// stdout carried and what stderr described.
@@ -52,8 +52,7 @@ pub fn welcome_if_tty() -> Option<String> {
                 "  Nothing has happened yet.\n",
                 "\n",
                 "  This writes `mt1` strings to engrave BY HAND. For a SeedHammer II,\n",
-                "  add --record --raw (QR plates) or --record --chunks (text plates)\n",
-                "  and pipe into `me sysw pack`.\n",
+                "  add --qr and pipe into `me sysw pack`.\n",
             )
             .to_string(),
         )

@@ -44,9 +44,9 @@ struct Cli {
 enum Command {
     /// Turn a signed transaction into engravable form.
     ///
-    /// Default: `mt1` strings, for hand engraving or text plates.
-    /// `--record --chunks`: the same strings, as records for `me sysw pack`.
-    /// `--record --raw`: a `tx:` record carrying the raw bytes, for QR plates.
+    /// Default: `mt1` strings — to engrave by hand, or to pipe into
+    /// `me sysw pack` as bare records for text plates.
+    /// `--qr`: a `tx:` record carrying the transaction's bytes, for QR plates.
     Encode(EncodeArgs),
     /// Read `mt1` strings back and emit BROADCASTABLE HEX on stdout.
     Decode(ReadArgs),
@@ -131,10 +131,10 @@ struct EncodeArgs {
     /// Opt-in and never the default: grouping affects **stdout**, and the
     /// canonical artifact is ungrouped.
     ///
-    /// Refused with `--record`, structurally: a record is engraved VERBATIM and
+    /// Refused with `--qr`, structurally: a record is engraved VERBATIM and
     /// EPD §6.4 requires the canonical unbroken string, so a grouped record is
     /// one `me sysw pack` cannot classify.
-    #[arg(long, value_name = "N", conflicts_with = "record")]
+    #[arg(long, value_name = "N", conflicts_with = "qr")]
     group_size: Option<usize>,
 
     /// Separator to use with `--group-size`. **Whitespace only.**
@@ -152,32 +152,30 @@ struct EncodeArgs {
     /// The first string stays full, so the output is self-describing and
     /// `decode` needs no flag of its own.
     ///
-    /// Refused with `--record`, for the same reason as `--group-size`: an
-    /// elided string is not the canonical record the container admits.
-    #[arg(long, conflicts_with = "record")]
+    /// Refused with `--qr`, for the same reason as `--group-size`: an elided
+    /// string is not the canonical record the container admits.
+    #[arg(long, conflicts_with = "qr")]
     elide_prefix: bool,
 
-    /// Emit a RECORD for `me sysw pack` — the SeedHammer II path — instead of bare `mt1` strings to engrave by hand.
+    /// Emit the `tx:` RECORD for `me sysw pack` — the SeedHammer II path —
+    /// instead of `mt1` strings to engrave by hand.
     ///
-    /// Needs a FORM — `--raw` or `--chunks`. There is no default, and the
-    /// refusal says why, because a bare blocking refusal is what gets aliased
-    /// away (§2.2, R3).
+    /// Carries the transaction's BYTES, as `tx:` + lowercase hex, so the device
+    /// needs no `mt1` decoder. Named for what it PRODUCES: QR plates.
+    ///
+    /// From a PSBT this is not a concatenation — the final transaction is
+    /// assembled from the PSBT's per-input witness and scriptSig fields, and is
+    /// not a substring of the PSBT. It is degenerate only when the input was
+    /// already raw hex.
+    ///
+    /// **The `--record`/`--raw`/`--chunks` family this replaces is GONE.**
+    /// `--chunks` re-emitted, byte for byte, what bare `mt encode` already
+    /// gives you — a chunk set rides the container as BARE `mt1` records the
+    /// way `md1`/`mk1` do, so there was never anything to wrap — which left
+    /// `--record` gating a choice with one side. Neither is accepted as an
+    /// alias: a stale script must fail loudly, not quietly mean something else.
     #[arg(long)]
-    record: bool,
-
-    /// `--record`: carry the transaction's BYTES, as `tx:` + lowercase hex.
-    /// QR plates; the device needs no `mt1` decoder.
-    #[arg(long, requires = "record")]
-    raw: bool,
-
-    /// `--record`: carry the `mt1` strings as BARE sibling records. Text
-    /// plates; the device engraves them verbatim.
-    ///
-    /// This is `mt encode`'s ordinary output, unchanged — a chunk set rides the
-    /// container as bare records the way `md1`/`mk1` already do, so the flag
-    /// selects a form rather than transforming the artifact.
-    #[arg(long, requires = "record", conflicts_with = "raw")]
-    chunks: bool,
+    qr: bool,
 
     /// Proceed even though stdout is a world-readable file (§8.2h).
     ///
@@ -249,7 +247,6 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
-    record_form_guard(&args)?;
 
     let raw = match &args.r#in {
         Some(path) => std::fs::read(path).map_err(|e| {
@@ -589,7 +586,7 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     // operator will hold, and every block below that names a string, a
     // correction budget, a plate number or a way to check the engraving is
     // making a claim about THAT. See `blocks::Form`.
-    let form = if args.raw {
+    let form = if args.qr {
         blocks::Form::RawRecord
     } else {
         blocks::Form::Strings
@@ -689,18 +686,13 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     // of stdout is written, because a refusal must leave no artifact.
     validate::world_readable_stdout_guard(args.allow_world_readable, form)?;
 
-    // stdout: the strings, lowercase, and nothing else — or, with
-    // `--record --raw`, the one `tx:` record instead.
+    // stdout: the strings, lowercase, and nothing else — or, with `--qr`, the
+    // one `tx:` record instead.
     let out = std::io::stdout();
     let mut out = out.lock();
-    let rendered = if args.raw {
+    let rendered = if args.qr {
         vec![encode_tx_record(&tx_bytes)]
     } else {
-        // `--record --chunks` lands here too, and lands here UNCHANGED: a
-        // chunk set rides the container as BARE `mt1` records, the same route
-        // `md1`/`mk1` already take, so there is nothing to wrap. `--group-size`
-        // and `--elide-prefix` cannot reach this path with `--record` set, so
-        // what `render` returns is already canonical.
         render(&strings, &args)
     };
     for line in rendered {
@@ -709,42 +701,6 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// R3 (spec §5, §2.2) — `--record` with neither `--raw` nor `--chunks` is
-/// REFUSED, **and the refusal TEACHES**, because a bare blocking refusal is
-/// what gets aliased away.
-///
-/// **This handles the one case clap cannot express.** `requires = "record"`
-/// already refuses a form without `--record`, and `conflicts_with = "raw"`
-/// already refuses both at once; neither can say "this flag needs one of these
-/// two". So the guard is the remainder, not a re-check.
-///
-/// It runs before the transaction is read, so a refusal costs no work and
-/// leaves no artifact.
-fn record_form_guard(args: &EncodeArgs) -> Result<(), Refusal> {
-    if !args.record || args.raw || args.chunks {
-        return Ok(());
-    }
-    Err(Refusal::new(
-        "encode",
-        // NAMED, not bare `§2.2`. Every other refusal here cites SPEC_mt_v0_1,
-        // whose §2 is "What `mt-codec` actually specifies" — so a bare §2.2
-        // would send the one reader who follows it to the wrong document, in
-        // the same repo, at a section that exists.
-        "SPEC_engrave §2.2",
-        "--record needs a form",
-        "A `tx:` record carries the transaction ONE of two ways, and they \
-         produce different plates. There is no default, because the choice is \
-         the operator's and it is not reversible once the steel is cut.",
-    )
-    .with_remedy("Say which:")
-    .with_verbatim(
-        "  --raw      the transaction's bytes. QR plates only.\n\
-         \x20            The device needs no mt1 decoder.\n\
-         \n\
-         \x20 --chunks   mt1 strings. Text plates.\n\
-         \x20            The device engraves them verbatim.",
-    ))
-}
 
 /// The `tx:` record: the reserved prefix and the transaction's canonical
 /// serialization in lowercase hex. **Concatenation, and nothing else.**
