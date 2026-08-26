@@ -79,6 +79,29 @@ pub fn sniff(raw: &[u8]) -> Result<Input, Refusal> {
         return Ok(Input::RawHex(bytes));
     }
 
+    //    (c) mt's OWN output, pasted back (F-248).
+    //
+    //    Reached by the likeliest route there is: run `mt encode`, see the
+    //    strings, re-run, and paste back the last thing on screen. The generic
+    //    step-4 refusal was CORRECT and useless -- it reported a byte count
+    //    while mt was looking at strings of its own manufacture.
+    //
+    //    `1` is not in the bech32 charset (qpzry9x8gf2tvdw0s3jn54khce6mua7l),
+    //    so it can only appear as the HRP separator. Interior whitespace is
+    //    already stripped above, so counting `mt1` here is an EXACT count of
+    //    strings, not an estimate -- which is why the refusal can quote it.
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("mt1") {
+        return Err(pasted_mt1(lower.matches("mt1").count()));
+    }
+
+    //    (d) the `tx:` record, pasted back. Same defect as (c) one form over:
+    //    since `--qr` exists, mt's own output is sometimes a record, and the
+    //    hex check above cannot match it because of the colon.
+    if lower.starts_with("tx:") {
+        return Err(pasted_tx_record());
+    }
+
     // 4. Nothing matched.
     recognised_guard(false, trimmed)?;
     unreachable!("recognised_guard(false, ..) returns Err")
@@ -146,6 +169,63 @@ fn unrecognised(bytes: &[u8]) -> Refusal {
         ),
     )
     .with_remedy("Check the file is the one you meant, and pass it with --in.")
+}
+
+/// F-248 — the operator pasted `mt encode`'s own output back into it.
+///
+/// **Never echo the strings.** `mt1` strings are BEARER, exactly like the
+/// transaction they carry (§8.2f), so this reports the COUNT and the shape and
+/// prints none of them.
+fn pasted_mt1(n: usize) -> Refusal {
+    Refusal::new(
+        "encode",
+        "§8.2e",
+        format!(
+            "input is {n} `mt1` string{} — that is mt encode's OUTPUT, not its input",
+            if n == 1 { "" } else { "s" }
+        ),
+        "`mt encode` turns a signed transaction INTO `mt1` strings. It was handed \
+         the strings themselves, which is what the last run printed.",
+    )
+    .with_remedy("Depending on what you meant:")
+    // FLUSH-LEFT ON PURPOSE. `Display` prefixes each verbatim line with two
+    // spaces and preserves the rest, so any indentation written here is ADDED
+    // to that -- and a `\`-continuation carries its source indentation into
+    // the string. Columns below are load-bearing; `remedy` would reflow them,
+    // which is why this is a verbatim block and not more remedy text.
+    .with_verbatim(
+        "mt decode    turn these strings back into broadcastable hex
+mt verify    check the set is complete and correct, offline
+mt inspect   report what is IN the set
+
+To engrave, re-run `mt encode` with the TRANSACTION -- the PSBT or the
+raw hex you started from, not what it produced.",
+    )
+}
+
+/// F-248, second form — the operator pasted `mt encode --qr`'s record back in.
+///
+/// **Never echo the body.** It is the raw transaction, so printing it into the
+/// refusal would put bearer material in a second place — the defect §8.2f
+/// exists to prevent.
+fn pasted_tx_record() -> Refusal {
+    Refusal::new(
+        "encode",
+        "§8.2e",
+        "input is a `tx:` record — that is mt encode --qr's OUTPUT, not its input",
+        "`mt encode --qr` wraps a signed transaction as `tx:` + hex for \
+         `me sysw pack`. It was handed the record it produced.",
+    )
+    .with_remedy("Depending on what you meant:")
+    // Flush-left: see the note in `pasted_mt1`.
+    .with_verbatim(
+        "me sysw pack   build the payload this record is FOR
+
+To engrave, re-run `mt encode` with the TRANSACTION -- the PSBT or the
+raw hex you started from. The record's body is that hex with `tx:` in
+front; mt will not strip it for you, because silently accepting a
+wrapper it did not ask for is how a mislabelled artifact reaches steel.",
+    )
 }
 
 fn trim_outer(raw: &[u8]) -> &[u8] {

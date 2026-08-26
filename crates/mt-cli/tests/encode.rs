@@ -411,3 +411,98 @@ fn a_dash_does_not_open_the_door_to_other_positionals() {
         .unwrap();
     assert!(!a.status.success(), "a stray positional must still be refused");
 }
+
+// ── F-248: mt must recognise its OWN output ──────────────────────────────────
+
+/// **`mt encode` fed its own `mt1` strings must say so.**
+///
+/// The walk reached this by the likeliest route there is: run `mt encode`, see
+/// 22 strings, decide to use the SeedHammer, re-run, and paste back the last
+/// thing on screen. The refusal was correct and useless — *"input is not a PSBT
+/// or a raw transaction (1978 bytes)"* — while `mt` was staring at 22 strings
+/// of its own manufacture and holds the recogniser for them.
+///
+/// `1` is not in the bech32 charset, so it appears only as the HRP separator:
+/// counting `mt1` in whitespace-stripped text is an exact count of strings, and
+/// this asserts the real number rather than a "looks like" hedge.
+#[test]
+fn pasting_mt1_strings_back_into_encode_names_them_and_the_right_verb() {
+    let v = &corpus()["vectors"][0];
+    let strings: Vec<String> = v["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    let n = strings.len();
+    let pasted = strings.join("\n");
+
+    let a = mt()
+        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .write_stdin(pasted)
+        .output()
+        .unwrap();
+    assert!(!a.status.success(), "still a refusal");
+    let err = String::from_utf8_lossy(&a.stderr).to_string();
+
+    assert!(err.contains("mt1"), "it must NAME what it is looking at: {err}");
+    assert!(
+        err.contains(&n.to_string()),
+        "and count them -- it saw {n} strings: {err}"
+    );
+    assert!(
+        err.contains("mt decode"),
+        "and name the verb that turns them back into a transaction: {err}"
+    );
+    assert!(
+        !err.contains("is not a PSBT or a raw transaction"),
+        "the generic sniff failure is what made this useless; it must not be \
+         the headline when mt can identify the input exactly: {err}"
+    );
+    assert!(a.stdout.is_empty(), "nothing on stdout");
+}
+
+/// The generic refusal must SURVIVE for input that really is unidentifiable —
+/// otherwise the fix above would have replaced one blind message with another.
+#[test]
+fn genuinely_unrecognisable_input_still_gets_the_generic_refusal() {
+    let a = mt()
+        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .write_stdin("zzzz not anything at all zzzz")
+        .output()
+        .unwrap();
+    assert!(!a.status.success());
+    let err = String::from_utf8_lossy(&a.stderr).to_string();
+    assert!(
+        err.contains("is not a PSBT or a raw transaction"),
+        "unidentifiable input keeps the generic message: {err}"
+    );
+    assert!(!err.contains("mt decode"), "and must not misdirect: {err}");
+}
+
+/// The SAME defect one form over. Since `--qr` exists, `mt encode`'s output can
+/// be a `tx:` record, and pasting that back is exactly as likely as pasting the
+/// strings. It must not fall through to the generic sniff failure either.
+#[test]
+fn pasting_a_tx_record_back_into_encode_is_recognised_too() {
+    let v = &corpus()["vectors"][0];
+    let raw = v["raw_hex"].as_str().unwrap();
+    let a = mt()
+        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .write_stdin(format!("tx:{raw}"))
+        .output()
+        .unwrap();
+    assert!(!a.status.success(), "still a refusal");
+    let err = String::from_utf8_lossy(&a.stderr).to_string();
+    assert!(err.contains("tx:"), "name what it is: {err}");
+    assert!(
+        !err.contains("is not a PSBT or a raw transaction"),
+        "not the blind message: {err}"
+    );
+    // NEVER echoed: the record body is the bearer transaction itself.
+    assert!(
+        !err.contains(&raw[..40]),
+        "the refusal must not print the transaction back: {err}"
+    );
+    assert!(a.stdout.is_empty(), "nothing on stdout");
+}
