@@ -406,12 +406,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "mnemonic-io-lib"
+version = "0.1.0"
+source = "git+https://github.com/bg002h/mnemonic-engrave?rev=6c24e62823e6c1ac02aa3862cd6020674bf58544#6c24e62823e6c1ac02aa3862cd6020674bf58544"
+
+[[package]]
 name = "mt-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "bitcoin",
  "clap",
+ "mnemonic-io-lib",
  "mt-codec",
  "predicates",
  "serde_json",

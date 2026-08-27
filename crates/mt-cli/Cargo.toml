@@ -16,6 +16,17 @@ path = "src/main.rs"
 
 [dependencies]
 mt-codec = { path = "../mt-codec", version = "0.1.0" }
+# THE SHARED IO/SAFETY MECHANISM (P1). Taken by GITHUB REV, not by path: the two
+# repositories are not submodules of each other, so a path dep does not resolve
+# in a fresh CI checkout -- which is the mirror image of the arrangement
+# `me-cli` already uses to take `mt-codec` from here, and for the same reason.
+# A rev pin also keeps `cargo publish` deferred: publishing is irreversible,
+# pinning is not.
+#
+# The rev is a commit on `bg002h/mnemonic-engrave` master that carries a green
+# `test (rust + go)`, earned through the `ci/staging` ritual before it was
+# pushed. Both repositories are public, so no deploy key is needed.
+mnemonic-io-lib = { git = "https://github.com/bg002h/mnemonic-engrave", rev = "6c24e62823e6c1ac02aa3862cd6020674bf58544" }
 bitcoin = "0.32"
 clap = { version = "4", features = ["derive"] }
 
