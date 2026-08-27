@@ -1448,3 +1448,207 @@ fn a_dash_does_not_open_the_door_to_other_positionals_on_reading_verbs() {
         );
     }
 }
+
+// ── P1 row 13 — F-275: `mt decode` into a world-readable stdout ──────────────
+//
+// `mt encode` refuses a mode-0644 stdout at §8.2h. `mt decode` wrote
+// BROADCASTABLE HEX into the identical destination at exit 0, with no guard and
+// no warning — measured before this row: 445 bytes, rc 0, **stderr empty**.
+//
+// The inconsistency is itself the hazard, because an operator who learned that
+// mt refuses a world-readable output will believe decode is protected too.
+//
+// **RULED BY THE OPERATOR 2026-08-27: WARN, DO NOT REFUSE.** The default umask
+// is 022, so `mt decode > tx.hex` creates the file 0644 — an encode-style
+// refusal would reject the ordinary invocation on every default machine. And
+// `--out` is NOT what closes it: §6b's `--out` reasoning is entirely about the
+// refusal encode prints, so adding the channel to decode would half-close a
+// hazard while reading as a whole fix.
+
+#[cfg(unix)]
+fn decode_to_mode(mode: u32, extra: &[&str]) -> (u64, String, Option<i32>) {
+    use std::os::unix::fs::PermissionsExt;
+    let f = tmp_with(&strings_of("even").join("\n"));
+    let dir = tempfile::tempdir().unwrap();
+    let sink = dir.path().join("tx.hex");
+    let handle = std::fs::File::create(&sink).unwrap();
+    std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(mode)).unwrap();
+
+    // `std::process::Command`, not `assert_cmd`: the whole subject is the MODE
+    // OF FD 1, so stdout has to be a real file at a chosen mode.
+    let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+        .arg("decode")
+        .args(extra)
+        .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .arg("--in")
+        .arg(f.path())
+        .stdout(std::process::Stdio::from(handle))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    (
+        std::fs::metadata(&sink).unwrap().len(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+        o.status.code(),
+    )
+}
+
+/// **THE GATE, and the EXIT CODE is the half that makes it one.**
+///
+/// It is asserted UNCHANGED at 0, and the artifact is asserted byte-for-byte
+/// against the 0600 control — so a refusal smuggled in as a warning goes RED
+/// here rather than shipping as "we made it safer".
+#[test]
+#[cfg(unix)]
+fn decode_warns_about_a_world_readable_stdout_and_still_exits_0() {
+    let (control_bytes, _, control_rc) = decode_to_mode(0o600, &["--quiet"]);
+    assert_eq!(control_rc, Some(0));
+    assert!(control_bytes > 0, "the control must produce the hex");
+
+    let (bytes, err, rc) = decode_to_mode(0o644, &["--quiet"]);
+    assert_eq!(
+        rc,
+        Some(0),
+        "F-275 is a WARNING. mt decode must still succeed -- the default umask \
+         is 022, so refusing here would reject `mt decode > tx.hex` on every \
+         default machine: {err}"
+    );
+    assert_eq!(
+        bytes, control_bytes,
+        "and it must still write the SAME artifact, not a truncated one"
+    );
+    assert!(
+        err.contains("0644"),
+        "it must name the mode it measured: {err}"
+    );
+    assert!(
+        err.contains("WARNING"),
+        "and it must be shaped like a warning, so a reader scanning stderr can \
+         tell it did not stop the run: {err}"
+    );
+    assert!(
+        !err.contains("REFUSED"),
+        "warn, do not refuse -- the operator ruled it: {err}"
+    );
+}
+
+/// **THE CONTROL.** A warning that always fires cannot pass this, and without
+/// it the gate above is satisfied by printing the sentence unconditionally.
+///
+/// A pipe is the same case and matters more, because it is what the documented
+/// pipeline does: an anonymous pipe is mode 0600, so nothing fires there either.
+#[test]
+#[cfg(unix)]
+fn decode_says_nothing_about_an_owner_only_stdout() {
+    let (bytes, err, rc) = decode_to_mode(0o600, &["--quiet"]);
+    assert_eq!(rc, Some(0));
+    assert!(bytes > 0);
+    assert_eq!(
+        err, "",
+        "an owner-only stdout is exactly what we want, and mt must not say a \
+         word about it"
+    );
+
+    // ...and the pipeline, which `assert_cmd` gives us as an anonymous pipe.
+    let piped = mt()
+        .args([
+            "decode",
+            "--quiet",
+            "--bitcoin-cli",
+            "/nonexistent/bitcoin-cli",
+        ])
+        .arg("--in")
+        .arg(tmp_with(&strings_of("even").join("\n")).path())
+        .output()
+        .unwrap();
+    assert!(piped.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&piped.stderr),
+        "",
+        "an anonymous pipe is mode 0600; the documented pipeline must stay silent"
+    );
+}
+
+/// The wording is **derived from the mode**, exactly as at the two `encode`
+/// sites — F-260, applied to the site F-275 created rather than re-introduced
+/// there.
+#[test]
+#[cfg(unix)]
+fn the_decode_warning_says_what_the_mode_grants_not_what_the_rule_is_called() {
+    let (_, err, rc) = decode_to_mode(0o620, &["--quiet"]);
+    assert_eq!(rc, Some(0), "still a warning: {err}");
+    assert!(err.contains("0620"), "{err}");
+    assert!(
+        !err.contains("grant read"),
+        "`0620 & 0o044 == 0` -- no read bit is set outside the owner: {err}"
+    );
+    assert!(
+        err.contains("write"),
+        "and it must say what IS granted. On THIS verb that is the sharper \
+         hazard: someone who can write the file can replace the hex with a \
+         different transaction before it is broadcast: {err}"
+    );
+
+    let (_, err, _) = decode_to_mode(0o644, &["--quiet"]);
+    assert!(
+        err.contains("read") && err.contains("group and others"),
+        "the control: at 0644 the read claim is TRUE and must survive: {err}"
+    );
+}
+
+/// **The warning survives `--quiet`, and is DATA under `--json`.**
+///
+/// Warnings are never suppressed, on any verb — so `--quiet` must not silence
+/// it. And `--json` must stay parseable: mt's own rule is that with `--json` the
+/// prose becomes data inside the one document, so the warning goes into the
+/// `warnings` array rather than being printed beside the JSON, where it would
+/// have to be sliced off before anything could parse it.
+#[test]
+#[cfg(unix)]
+fn the_decode_warning_is_never_suppressed_and_is_data_under_json() {
+    // --quiet: the report is gone, the warning is not.
+    let (_, err, rc) = decode_to_mode(0o644, &["--quiet"]);
+    assert_eq!(rc, Some(0));
+    assert!(
+        err.contains("0644"),
+        "--quiet must not silence a warning: {err}"
+    );
+
+    // --json: stderr is ONE document, and the warning is inside it.
+    let (_, err, rc) = decode_to_mode(0o644, &["--json"]);
+    assert_eq!(rc, Some(0));
+    let doc: serde_json::Value = serde_json::from_str(err.trim()).unwrap_or_else(|e| {
+        panic!("--json stderr must parse as one document ({e}):\n{err}");
+    });
+    let warnings = doc["warnings"]
+        .as_array()
+        .expect("the json report carries a warnings array")
+        .iter()
+        .map(|w| w.as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        warnings.contains("0644"),
+        "the mode warning must be IN the document, not printed beside it: {warnings}"
+    );
+}
+
+/// **`--out` was NOT added to `decode`, and this pins it.**
+///
+/// It is the fix an implementer reaches for, and §6 rules it out of scope: §6b's
+/// `--out` reasoning is entirely about the refusal `encode` prints. A `decode
+/// --out` would half-close the hazard while reading as a whole fix, and the
+/// operator's ruling for this site was a warning.
+#[test]
+fn decode_has_no_out_flag() {
+    let o = mt()
+        .args(["decode", "--out", "/dev/null"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(!o.status.success(), "decode must not accept --out: {err}");
+    assert!(
+        err.contains("unexpected argument '--out'"),
+        "clap must not know it: {err}"
+    );
+}

@@ -1235,6 +1235,13 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     // §1.1's LAST CHECK, before anything reaches stdout.
     content_id_guard(&set.bytes, &set.chunks, "decode")?;
 
+    // F-275 — MEASURED ONCE, HERE, before anything is written. `decode` writes
+    // BROADCASTABLE HEX, and it wrote it into a mode-0644 stdout at exit 0 with
+    // nothing said, while `mt encode` refuses that identical destination. The
+    // operator ruled it a WARNING: the default umask is 022, so refusing would
+    // reject `mt decode > tx.hex` on every default machine.
+    let stdout_mode = mnemonic_io_lib::fd::stdout_mode();
+
     let mut stderr = std::io::stderr();
     if !args.quiet {
         // decode PRINTS §1.1's REPORT — the same one, not a summary of its own.
@@ -1291,6 +1298,14 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     d.kept_corrections
                 ));
             }
+            // F-275 UNDER `--json`: the warning becomes DATA, inside the one
+            // document. Printing it beside the JSON would mean a caller who
+            // asked for machine-readable output has to slice prose off stderr
+            // before anything parses -- which is the defect `render_json`'s own
+            // doc comment condemns.
+            if let Some(w) = validate::stdout_mode_warning(stdout_mode) {
+                warnings.push(w.headline);
+            }
             let _ = write!(stderr, "{}", report::render_json(&r, &warnings));
             let out = std::io::stdout();
             let mut out = out.lock();
@@ -1327,6 +1342,14 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         margin_report(&set.chunks, &mut stderr);
     }
     let bytes = set.bytes;
+
+    // F-275, on every path that did not already carry it as JSON data. The
+    // `--json` arm above RETURNS, so reaching here means no document was
+    // emitted -- and `--quiet` must not silence it, because warnings are never
+    // suppressed on any verb.
+    if let Some(w) = validate::stdout_mode_warning(stdout_mode) {
+        let _ = writeln!(stderr, "{w}");
+    }
 
     // stdout ONLY on success: every check above passed, so these bytes are
     // vouched for. A failure path that still printed hex would let the

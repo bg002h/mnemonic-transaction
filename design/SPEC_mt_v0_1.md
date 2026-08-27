@@ -2641,6 +2641,40 @@ exactly as permanent, as a machine-engraved one.
    that did not happen, since `--out` writes to a file whether or not stdout is
    a terminal. The `shred -u` advice is identical and is written once.
 
+   **`mt decode` WARNS at the same destination and still exits 0 — F-275,
+   OPERATOR RULING 2026-08-27, built as P1 row 13.**
+
+   `mt decode` wrote **broadcastable hex** into a mode-0644 stdout at exit 0
+   with no guard and nothing said, while `mt encode` refuses that identical
+   destination. Measured before the fix: 445 bytes, rc 0, **stderr empty**. The
+   inconsistency is itself the hazard: an operator who learned that `mt` refuses
+   a world-readable output will believe `decode` is protected too.
+
+   **It is a WARNING and not a refusal, and the asymmetry with §8.2h is
+   deliberate.** The default umask is 022, so `mt decode > tx.hex` creates the
+   file 0644 — the *ordinary* invocation, on every default machine — and a
+   refusal that fires on the normal path is one an operator learns to override
+   by reflex. `encode` can refuse because the operator has `--out`, `umask` and
+   `chmod` to reach for and because what it writes is about to be cut into
+   metal; the recovery path has no second chance.
+
+   **`--out` is NOT what closes it**, and that is ruled rather than omitted.
+   §6b's `--out` reasoning is entirely about the refusal `encode` prints;
+   giving `decode` the channel would half-close a hazard while reading as a
+   whole fix.
+
+   The exit code is **0, asserted unchanged**, and the artifact is asserted
+   byte-for-byte against a 0600 control — so a refusal smuggled in as a warning
+   is a test failure rather than a shipped regression. A **0600 control emits
+   nothing**, and an anonymous pipe is 0600, so the documented pipeline stays
+   silent. The wording is derived from the mode exactly as at the two `encode`
+   sites; under `--json` it becomes an entry in the `warnings` array rather than
+   prose printed beside the document. `--quiet` does not suppress it: warnings
+   are never suppressed, on any verb.
+
+   `verify` and `inspect` gain nothing: they are report verbs and write no
+   artifact to stdout.
+
 3. **An unsigned or unfinalized transaction offered for engraving** → refuse. It
    cannot be broadcast, so it is not a backup.
 4. **Read the locktime FIELDS, compare against the chain if a node is there,

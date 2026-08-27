@@ -966,6 +966,84 @@ pub fn world_readable_stdout_guard(allow: bool, form: crate::blocks::Form) -> Re
     Ok(())
 }
 
+// ── F-275 — `mt decode` writing bearer hex into a world-readable stdout ──────
+
+/// **WARN, DO NOT REFUSE.** The operator's ruling, 2026-08-27.
+///
+/// `mt encode` REFUSES a mode-0644 stdout at §8.2h. `mt decode` wrote
+/// broadcastable hex into the identical destination at exit 0, with no guard and
+/// no warning — measured: 445 bytes, rc 0, stderr empty. **The inconsistency is
+/// itself the hazard**, because an operator who learned that mt refuses a
+/// world-readable output will believe `decode` is protected too.
+///
+/// **Why this is not the encode refusal.** The default umask is 022, so
+/// `mt decode > tx.hex` creates the file 0644 — the ordinary invocation, on
+/// every default machine. An encode-style refusal here would reject it, and a
+/// refusal that fires on the normal path is one an operator learns to override
+/// by reflex. `encode` can refuse because the operator has `--out`, `umask` and
+/// `chmod` to reach for and the artifact is about to be cut into metal; the
+/// recovery path has no such second chance.
+///
+/// **And `--out` is not what closes it.** §6b's `--out` ruling reasons entirely
+/// about the refusal `encode` prints; giving `decode` the channel would
+/// half-close a hazard while reading as a whole fix. Out of scope by name.
+///
+/// The mode is taken from [`mnemonic_io_lib::fd::stdout_mode`], so the char
+/// device exemption and the fail-open on a failed `fstat` are the shared ones —
+/// a terminal and `/dev/null` persist nothing, and an ANONYMOUS pipe is 0600, so
+/// the documented pipeline stays silent.
+///
+/// The wording is DERIVED (F-260), so this new site does not reintroduce the
+/// defect the other two just lost.
+pub fn stdout_mode_warning(mode: Option<u32>) -> Option<Warning> {
+    let mode = mode?;
+    if mode & 0o077 == 0 {
+        return None;
+    }
+    let hazard = match (grants_read(mode), grants_write(mode)) {
+        (true, true) => {
+            "Anyone who can read that file can broadcast this \
+             transaction — and anyone who can write it can replace the hex with \
+             a DIFFERENT transaction before you broadcast it."
+        }
+        (true, false) => {
+            "Anyone who can read that file can broadcast this \
+             transaction."
+        }
+        (false, true) => {
+            "Nobody outside its owner can READ that file — but the \
+             bits that are set let them CHANGE it, and what you broadcast is \
+             whatever is in it when you read it back."
+        }
+        (false, false) => {
+            "The bits that are set grant neither read nor write; \
+             mt says so on any group or other bit, because the ones it cannot \
+             name today are the ones a later chmod widens."
+        }
+    };
+    Some(Warning::new(
+        format!(
+            "stdout is a file of mode {mode:04o} — its permissions {}.",
+            mode_grants(mode)
+        ),
+        format!(
+            "{hazard} This is the decoded transaction itself, in the most \
+             broadcastable form there is.\n\nmt WARNED rather than refused, and \
+             that is deliberate: the usual umask is 022, so `mt decode > tx.hex` \
+             creates the file exactly like this, and a refusal here would reject \
+             the ordinary command on a default machine. mt encode refuses the \
+             same destination because what it writes is about to be cut into \
+             metal.\n\nTo change it:\n\n  \
+             chmod 600 <file>          the file already exists; this is the fix\n  \
+             umask 077                 then re-run; the shell creates it 0600\n\n\
+             Only the file's OWN mode was checked. If a directory above it \
+             denies search to others -- a 0700 home directory does -- nobody \
+             else can open it today; the mode still becomes dangerous the moment \
+             the file is moved, copied, or its parent relaxed (F-252)."
+        ),
+    ))
+}
+
 // ── §8.5 / §6a — what a node says about the inputs ───────────────────────────
 
 /// §8.5: `gettxout` returns `null` for an input **AND the parent is confirmed**
