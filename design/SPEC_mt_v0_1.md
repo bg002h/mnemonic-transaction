@@ -2466,12 +2466,42 @@ exactly as permanent, as a machine-engraved one.
          ran. A finalized transaction is BEARER: anyone who reads it can
          broadcast it.
 
-         Remove it:  history -d 512 && fc -W        # zsh
-         Then re-run: mt encode < tx.psbt
+         Get it out of your shell history. Run the recipe for YOUR shell,
+         below, and run it in the SHELL THAT LEAKED IT.
 
-   The purge command is **specific to the operator's shell**, detected from
-   `$SHELL`. Two limits stated rather than papered over: it cannot know who
-   read the history before now, and it cannot reach backups.
+         Then re-run:  mt <verb> < file
+
+         TO PURGE WHAT ALREADY LEAKED -- match on the COMMAND, never on the
+         secret ...
+             zsh:    fc -W; sed -i '/\bmt encode\b/d' "$HISTFILE"; \
+                     h=$HISTSIZE; HISTSIZE=0; HISTSIZE=$h; fc -R
+             bash:   history -w; sed -i '/\bmt encode\b/d' "$HISTFILE"; \
+                     history -c; history -r
+             fish:   history clear-session
+
+   **EVERY shell's recipe is printed, and none is detected from `$SHELL`** —
+   changed 2026-08-27, P1 row 8, when the recipes moved to the shared
+   `mnemonic_io_lib::remedy`. Detection was worse than useless here: `$SHELL`
+   is the operator's LOGIN shell and says nothing about the shell that is
+   actually holding the leaked entry in memory, which is the only one the
+   recipe works in. Printing all three costs four lines and cannot point at
+   the wrong one.
+
+   **What was printed before did not work, and that is why this changed.** The
+   old text offered zsh `history -d $HISTCMD && fc -W`: on zsh 5.9.2 `-d`
+   prints timestamps, so the builtin rejects the invocation and the entry stays
+   where it was. It offered fish `history delete --contains <tx>`, which has to
+   be handed the material at a prompt that records what is typed — removing one
+   copy of the secret by writing a second. Both are RUN, under real interactive
+   shells on a pty, in `crates/mt-cli/tests/history_purge.rs`.
+
+   The recipes match on the **command**, never on the secret, and the surface
+   is `mt` plus the verb only when one was typed — §8.2f fires before clap, so
+   `mt <transaction>` leaks a line with no verb in it, and a pattern fixed at
+   `mt encode` would match nothing and purge nothing.
+
+   Two limits stated rather than papered over: it cannot know who read the
+   history before now, and it cannot reach backups.
 
    > **The siblings' precedent does not transfer, and the reason is the whole
    > point.** `md verify <STRINGS>...` and `mk verify [MK1_STRINGS]...` do take

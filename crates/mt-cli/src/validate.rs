@@ -545,11 +545,37 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
     // The verb, read from argv — this guard runs BEFORE clap, so nothing has
     // parsed one yet, and a refusal that says `mt mt:` tells the operator less
     // than one that names what they typed.
-    let verb = args
+    let typed_verb = args
         .get(1)
         .filter(|a| matches!(a.as_str(), "encode" | "decode" | "verify" | "inspect"))
-        .cloned()
-        .unwrap_or_else(|| "encode".to_string());
+        .cloned();
+    let verb = typed_verb.clone().unwrap_or_else(|| "encode".to_string());
+
+    // THE PURGE SURFACE: `mt`, plus the verb ONLY IF ONE WAS TYPED.
+    //
+    // This is `me`'s `argv_surface` rule reflected, and both halves of it
+    // matter. The recipes match on the COMMAND and never on the secret --
+    // quoting the secret into a `sed` pattern is how an operator types it into
+    // history a second time -- so the pattern has to match the line that
+    // actually leaked, and it must be incapable of carrying material itself.
+    //
+    // The words come from a four-item ALLOWLIST, which is the whole safety
+    // argument: deriving them instead ("the leading token, whatever it is")
+    // would put a TRUNCATED or misspelt transaction straight into the pattern.
+    //
+    // And the fallback is bare `mt` rather than `mt encode`, because `verb`
+    // above DEFAULTS to encode for an argv that never named one. §8.2f runs
+    // before clap, so `mt <transaction>` fires this guard on an argv clap would
+    // have rejected -- and it is not an exotic spelling, it is the shape `md
+    // verify <STRINGS>` and `mk verify [MK1_STRINGS]` teach. Interpolating the
+    // DEFAULTED verb would emit `sed '/\bmt encode\b/d'` for a history line
+    // reading `mt <transaction>`: a recipe that matches nothing, reports
+    // success, and purges nothing. That is the exact defect this row exists to
+    // remove, reintroduced by the fix for it.
+    let purge_surface = match &typed_verb {
+        Some(v) => format!("mt {v}"),
+        None => "mt".to_string(),
+    };
 
     for a in args.iter().skip(1) {
         // NORMALISE BEFORE CLASSIFYING -- F-274, and the ordering is the fix.
@@ -594,10 +620,24 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
              arguments; md1/mk1 are watch-only, so a leak there costs privacy \
              rather than the money.)",
         )
-        .with_remedy(format!(
-            "Remove it:  {}\nThen re-run:  mt <verb> < file",
-            purge_command()
-        )));
+        .with_remedy(
+            "Get it out of your shell history. Run the recipe for YOUR shell, \
+             below, and run it in the SHELL THAT LEAKED IT — that shell is \
+             still holding the entry in memory, so editing the history file \
+             from anywhere else changes nothing.\n\nThe zsh and bash recipes \
+             match on the command shown in them and remove nothing else. \
+             fish's takes the whole session with it, and says so.\n\nThen \
+             re-run:  mt <verb> < file",
+        )
+        // THE BLOCK GOES THROUGH `verbatim`, NOT THROUGH THE REMEDY, and the
+        // choice is load-bearing rather than stylistic. `Refusal`'s remedy is
+        // re-wrapped at 68 columns by splitting on whitespace and rejoining --
+        // which would break `sed -i '/\bmt\b/d' "$HISTFILE"; h=$HISTSIZE; ...`
+        // across lines and collapse its runs of spaces. An operator cannot
+        // paste a recipe that has been reflowed, and `tests/history_purge.rs`
+        // takes the recipe it RUNS out of this stderr, so a re-wrapped block
+        // turns every gate in that file red rather than shipping a broken one.
+        .with_verbatim(mnemonic_io_lib::remedy::history_purge_block(&purge_surface)));
     }
     Ok(())
 }
@@ -650,20 +690,6 @@ fn looks_like_a_transaction(a: &str) -> bool {
     // A raw transaction is at least a version, a counted input, an output and a
     // locktime; nothing legitimate on mt's command line is 100+ hex characters.
     body.len() >= 100 && body.len() % 2 == 0 && body.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// The purge command, **specific to the operator's shell**, detected from
-/// `$SHELL`.
-///
-/// Two limits stated rather than papered over: it cannot know who read the
-/// history before now, and it cannot reach backups.
-fn purge_command() -> &'static str {
-    match std::env::var("SHELL").unwrap_or_default() {
-        s if s.ends_with("zsh") => "history -d $HISTCMD && fc -W        # zsh",
-        s if s.ends_with("fish") => "history delete --contains <tx>      # fish",
-        s if s.ends_with("bash") => "history -d $HISTCMD && history -w   # bash",
-        _ => "clear your shell's history file by hand",
-    }
 }
 
 // ── §8.2g — a source file readable by anyone but its owner ───────────────────

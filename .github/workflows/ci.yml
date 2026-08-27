@@ -18,6 +18,32 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: build
         run: cargo build --locked
+      # P1 row 8. `tests/history_purge.rs` does not DESCRIBE the shell-history
+      # purge recipe mt prints, it takes it out of mt's own stderr and RUNS it,
+      # under a real interactive zsh and a real interactive fish on a pty --
+      # because the recipe mt used to print reported success and purged
+      # nothing, which is a defect no amount of reading the string can find.
+      #
+      # Those tests FAIL rather than skip when a shell is missing: a skipped
+      # gate prints ok and exit 0, which is how an unrun gate passes for
+      # months. So the shells are not optional here, and CI ships none of them
+      # by default.
+      #
+      # THE EXACT PATHS ARE ASSERTED, not the package names. An install that
+      # succeeds while putting the binary somewhere else fails identically to
+      # no install at all -- one CI round later, which is the expensive way to
+      # find out.
+      - name: Install the shells the history-purge gates execute
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+          for b in /usr/bin/zsh /usr/bin/fish /usr/bin/script /usr/bin/timeout; do
+            test -x "$b" || { echo "MISSING: $b"; exit 1; }
+            echo "ok $b"
+          done
+          /usr/bin/zsh --version
+          /usr/bin/fish --version
+
       # The `if: hashFiles(...)` guards these two steps carried until P5 are
       # GONE. They existed because nextest exits 4 on a workspace with no tests,
       # which would have made CI red from the first commit -- but a conditional
