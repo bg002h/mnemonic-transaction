@@ -25,6 +25,9 @@
 #   - A `check` shared by two entries is neutered twice, once per entry. Both
 #     runs are still valid controls; neither is redundant, since they run
 #     different tests.
+#   - It says nothing about the OTHER refusal tests while a mutation is live.
+#     Each entry runs only its own test, by design: the point is that this test
+#     notices this check.
 # ─────────────────────────────────────────────────────────────────────────────
 # THIS SCRIPT OWNS THE WORKING TREE WHILE IT RUNS.
 #
@@ -67,7 +70,26 @@ restore() {
   cp -a "$BACKUP/src" "$CRATE/src"
   find "$CRATE/src" -name '*.rs' -exec touch {} +
 }
-cleanup() { restore; rm -rf "$BACKUP"; }
+# REBUILD ON THE WAY OUT. Restoring the SOURCE is not the same as restoring the
+# BINARY, and the difference is a false measurement waiting to happen: the last
+# entry's `cargo nextest` links `target/debug/mt` from the MUTATED tree, and
+# nothing after it rebuilds. The tree is then clean, `git status` says so -- and
+# `./target/debug/mt` is a program with a refusal deleted.
+#
+# Observed 2026-08-27, and it cost a measurement: with the last entry in
+# refusals.toml naming `world_readable_stdout_guard`, running the binary
+# straight after this script showed `mt encode` writing 796 bytes to a mode-0644
+# stdout at exit 0 -- looking exactly like a shipped defect, on a tree whose
+# whole suite was green.
+#
+# It goes in `cleanup` rather than after the loop so the FAILED path and an
+# interrupt are covered too. Its own status is discarded: this script reports on
+# refusal tests, and a build failure here must not be mistaken for one.
+cleanup() {
+  restore
+  rm -rf "$BACKUP"
+  cargo build --locked >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 mapfile -t ENTRIES < <(
