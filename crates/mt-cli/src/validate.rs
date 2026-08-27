@@ -692,6 +692,74 @@ fn looks_like_a_transaction(a: &str) -> bool {
     body.len() >= 100 && body.len() % 2 == 0 && body.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+// ── F-260 — WORDS DERIVED FROM THE MODE, not from the rule's name ────────────
+
+/// What a measured mode actually grants, as a clause: *"grant read to group and
+/// others"*, *"grant write to the group"*, *"grant read and write to the group
+/// and read to others"*.
+///
+/// **Both of mt's mode messages were hard-coded to a rule's NAME**, and the rule
+/// they named was not even mt's: the refusal said *"grant read to group or
+/// others"* and the warning said *"grant read to group **and** others"*, while
+/// mt's mask is `0o077`. At mode **0620** both are false -- `0620 & 0o044 == 0`,
+/// so no read bit is set outside the owner -- and the warning's spelling is
+/// false twice over, because 0620 grants nothing to `other` at all. A false
+/// statement of fact inside a refusal teaches an operator to stop reading them.
+///
+/// mt is right to refuse 0620. Its reason is a different one, and it is the
+/// reason mt's mask is wider than me's: someone who can WRITE the file can alter
+/// the strings between here and the plate.
+///
+/// **This vocabulary is NOT in the shared crate**, and that is measured rather
+/// than assumed: `observation.rs` shipped F-259's half of its stated argument --
+/// a payload-kind type -- and not F-260's, so there is nothing there that turns
+/// an observed mode into words. `me`'s own refusal still hard-codes *"grant read
+/// to group or others"*, which is true for `me`'s `0o044` and false for mt's
+/// `0o077`. Hoisting this is F-276, owned by the crate's next version.
+///
+/// Total by construction, including the `0o077 == 0` case the call sites never
+/// reach, so it cannot be the thing that panics on a funds path.
+pub fn mode_grants(mode: u32) -> String {
+    fn bits(b: u32) -> String {
+        let mut v = Vec::new();
+        if b & 0o4 != 0 {
+            v.push("read");
+        }
+        if b & 0o2 != 0 {
+            v.push("write");
+        }
+        if b & 0o1 != 0 {
+            v.push("execute");
+        }
+        match v.len() {
+            0 => String::new(),
+            1 => v[0].to_string(),
+            2 => format!("{} and {}", v[0], v[1]),
+            _ => format!("{}, {} and {}", v[0], v[1], v[2]),
+        }
+    }
+    let group = (mode >> 3) & 0o7;
+    let other = mode & 0o7;
+    match (group, other) {
+        (0, 0) => "grant nothing to group or others".to_string(),
+        (g, o) if g == o => format!("grant {} to group and others", bits(g)),
+        (g, 0) => format!("grant {} to the group", bits(g)),
+        (0, o) => format!("grant {} to others", bits(o)),
+        (g, o) => format!("grant {} to the group and {} to others", bits(g), bits(o)),
+    }
+}
+
+/// The mode grants READ outside the owner. `me`'s whole mask; one bit of mt's.
+pub fn grants_read(mode: u32) -> bool {
+    mode & 0o044 != 0
+}
+
+/// The mode grants WRITE outside the owner — the half `0o044` cannot see, and
+/// the reason mt refuses a destination `me` permits.
+pub fn grants_write(mode: u32) -> bool {
+    mode & 0o022 != 0
+}
+
 // ── §8.2g — a source file readable by anyone but its owner ───────────────────
 
 /// §8.2g: **warn loudly** — never refuse — when the source file's mode has any
@@ -746,17 +814,44 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
     if mode & 0o077 == 0 {
         return None;
     }
+    // F-260: the sentence is BUILT FROM THE MODE. At 0620 the shipped wording
+    // -- "grant read to group and others" -- was false about the permission and
+    // false about which classes hold it, and the hazard sentence below claimed
+    // a read nobody outside the owner has.
+    let hazard = match (grants_read(mode), grants_write(mode)) {
+        (true, true) => {
+            "Anyone who can read this file can broadcast it — and \
+             anyone who can write it could have changed the transaction before \
+             mt read it."
+        }
+        (true, false) => "Anyone who can read this file can broadcast it.",
+        (false, true) => {
+            "Nobody outside its owner can READ it — but the bits \
+             that are set let them CHANGE it, and this file is what mt just read \
+             the transaction from."
+        }
+        (false, false) => {
+            "The bits that are set grant neither read nor write; \
+             mt warns on any group or other bit, because the ones it cannot \
+             name today are the ones a later chmod widens."
+        }
+    };
     Some(Warning::new(
-        format!("{label} is mode {mode:04o} — its permissions grant read to group and others."),
-        "A finalized transaction is BEARER. Anyone who can read this file can \
-         broadcast it. It is exactly as dangerous as the plate you are about to \
+        format!(
+            "{label} is mode {mode:04o} — its permissions {}.",
+            mode_grants(mode)
+        ),
+        format!(
+            "A finalized transaction is BEARER. {hazard} It is exactly as \
+         dangerous as the plate you are about to \
          cut.\n\nWHAT THIS DID NOT CHECK (F-252): only the file's own mode was \
          measured. If a directory above it denies search to others — a 0700 home \
          directory does — then nobody else can open it today, and this warning is \
          about a mode that becomes dangerous the moment the file is moved, copied \
          or its parent relaxed.\n\nIt also says nothing about who read the file \
          BEFORE now, nor about backups. It is the check that is available, not a \
-         guarantee.",
+         guarantee."
+        ),
     ))
 }
 
@@ -808,18 +903,40 @@ pub fn world_readable_stdout_guard(allow: bool, form: crate::blocks::Form) -> Re
         if mode & 0o077 == 0 {
             return Ok(());
         }
+        // F-260, as above: the verdict names what was MEASURED. mt's mask is
+        // `0o077`, and the sentence it printed described `0o044` -- me's.
+        let hazard = match (grants_read(mode), grants_write(mode)) {
+            (true, true) => {
+                "anyone who can read that file can broadcast it, and \
+                 anyone who can write it can change the strings before they reach \
+                 the plate"
+            }
+            (true, false) => "anyone who can read that file can broadcast it",
+            (false, true) => {
+                "nobody outside its owner can READ it — but the bits \
+                 that are set let them CHANGE it, and what is written there is \
+                 what gets cut into metal"
+            }
+            (false, false) => {
+                "the bits that are set grant neither read nor \
+                 write, and mt declines any group or other bit on the file the \
+                 engraving is written to"
+            }
+        };
         return Err(Refusal::new(
             "encode",
             "§8.2h",
-            format!("stdout is a file of mode {mode:04o} — its permissions grant read to group or others."),
+            format!(
+                "stdout is a file of mode {mode:04o} — its permissions {}.",
+                mode_grants(mode)
+            ),
             // THE NOUN IS THIS RUN'S ARTIFACT. `--qr` puts ONE
             // `tx:` record on stdout, and an operator reading "these strings"
             // beside a file they can see holding one line is being told about
             // a different run. Same defect as the block warnings above it,
             // found in the same journey transcript.
             format!(
-                "{} the engraving, and a finalized transaction is \
-                 BEARER: anyone who can read that file can broadcast it.",
+                "{} the engraving, and a finalized transaction is BEARER: {hazard}.",
                 match form {
                     crate::blocks::Form::Strings => "These strings ARE",
                     crate::blocks::Form::RawRecord => "This record IS",
@@ -1205,4 +1322,62 @@ fn thousands(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod mode_wording_tests {
+    use super::{grants_read, grants_write, mode_grants};
+
+    /// **The table is the gate, and 0620 is the row that matters.**
+    ///
+    /// Every other row passes under the shipped hard-coded sentence too — they
+    /// are here so a "fix" that merely renamed the constant cannot pass, and so
+    /// the asymmetric case, which no single sentence can describe, has a pinned
+    /// answer.
+    #[test]
+    fn every_clause_is_true_of_the_mode_it_describes() {
+        for (mode, want) in [
+            // The shipped sentence was right about this one and only this one.
+            (0o644, "grant read to group and others"),
+            // THE ROW THE OLD WORDING GOT WRONG TWICE: not read, and not
+            // `other` at all.
+            (0o620, "grant write to the group"),
+            (0o640, "grant read to the group"),
+            (0o604, "grant read to others"),
+            // 0660 is the GROUP alone -- `other` is 0. Written wrong on the
+            // first pass ("group and others") and caught here, which is the
+            // point of pinning the strings rather than eyeballing them.
+            (0o660, "grant read and write to the group"),
+            (0o666, "grant read and write to group and others"),
+            // ASYMMETRIC. One clause cannot cover it, which is why the classes
+            // are described separately rather than with a shared adjective.
+            (
+                0o664,
+                "grant read and write to the group and read to others",
+            ),
+            (0o710, "grant execute to the group"),
+            (0o777, "grant read, write and execute to group and others"),
+            // Never reached from either call site -- both mask on `0o077`
+            // first -- and total anyway, so the wording cannot be what panics
+            // on a funds path.
+            (0o600, "grant nothing to group or others"),
+        ] {
+            assert_eq!(
+                mode_grants(mode),
+                want,
+                "mode {mode:04o} is described as something it is not"
+            );
+        }
+    }
+
+    /// The two predicates the hazard sentences branch on, at the mode that
+    /// separates mt's mask from me's.
+    #[test]
+    fn the_write_only_mode_is_exactly_the_one_a_read_mask_cannot_see() {
+        assert!(!grants_read(0o620), "0620 & 0o044 == 0");
+        assert!(grants_write(0o620), "...and it is group-WRITABLE");
+        assert!(grants_read(0o644));
+        assert!(!grants_write(0o644));
+        assert!(!grants_read(0o600) && !grants_write(0o600));
+    }
 }

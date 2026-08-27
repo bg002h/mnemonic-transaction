@@ -2090,3 +2090,135 @@ fn a_world_readable_input_file_warns() {
         "the warning must name the mode it measured: {err}"
     );
 }
+
+// ── P1 row 11 — F-260: the wording is DERIVED FROM THE MODE ──────────────────
+//
+// Both messages were hard-coded to the RULE'S NAME rather than to what was
+// measured, and mt's mask is `0o077` while the sentence describes `0o044`:
+//
+//   refusal, stdout 0620   "its permissions grant read to group or others"
+//   warning, input  0620   "its permissions grant read to group and others"
+//
+// `0620 & 0o044 == 0`. No read bit is set outside the owner, and the second
+// spelling is false twice over -- it names both classes for a mode that grants
+// nothing to `other` at all. mt is right to refuse 0620, and its reason is a
+// different one: someone who can WRITE the file can alter the strings before
+// they are cut into metal, which is exactly why mt's mask is wider than me's.
+//
+// A message computed from the observation cannot make either mistake. The
+// vocabulary for it is NOT in the shared crate -- `observation.rs` shipped
+// F-259's half (a payload-kind type) and not F-260's -- so it is written here,
+// and hoisting it is F-276.
+
+/// **THE REFUSAL, at the mode no read mask can see.**
+#[test]
+#[cfg(unix)]
+fn the_stdout_refusal_says_what_the_mode_grants_not_what_the_rule_is_called() {
+    let v = base();
+    let body = s(&v, "finalized_psbt_b64");
+
+    let (_, err, ok) = encode_to_file(&body, &[], 0o620);
+    assert!(!ok, "0620 is refused: {err}");
+    assert!(err.contains("0620"), "the mode it measured is named: {err}");
+    assert!(
+        !err.contains("grant read"),
+        "0620 grants NO read outside the owner -- `0620 & 0o044 == 0`. Saying it \
+         does is a false statement of fact inside a refusal: {err}"
+    );
+    assert!(
+        !err.contains("can read that file"),
+        "and the hazard sentence must not claim it either -- at 0620 nobody \
+         outside the owner can read the file, they can CHANGE it: {err}"
+    );
+    assert!(
+        err.contains("write"),
+        "it must say what IS granted, which is what makes mt's 0o077 wider than \
+         me's 0o044: {err}"
+    );
+
+    // THE CONTROL, and it is the half that stops this becoming "never mention
+    // reading": at 0644 the original sentence is TRUE and must survive.
+    let (_, err, ok) = encode_to_file(&body, &[], 0o644);
+    assert!(!ok, "0644 is refused: {err}");
+    assert!(
+        err.contains("read"),
+        "0644 really does grant read to group and others: {err}"
+    );
+    assert!(
+        err.contains("group and others"),
+        "and to BOTH classes, which 0620 does not: {err}"
+    );
+
+    // ...and at 0600 there is no message at all, so a wording that always fires
+    // cannot pass either half above.
+    let (written, err, ok) = encode_to_file(&body, &[], 0o600);
+    assert!(ok, "0600 must not fire: {err}");
+    assert!(written > 0);
+    assert!(!err.contains("8.2h"), "{err}");
+}
+
+/// **THE WARNING, at the same mode — and F-260's entry does not name this site.**
+///
+/// It is worse here than in the refusal: the warning says *"grant read to group
+/// **and** others"*, which at 0620 is false about the permission AND false about
+/// which classes hold it.
+#[test]
+#[cfg(unix)]
+fn the_input_warning_says_what_the_mode_grants_not_what_the_rule_is_called() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = base();
+
+    let warn_at = |mode: u32| -> (String, bool) {
+        let f = tmp(&s(&v, "finalized_psbt_b64"));
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+            .args(["encode", "--bitcoin-cli", OFFLINE])
+            .arg("--in")
+            .arg(f.path())
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            out.status.success(),
+        )
+    };
+
+    let (err, ok) = warn_at(0o620);
+    assert!(ok, "§8.2g warns and never refuses: {err}");
+    assert!(err.contains("0620"), "the mode it measured is named: {err}");
+    assert!(
+        !err.contains("grant read"),
+        "0620 grants no read outside the owner: {err}"
+    );
+    assert!(
+        !err.contains("can read this file"),
+        "the body must not claim read access either: {err}"
+    );
+    assert!(
+        !err.contains("group and others"),
+        "0620 grants NOTHING to `other`, so naming both classes is false twice \
+         over -- which is the shape F-260's entry does not mention at this \
+         site: {err}"
+    );
+    assert!(
+        err.contains("write"),
+        "it must say what IS granted -- and for an INPUT file that is the \
+         sharper hazard, because the transaction could have been changed before \
+         mt read it: {err}"
+    );
+
+    // THE CONTROL: at 0644 the original sentence is true and must survive.
+    let (err, ok) = warn_at(0o644);
+    assert!(ok, "{err}");
+    assert!(err.contains("0644"), "{err}");
+    assert!(err.contains("read"), "{err}");
+    assert!(err.contains("group and others"), "{err}");
+
+    // ...and 0600 is silent.
+    let (err, ok) = warn_at(0o600);
+    assert!(ok, "{err}");
+    assert!(
+        !err.contains("0600"),
+        "an owner-only input says nothing: {err}"
+    );
+}

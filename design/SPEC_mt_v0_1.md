@@ -2515,14 +2515,37 @@ exactly as permanent, as a machine-engraved one.
    no other bits — accepting `600`, `400`, `700` and warning on `644`, `640`,
    `604`.
 
-       WARNING: /home/bcg/tx.psbt is mode 0644 — readable by every user
-                on this machine.
+       WARNING: /home/bcg/tx.psbt is mode 0644 — its permissions grant read
+                to group and others.
 
          A finalized transaction is BEARER. Anyone who can read this file
          can broadcast it. It is exactly as dangerous as the plate you are
          about to cut.
 
          chmod 600 /home/bcg/tx.psbt
+
+   **THE SENTENCE IS DERIVED FROM THE MODE, NOT FROM THE RULE'S NAME — F-260,
+   built as P1 row 11 at BOTH mode sites.** Two corrections are folded into the
+   example above, and the first of them was already shipped and unrecorded here:
+
+   - *"readable by every user on this machine"* asserts a reachability the guard
+     never established. POSIX requires search permission on every directory in a
+     path, so a 0644 file beneath a 0700 home directory cannot be opened by
+     anyone else. **F-252**, corrected in the code on 2026-08-25 and not in this
+     paragraph until now.
+   - *"grant read to group and others"* is hard-coded to a rule mt does not even
+     use. mt's mask is `0o077`; that sentence describes `0o044`. At mode
+     **0620** it is false twice over — `0620 & 0o044 == 0`, so no read bit is
+     set outside the owner, and nothing at all is granted to `other`. mt is
+     right to refuse and warn at 0620, and its reason is the one that makes its
+     mask wider than `me`'s: **someone who can WRITE the file can alter the
+     strings before they are cut into metal.**
+
+   So both messages now compute their clause: `0620` reads *"its permissions
+   grant write to the group"*, `0664` reads *"grant read and write to the group
+   and read to others"*, and the hazard sentence that follows branches on what
+   is actually granted rather than asserting a read. The same applies to §8.2h
+   below.
 
    **It works in more cases than "a named file", which was worth checking.**
    Verified by experiment: with `mt encode < tx.psbt` an `fstat` on fd 0 still
@@ -2545,7 +2568,8 @@ exactly as permanent, as a machine-engraved one.
    the mode, so it cried wolf on a `0600` file and warned no harder on a `0644`
    one.
 
-       mt: stdout is a world-readable file, and these strings are BEARER.
+       mt: stdout is a file of mode 0644 — its permissions grant read to
+           group and others.
 
          Anyone who can read that file can broadcast this transaction. It is
          the engraving, in a form that copies itself.
