@@ -200,6 +200,18 @@ spec  = "§8.2f"
 test  = "a_real_mt1_string_on_the_command_line_is_still_refused"
 check = "src/validate.rs::command_line_guard"
 
+# F-274, added 2026-08-27 (P1 step 3). The guard classified BEFORE it
+# normalised, so a bearer artifact pasted with one stray space was
+# unrecognised, reached clap, and was echoed verbatim to stderr. A generated
+# grid -- 4 verbs x 2 carrier classes x 4 spellings -- leaked on 16 of 32 rows.
+# Listed rather than left as a plain test because it is the widest coverage
+# §8.2f has, and the mutation control is exactly the one that matters: neuter
+# `command_line_guard` and all 32 rows leak.
+[[refusal]]
+spec  = "§8.2f"
+test  = "no_spelling_of_a_bearer_argument_reaches_stderr"
+check = "src/validate.rs::command_line_guard"
+
 # §8.2c's ACTUAL per-input requirement -- `require_psbt_input_values`, which is
 # called on every PSBT and had NO test and NO entry. An entry I added earlier
 # claimed to cover it and named `parse_input_values`, a DIFFERENT guard with a

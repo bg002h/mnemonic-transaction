@@ -397,6 +397,86 @@ fn an_ordinary_label_is_not_mistaken_for_a_transaction() {
     assert!(ok, "a plain label tripped §8.2f: {err}");
 }
 
+/// **F-274 — the guard must NORMALISE before it CLASSIFIES.**
+///
+/// `looks_like_a_transaction` lowercases for its `mt1` arm and never trims. A
+/// bearer artifact pasted with a stray space is therefore unrecognised, falls
+/// through to clap, and **clap echoes it verbatim to stderr** — the exact leak
+/// §8.2f exists to prevent, reached by the likeliest route there is. Copying a
+/// string off a terminal, out of a note, or from a chat window brings the
+/// whitespace with it.
+///
+/// **A GENERATED CROSS-PRODUCT, not a hand list:** 4 verbs × 2 carrier classes
+/// (an `mt1` string, a raw transaction) × 4 spellings (canonical,
+/// leading-space, trailing-space, UPPERCASE) = **32 rows**. Measured before the
+/// fix, exit codes read directly: **16 leaked** — both whitespace spellings, on
+/// every verb, for both classes, each at exit 2 with the material in clap's
+/// error.
+///
+/// The canonical and UPPERCASE rows are the **positive control**. They were
+/// already caught, so without them a "fix" that refused every argument would be
+/// indistinguishable from one that recognises the carrier — and the narrowness
+/// is what `a_filename_beginning_mt1_is_not_mistaken_for_a_bearer_string`
+/// guards from the other side.
+#[test]
+fn no_spelling_of_a_bearer_argument_reaches_stderr() {
+    let corpus: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let mt1 = corpus["vectors"][0]["strings"][0].as_str().unwrap();
+    let raw = corpus["vectors"][0]["raw_hex"].as_str().unwrap();
+
+    let mut rows = 0;
+    for verb in ["encode", "decode", "verify", "inspect"] {
+        for (class, carrier) in [("an mt1 string", mt1), ("a raw transaction", raw)] {
+            for (spelling, arg) in [
+                ("canonical", carrier.to_string()),
+                ("leading-space", format!(" {carrier}")),
+                ("trailing-space", format!("{carrier} ")),
+                ("UPPERCASE", carrier.to_uppercase()),
+            ] {
+                rows += 1;
+                let out = mt()
+                    .args([verb, "--bitcoin-cli", OFFLINE])
+                    .arg(&arg)
+                    .output()
+                    .unwrap();
+                let err = String::from_utf8_lossy(&out.stderr).into_owned();
+                let where_ = format!("{verb} / {class} / {spelling}");
+
+                // The material never reaches stderr, by ANY route -- the
+                // refusal's own text, or clap's echo of an argument the guard
+                // failed to recognise.
+                assert!(
+                    !err.contains(arg.trim()),
+                    "{where_}: the bearer material reached stderr\n{err}"
+                );
+                // ...and the guard is what stopped it. Absence alone would also
+                // be satisfied by a tool that accepted the argument in silence.
+                assert!(
+                    err.contains("§8.2f"),
+                    "{where_}: no §8.2f refusal; exit {:?}\n{err}",
+                    out.status.code()
+                );
+                assert_eq!(
+                    out.status.code(),
+                    Some(1),
+                    "{where_}: §8.2f is an mt refusal, so exit 1 and not clap's 2"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        rows, 32,
+        "the cross-product is 4 verbs x 2 classes x 4 spellings"
+    );
+}
+
 // ── §8.3 — unsigned ─────────────────────────────────────────────────────────
 
 #[test]

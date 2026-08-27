@@ -456,13 +456,26 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
         .unwrap_or_else(|| "encode".to_string());
 
     for a in args.iter().skip(1) {
-        if !looks_like_a_transaction(a) {
+        // NORMALISE BEFORE CLASSIFYING -- F-274, and the ordering is the fix.
+        //
+        // The recogniser below lowercases for its `mt1` arm and pins the hex
+        // arm to an even length of hex digits, so a SINGLE stray space made a
+        // bearer artifact unrecognisable: it fell through to clap, and clap
+        // echoed it verbatim to stderr. Measured over a generated grid of 4
+        // verbs x 2 carrier classes x 4 spellings, 16 of the 32 rows leaked --
+        // both whitespace spellings, on every verb, for both classes.
+        //
+        // This is not a hypothetical spelling. Copying a string off a terminal,
+        // out of a note, or from a chat window brings the whitespace with it,
+        // and the operator who does that is the operator §8.2f exists for.
+        let material = a.trim();
+        if !looks_like_a_transaction(material) {
             continue;
         }
         // NEVER echo the argument. Printing it back into the refusal would put
         // the bearer material in a SECOND place -- the same defect the refusal
         // exists to name.
-        let what = if a.to_ascii_lowercase().starts_with("mt1") {
+        let what = if material.to_ascii_lowercase().starts_with("mt1") {
             "an mt1 set"
         } else {
             "a transaction"
@@ -472,7 +485,10 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
             "§8.2f",
             format!(
                 "{what} was passed as a command-line argument ({} characters)",
-                a.chars().count()
+                // The NORMALISED length: padding is not part of the material,
+                // and quoting the raw count would tell an operator comparing it
+                // against what they pasted a number that matches nothing.
+                material.chars().count()
             ),
             "It is now in your shell history and was visible in `ps` while this \
              ran. A finalized transaction — and the mt1 strings it becomes — is \
@@ -501,6 +517,13 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
 /// itself, where it costs the money. Same shape, different hazard class, and an
 /// operator carrying the habit across reaches for it first.
 fn looks_like_a_transaction(a: &str) -> bool {
+    // **The candidate arrives NORMALISED, and this asserts it rather than
+    // trusting it** -- F-274. Trimming in two places is how the two copies
+    // drift apart; trimming in neither is the defect this replaced. So there is
+    // exactly one `trim()`, in `command_line_guard`, and a second caller that
+    // forgets it fails loudly in every test and dev build rather than silently
+    // re-opening the leak.
+    debug_assert_eq!(a, a.trim(), "the candidate must be normalised first");
     if a.starts_with("cHNidP8") {
         return true;
     }
