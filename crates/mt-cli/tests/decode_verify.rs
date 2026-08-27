@@ -1372,3 +1372,79 @@ fn a_clean_elided_set_is_unaffected_by_the_derived_full_length() {
         raw_of("even")
     );
 }
+
+// ── P1 step 2: `-` on the three READING verbs ────────────────────────────────
+//
+// `inspect` is exercised here rather than in `inspect.rs` because the unit
+// under test is not a verb — it is the ONE `stdin_dash` field on the shared
+// `ReadArgs` struct (`src/main.rs`), which `decode`, `verify` and `inspect` all
+// derive from. Splitting the gate across two suites would let a later edit
+// green one half while the other silently regressed.
+
+/// **`mt decode -`, `mt verify -` and `mt inspect -` must WORK, not error.**
+///
+/// F-250 gave `mt encode` the dash and stopped there; the three reading verbs
+/// still answered `error: unexpected argument '-' found` at exit **2**,
+/// measured. `-` meaning *read stdin* is honoured by `cat`, `tar`, `curl`,
+/// `gpg` and `jq`, and the recovery path is exactly where an operator reaches
+/// for a habit rather than for the manual.
+///
+/// **Asserted as EQUALITY with the flagless run on BOTH streams**, which is the
+/// shape F-250 already uses (`tests/encode.rs`): a bare `success()` would also
+/// pass for a `-` silently taken as a filename, or one that suppressed the
+/// report.
+#[test]
+fn a_bare_dash_means_stdin_on_every_reading_verb() {
+    let strings = strings_of("even").join("\n");
+    for verb in ["decode", "verify", "inspect"] {
+        let plain = mt()
+            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+            .write_stdin(strings.clone())
+            .output()
+            .unwrap();
+        let dashed = mt()
+            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+            .write_stdin(strings.clone())
+            .output()
+            .unwrap();
+
+        assert!(
+            dashed.status.success(),
+            "`mt {verb} -` must succeed; got {:?}\n{}",
+            dashed.status.code(),
+            String::from_utf8_lossy(&dashed.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&dashed.stdout),
+            String::from_utf8_lossy(&plain.stdout),
+            "`mt {verb} -`: `-` must change NOTHING on stdout"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&dashed.stderr),
+            String::from_utf8_lossy(&plain.stderr),
+            "`mt {verb} -`: `-` must not add or remove a line of the report"
+        );
+    }
+}
+
+/// **The control F-250 carries, on the three verbs that just gained the dash.**
+///
+/// `-` must be the ONLY positional admitted. If the field opened a general
+/// positional, the pre-clap §8.2f guard would be the only thing between a
+/// mistyped argument and silent acceptance — and that guard is deliberately
+/// narrow, so `wat` sails straight past it.
+#[test]
+fn a_dash_does_not_open_the_door_to_other_positionals_on_reading_verbs() {
+    let strings = strings_of("even").join("\n");
+    for verb in ["decode", "verify", "inspect"] {
+        let out = mt()
+            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli", "wat"])
+            .write_stdin(strings.clone())
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "`mt {verb} wat`: a stray positional must still be refused"
+        );
+    }
+}

@@ -63,6 +63,24 @@ struct ReadArgs {
     #[arg(long, value_name = "PATH")]
     r#in: Option<std::path::PathBuf>,
 
+    /// Accepted and IGNORED: `-` means stdin, which is already the default.
+    ///
+    /// F-250 gave this to `encode` and stopped there, so `mt decode -`,
+    /// `mt verify -` and `mt inspect -` still answered clap's
+    /// `unexpected argument '-' found` at exit 2 — measured on all three. The
+    /// habit comes from `cat`, `tar`, `curl`, `gpg` and `jq`, and the reading
+    /// verbs are the RECOVERY path, which is precisely where an operator
+    /// reaches for a habit instead of for the manual.
+    ///
+    /// **ONE field for three verbs**, because `decode`, `verify` and `inspect`
+    /// share this struct. Same `value_parser` as `EncodeArgs`: it admits the
+    /// literal `-` and NOTHING else, so this does not open a general
+    /// positional — a mistyped argument is still an error, and bearer material
+    /// still dies earlier in `validate::command_line_guard`, which runs on raw
+    /// argv before clap (§8.2f).
+    #[arg(value_name = "-", value_parser = ["-"], hide = true)]
+    stdin_dash: Option<String>,
+
     /// Compare against a transaction, by FULL txid. Takes a **PATH**.
     ///
     /// `verify` only. Comparing against the 20-bit set id would report a match
