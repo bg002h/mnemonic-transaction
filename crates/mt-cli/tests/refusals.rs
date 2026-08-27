@@ -477,6 +477,206 @@ fn no_spelling_of_a_bearer_argument_reaches_stderr() {
     );
 }
 
+// ── §6d: `--allow-argv-secret` is a CHANNEL, not a flag ─────────────────────
+//
+// The override's own parse runs on RAW argv, and so does the ROUTING of what it
+// admits. Wiring it as an ordinary clap flag moves the decision after clap and
+// reinstates the leak §8.2f exists to stop -- and on `mt` it is worse than on
+// `me`, because NO mt verb takes material positionally: `me sysw pack` has a
+// `records` positional to hand the admitted token to, and mt has nothing but a
+// hidden `[-]` whose value_parser rejects everything else. So an override that
+// leaves the token in argv converts a clean exit-1 refusal into clap's
+// `error: invalid value '<the whole transaction>' for '[-]'` at exit 2.
+
+fn corpus_vector() -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mt-codec/src/test_vectors/mt1_v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap()["vectors"][0]
+        .clone()
+}
+
+/// **The admitted material takes the `--in` path, and the proof is byte
+/// equality with `--in` itself.**
+///
+/// §6d: *"admitted material is passed to the tool through the same internal
+/// path as `--in` content, and never re-presented to clap as a positional"*.
+/// Byte equality on stdout is what makes "the same path" checkable — a success
+/// check would pass for an override that admitted the material and then read an
+/// empty stdin.
+///
+/// All four verbs, because `encode` and the reading verbs reach the bytes
+/// through different functions: `encode`'s own `--in` arm, and `read_input`,
+/// which `decode`, `verify` and `inspect` share.
+#[test]
+fn the_argv_override_routes_material_through_the_private_path() {
+    let v = corpus_vector();
+    let raw = v["raw_hex"].as_str().unwrap().to_string();
+    let strings: Vec<String> = v["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+
+    // `encode` takes ONE token: a raw transaction.
+    // The reading verbs take SIX: the strings of a set, as separate argv words.
+    let cases: Vec<(&str, Vec<String>, String)> = vec![
+        ("encode", vec![raw.clone()], raw.clone()),
+        ("decode", strings.clone(), strings.join("\n")),
+        ("verify", strings.clone(), strings.join("\n")),
+        ("inspect", strings.clone(), strings.join("\n")),
+    ];
+
+    for (verb, tokens, file_body) in cases {
+        let f = tmp(&file_body);
+        let via_in = mt()
+            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        assert!(
+            via_in.status.success(),
+            "{verb}: the --in control must succeed, or the comparison is \
+             between two failures\n{}",
+            String::from_utf8_lossy(&via_in.stderr)
+        );
+
+        let via_argv = mt()
+            .args([verb, "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+            .args(&tokens)
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            via_argv.status.code(),
+            Some(0),
+            "`mt {verb} --allow-argv-secret …` must PROCEED\n{}",
+            String::from_utf8_lossy(&via_argv.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&via_argv.stdout),
+            String::from_utf8_lossy(&via_in.stdout),
+            "{verb}: the admitted material did not take the --in path"
+        );
+    }
+}
+
+/// **The material must be GONE from the argv clap sees, not merely permitted.**
+///
+/// The discriminating case, and the ORDER of the tokens is the whole test: the
+/// unknown flag comes AFTER the material, so an implementation that leaves the
+/// admitted token in argv makes clap reach the `[-]` positional FIRST and print
+/// `error: invalid value '<the whole transaction>' for '[-]'`. Put the unknown
+/// flag first and clap errors on it before it ever reaches the value, so the
+/// naive implementation passes too — and a test that both worlds satisfy is not
+/// a test.
+#[test]
+fn the_argv_override_strips_the_material_from_the_argv_clap_sees() {
+    let raw = corpus_vector()["raw_hex"].as_str().unwrap().to_string();
+    let out = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .arg(&raw)
+        .arg("--nosuchflag")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !err.contains(&raw),
+        "the admitted material was handed back to clap and echoed:\n{err}"
+    );
+    assert!(
+        err.contains("--nosuchflag"),
+        "clap must name the flag it could not parse:\n{err}"
+    );
+}
+
+/// **The control: the override on its own changes nothing.**
+///
+/// `mt encode --allow-argv-secret` with no material must behave exactly as
+/// `mt encode` — both streams, and the exit code. Without this, an
+/// implementation that swallowed argv wholesale would still pass the two tests
+/// above.
+#[test]
+fn the_argv_override_alone_is_the_bare_invocation() {
+    let raw = corpus_vector()["raw_hex"].as_str().unwrap().to_string();
+    let plain = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .write_stdin(raw.clone())
+        .output()
+        .unwrap();
+    let flagged = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .write_stdin(raw)
+        .output()
+        .unwrap();
+    assert_eq!(flagged.status.code(), plain.status.code());
+    assert_eq!(
+        String::from_utf8_lossy(&flagged.stdout),
+        String::from_utf8_lossy(&plain.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&flagged.stderr),
+        String::from_utf8_lossy(&plain.stderr)
+    );
+}
+
+/// **Two sources for one channel is WARNED about, never silent.**
+///
+/// `--in FILE` and admitted argv material both offer the bytes. The file wins —
+/// it is the private channel and the explicit one — but an operator whose typed
+/// argument was discarded in silence would have no way to know which of the two
+/// mt engraved. The warning names the length and the file, and never the
+/// material.
+#[test]
+fn material_on_argv_beside_an_in_file_is_warned_about_not_dropped() {
+    let v = corpus_vector();
+    let raw = v["raw_hex"].as_str().unwrap().to_string();
+    let other = v["raw_hex"].as_str().unwrap().to_string();
+    let f = tmp(&other);
+
+    let out = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .arg(&raw)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("--in was given too"),
+        "the discarded argv material was not mentioned:\n{err}"
+    );
+    assert!(
+        !err.contains(&raw),
+        "the warning echoed the material:\n{err}"
+    );
+    assert!(
+        err.contains(&f.path().display().to_string()),
+        "the warning does not say WHICH source was read:\n{err}"
+    );
+}
+
+/// **It is documented on every verb**, because a flag an operator cannot find
+/// is one they cannot decide about. §6d makes it greppable in a script so a
+/// reviewer can find it; `--help` is where the operator finds it.
+#[test]
+fn the_argv_override_is_documented_on_every_verb() {
+    for verb in ["encode", "decode", "verify", "inspect"] {
+        let out = mt().args([verb, "--help"]).output().unwrap();
+        let help = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            help.contains("--allow-argv-secret"),
+            "`mt {verb} --help` does not document the override:\n{help}"
+        );
+    }
+}
+
 // ── §8.3 — unsigned ─────────────────────────────────────────────────────────
 
 #[test]

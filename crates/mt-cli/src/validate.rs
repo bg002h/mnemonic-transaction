@@ -445,6 +445,102 @@ pub fn legacy_unbound_warning(
 /// point.** `md verify <STRINGS>…` takes its material positionally — but
 /// `md1`/`mk1` strings are watch-only public material, where a leak costs
 /// privacy. A finalized transaction is bearer, where it costs the money.
+/// The `--allow-argv-secret` OVERRIDE, and the material it admits — §6d.
+///
+/// **It is a CHANNEL, not a flag, and on `mt` that is forced rather than
+/// chosen.** §6d rules that the override's own parse runs on raw argv, and that
+/// *"admitted material is passed to the tool through the same internal path as
+/// `--in` content, and never re-presented to clap as a positional, because a
+/// later, unrelated clap error would echo it."*
+///
+/// `me` can honour that with an ordinary clap flag because `me sysw pack` HAS a
+/// `records` positional to hand the admitted token to. **`mt` has none: no verb
+/// takes material positionally.** The only positional on any `mt` verb is the
+/// hidden `[-]`, whose `value_parser` admits the literal `-` and nothing else.
+/// So an override that admitted a transaction and left it in argv would turn a
+/// clean exit-1 refusal into `error: invalid value '<the whole transaction>'
+/// for '[-]'` at exit 2 — trading a refusal for the leak it exists to prevent.
+///
+/// Hence: **strip the override AND every token it admits, then hand what is
+/// left to clap.**
+pub struct ArgvIntake {
+    /// argv with the override and every admitted token removed. This is what
+    /// clap parses, and what `command_line_guard` inspects.
+    pub argv: Vec<String>,
+    /// The admitted material, in argv order, newline-joined — the bytes the
+    /// verb reads, exactly as if they had arrived by `--in`. `None` when the
+    /// override was absent or admitted nothing.
+    pub material: Option<Vec<u8>>,
+}
+
+/// Compute the intake from raw argv. **Runs before `command_line_guard` and
+/// before clap**, and does not parse.
+///
+/// **Declared on all four verbs, so there is no surface to spoof.** `me` has to
+/// check WHICH surface the override was typed on, because it declares the flag
+/// on 2 of its 6 and a flag value was found impersonating a subcommand word
+/// (pre-publish review, Minor 1). Every `mt` verb reads bearer material and
+/// every one declares the flag, so the presence of the token is the whole
+/// decision.
+pub fn argv_intake(args: &[String]) -> ArgvIntake {
+    const OVERRIDE: &str = "--allow-argv-secret";
+    if !args.iter().skip(1).any(|a| a == OVERRIDE) {
+        return ArgvIntake {
+            argv: args.to_vec(),
+            material: None,
+        };
+    }
+    let mut kept: Vec<String> = Vec::with_capacity(args.len());
+    let mut admitted: Vec<String> = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        // argv[0] is the program name; `command_line_guard` skips it for the
+        // same reason and the two must agree about what is a candidate.
+        if i == 0 {
+            kept.push(a.clone());
+            continue;
+        }
+        if a == OVERRIDE {
+            continue;
+        }
+        // EXACTLY the tokens the guard would have refused, by construction:
+        // one recogniser, consulted the same way, on the same normalised
+        // candidate. A second predicate here would drift, and the drift would
+        // be silent in the dangerous direction -- a token the guard refuses
+        // that this does not strip is a token clap gets to echo.
+        let material = a.trim();
+        if looks_like_a_transaction(material) {
+            admitted.push(material.to_string());
+            continue;
+        }
+        kept.push(a.clone());
+    }
+    ArgvIntake {
+        argv: kept,
+        material: (!admitted.is_empty()).then(|| admitted.join("\n").into_bytes()),
+    }
+}
+
+/// The warning for the one ambiguous invocation: material on argv AND `--in`.
+///
+/// Two sources for one channel. `--in` wins — it is the private channel and the
+/// explicit one — but **saying nothing is the defect**: the operator typed
+/// something that was not used, and the thing that was not used is bearer
+/// material now sitting in their shell history. The length is named; the
+/// material never is.
+pub fn argv_material_unused_warning(n: usize, path: &std::path::Path) -> Warning {
+    Warning::new(
+        format!(
+            "--allow-argv-secret admitted {n} bytes on argv, and --in was given too. \
+             mt read {}.",
+            path.display()
+        ),
+        "Two sources were offered for one channel, and the FILE won: it is the \
+         private one, and it is the one you named explicitly. Nothing from argv \
+         was read.\n\nThe material you typed is still in your shell history and \
+         was visible in `ps` while this ran. Drop the argument, or drop --in.",
+    )
+}
+
 pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
     // The verb, read from argv — this guard runs BEFORE clap, so nothing has
     // parsed one yet, and a refusal that says `mt mt:` tells the operator less

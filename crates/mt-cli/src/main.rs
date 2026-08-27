@@ -81,6 +81,23 @@ struct ReadArgs {
     #[arg(value_name = "-", value_parser = ["-"], hide = true)]
     stdin_dash: Option<String>,
 
+    /// Proceed even though bearer material was passed on the command line
+    /// (§8.2f).
+    ///
+    /// **Declared here so `--help` documents it; it is HONOURED before clap
+    /// runs.** §6d rules that the override's own parse happens on raw argv,
+    /// because a decision reached by parsing first has already let the parser
+    /// echo the material. `mt` strips both the override and the token it
+    /// admits out of the argv clap sees, and reads the material as if it had
+    /// arrived by `--in` — so this field is always `false` by the time clap
+    /// fills it in, and that is the design rather than an oversight.
+    ///
+    /// Say it only where argv is not a public channel: a single-user
+    /// air-gapped box, an amnesic Tails session. It is greppable, so a
+    /// reviewer can find it in a script.
+    #[arg(long)]
+    allow_argv_secret: bool,
+
     /// Compare against a transaction, by FULL txid. Takes a **PATH**.
     ///
     /// `verify` only. Comparing against the 20-bit set id would report a match
@@ -209,6 +226,23 @@ struct EncodeArgs {
     #[arg(value_name = "-", value_parser = ["-"], hide = true)]
     stdin_dash: Option<String>,
 
+    /// Proceed even though bearer material was passed on the command line
+    /// (§8.2f).
+    ///
+    /// **Declared here so `--help` documents it; it is HONOURED before clap
+    /// runs.** §6d rules that the override's own parse happens on raw argv,
+    /// because a decision reached by parsing first has already let the parser
+    /// echo the material. `mt` strips both the override and the token it
+    /// admits out of the argv clap sees, and reads the material as if it had
+    /// arrived by `--in` — so this field is always `false` by the time clap
+    /// fills it in, and that is the design rather than an oversight.
+    ///
+    /// Say it only where argv is not a public channel: a single-user
+    /// air-gapped box, an amnesic Tails session. It is greppable, so a
+    /// reviewer can find it in a script.
+    #[arg(long)]
+    allow_argv_secret: bool,
+
     /// Proceed even though stdout is a world-readable file (§8.2h).
     ///
     /// `mt` refuses by default: the strings ARE the engraving, and `>` creates
@@ -235,6 +269,22 @@ struct EncodeArgs {
 }
 
 fn main() -> std::process::ExitCode {
+    let argv: Vec<String> = std::env::args().collect();
+
+    // §6d — THE OVERRIDE'S OWN PARSE RUNS HERE, ON RAW ARGV, and so does the
+    // ROUTING of what it admits. `--allow-argv-secret` is a CHANNEL on `mt`,
+    // not a flag: it strips itself and every token it admits out of the argv
+    // clap sees, and carries the material in as if it had arrived by `--in`.
+    //
+    // Wiring it as an ordinary clap flag is the obvious implementation and it
+    // reinstates the leak. `me` gets away with it because `me sysw pack` has a
+    // `records` positional to hand the token to; NO `mt` verb takes material
+    // positionally, so an admitted transaction left in argv meets the hidden
+    // `[-]`, whose value_parser rejects it -- `error: invalid value '<the whole
+    // transaction>' for '[-]'`, exit 2, the material echoed. That is strictly
+    // worse than the refusal it replaced.
+    let intake = validate::argv_intake(&argv);
+
     // §8.2f RUNS BEFORE CLAP, and that ordering is the whole refusal.
     //
     // `mt encode <hex>` never reached this guard when it sat inside `encode`:
@@ -249,18 +299,21 @@ fn main() -> std::process::ExitCode {
     // <STRINGS>…` and `mk verify [MK1_STRINGS]…` both take their material
     // POSITIONALLY, so an operator carrying that habit across hits this on their
     // first try — and `mt1` strings, unlike `md1`/`mk1`, are bearer.
-    let argv: Vec<String> = std::env::args().collect();
-    if let Err(refusal) = validate::command_line_guard(&argv) {
+    //
+    // It inspects the STRIPPED argv, which is what makes the override
+    // "proceed": what the override admitted is no longer there to be refused,
+    // and anything it did not admit still is.
+    if let Err(refusal) = validate::command_line_guard(&intake.argv) {
         eprint!("{refusal}");
         return std::process::ExitCode::FAILURE;
     }
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(&intake.argv);
     match cli.command {
-        Command::Encode(args) => run(encode(args)),
-        Command::Decode(args) => run(decode(args)),
-        Command::Verify(args) => run(verify(args)),
-        Command::Inspect(args) => run(inspect(args)),
+        Command::Encode(args) => run(encode(args, intake.material)),
+        Command::Decode(args) => run(decode(args, intake.material)),
+        Command::Verify(args) => run(verify(args, intake.material)),
+        Command::Inspect(args) => run(inspect(args, intake.material)),
     }
 }
 
@@ -276,20 +329,41 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
     }
 }
 
-fn encode(args: EncodeArgs) -> Result<(), Refusal> {
+/// `encode`'s `--in` arm, lifted so the two `--in` branches of the intake match
+/// share one reader rather than two copies of the same refusal.
+fn read_encode_file(path: &std::path::Path) -> Result<Vec<u8>, Refusal> {
+    std::fs::read(path).map_err(|e| {
+        Refusal::new(
+            "encode",
+            "§8.2e",
+            format!("cannot read {}", path.display()),
+            format!("The file could not be opened: {e}."),
+        )
+    })
+}
+
+fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
 
-    let raw = match &args.r#in {
-        Some(path) => std::fs::read(path).map_err(|e| {
-            Refusal::new(
-                "encode",
-                "§8.2e",
-                format!("cannot read {}", path.display()),
-                format!("The file could not be opened: {e}."),
-            )
-        })?,
-        None => {
+    let raw = match (&args.r#in, argv_material) {
+        // Two sources offered for ONE channel. `--in` wins -- it is the private
+        // one and the explicit one -- and the WARNING is what stops that from
+        // being silent: the argument the operator typed and mt did not read is
+        // bearer material sitting in their shell history.
+        (Some(path), Some(material)) => {
+            let _ = writeln!(
+                stderr,
+                "{}",
+                validate::argv_material_unused_warning(material.len(), path)
+            );
+            read_encode_file(path)?
+        }
+        (Some(path), None) => read_encode_file(path)?,
+        // §6d: admitted material reaches the tool through THE SAME INTERNAL
+        // PATH as `--in` content, and is never re-presented to clap.
+        (None, Some(material)) => material,
+        (None, None) => {
             // The TTY welcome line. Without it, a new user's first action looks
             // like a hang — §10.10, and the operator's own confusion found it.
             if let Some(w) = blocks::welcome_if_tty() {
@@ -814,17 +888,37 @@ fn txid_display(bytes: &[u8], verb: &str) -> Result<String, Refusal> {
 }
 
 /// Read the strings an operator typed back, from a file or stdin.
-fn read_input(path: &Option<std::path::PathBuf>, verb: &str) -> Result<String, Refusal> {
-    let bytes = match path {
-        Some(p) => std::fs::read(p).map_err(|e| {
+fn read_input(
+    path: &Option<std::path::PathBuf>,
+    argv_material: Option<Vec<u8>>,
+    verb: &str,
+) -> Result<String, Refusal> {
+    let read_file = |p: &std::path::PathBuf| -> Result<Vec<u8>, Refusal> {
+        std::fs::read(p).map_err(|e| {
             Refusal::new(
                 verb,
                 "§1.1e",
                 format!("cannot read {}", p.display()),
                 format!("The file could not be opened: {e}."),
             )
-        })?,
-        None => {
+        })
+    };
+    let bytes = match (path, argv_material) {
+        // Two sources for one channel -- see `encode`. `--in` wins, and the
+        // warning is what keeps the loss from being silent.
+        (Some(p), Some(material)) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "{}",
+                validate::argv_material_unused_warning(material.len(), p)
+            );
+            read_file(p)?
+        }
+        (Some(p), None) => read_file(p)?,
+        // §6d: the admitted material arrives here, by the `--in` path, rather
+        // than going back to clap as a positional.
+        (None, Some(material)) => material,
+        (None, None) => {
             let mut buf = Vec::new();
             std::io::stdin()
                 .read_to_end(&mut buf)
@@ -1047,8 +1141,8 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
     }
 }
 
-fn decode(args: ReadArgs) -> Result<(), Refusal> {
-    let text = read_input(&args.r#in, "decode")?;
+fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    let text = read_input(&args.r#in, argv_material, "decode")?;
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
@@ -1165,9 +1259,9 @@ fn decode(args: ReadArgs) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn verify(args: ReadArgs) -> Result<(), Refusal> {
+fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     json_unsupported_guard(args.json, "verify")?;
-    let text = read_input(&args.r#in, "verify")?;
+    let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
@@ -1397,8 +1491,8 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn inspect(args: ReadArgs) -> Result<(), Refusal> {
-    let text = read_input(&args.r#in, "inspect")?;
+fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    let text = read_input(&args.r#in, argv_material, "inspect")?;
     // WALK O -- `mt inspect` GAINS A RAW-TRANSACTION SUBJECT.
     //
     // The post-cut test is "scan the QR, then run `mt inspect` on what you
