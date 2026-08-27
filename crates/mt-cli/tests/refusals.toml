@@ -270,6 +270,18 @@ spec  = "§8.2h"
 test  = "refuses_a_world_readable_named_fifo"
 check = "src/validate.rs::world_readable_stdout_guard"
 
+# THE THIRD §8.2h entry, added 2026-08-27 (P1 row 9). The first two pin a
+# world-readable file and a world-readable FIFO; neither can tell mt's `0o077`
+# from me's `0o044`, because 0644 trips both. **0620 trips only mt's**, since
+# `0620 & 0o044 == 0` -- a group-WRITABLE destination with no read bit outside
+# the owner. Row 9 moves the fd MECHANISM into the shared crate and keeps the
+# MASK at mt's own call site, and this is the entry that goes red if the weaker
+# mask ever comes across with it.
+[[refusal]]
+spec  = "§8.2h"
+test  = "refuses_a_group_writable_stdout_no_read_mask_can_see"
+check = "src/validate.rs::world_readable_stdout_guard"
+
 # R3 (SPEC_engrave §2.2 -- "the record form has NO DEFAULT, and the refusal must
 # TEACH") is RETIRED, not merely untested. It refused `--record` without a form
 # because two forms existed to choose between; `--chunks` then turned out to be

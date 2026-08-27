@@ -704,7 +704,6 @@ fn looks_like_a_transaction(a: &str) -> bool {
 /// than silently skipped.
 #[cfg(unix)]
 pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
-    use std::os::unix::fs::MetadataExt;
     use std::os::unix::io::AsRawFd;
 
     let (md, label) = match path {
@@ -722,11 +721,28 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
             (md, "the redirected input file".to_string())
         }
     };
-    // A FIFO or a TTY is not a file whose mode means anything here.
-    if !md.file_type().is_file() {
-        return None;
-    }
-    let mode = md.mode() & 0o777;
+    // THE MECHANISM IS THE SHARED CRATE'S; THE MASK STAYS HERE (P1 row 9).
+    //
+    // `fd::mode_of` returns the raw `mode & 0o777`, or `None` for a character
+    // device -- a terminal and `/dev/null` persist nothing, so neither can leak,
+    // and `/dev/null` is 0666, so a mode-only test would report the most
+    // ordinary redirect there is.
+    //
+    // **IT REPLACES AN `is_file()` KEYING THAT THIS FILE ALREADY RECORDED AS
+    // FALSE.** The old code skipped anything that was not a regular file,
+    // saying "a FIFO or a TTY is not a file whose mode means anything here" --
+    // and §8.2h's comment, a few dozen lines below, records the measurement that
+    // contradicts it: a NAMED fifo carries a mode (`mkfifo` gives 0666) and a
+    // third party reading it really does receive the bytes. Only the ANONYMOUS
+    // pipe behind `|` is 0600, which the mode test passes on its own. The
+    // correction was made to the refusal at R0 round 0 and never to the warning
+    // that shares its mask; this is that ruling reaching its second site.
+    //
+    // `0o077` -- every group and other bit, not just the read ones -- is mt's
+    // OWN policy and stays at this call site, exactly as `me` keeps `0o044` at
+    // `crates/me-cli/src/main.rs:1093`. The crate publishes no disqualifying
+    // mask precisely so adoption cannot settle that disagreement by accident.
+    let mode = mnemonic_io_lib::fd::mode_of(&md)?;
     if mode & 0o077 == 0 {
         return None;
     }
@@ -775,23 +791,20 @@ pub fn world_readable_stdout_guard(allow: bool, form: crate::blocks::Form) -> Re
     }
     #[cfg(unix)]
     {
-        use std::mem::ManuallyDrop;
-        use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::io::FromRawFd;
-        // ManuallyDrop: fd 1 belongs to the process; dropping the File would
-        // CLOSE stdout out from under the strings we are about to write.
-        let f = unsafe { ManuallyDrop::new(std::fs::File::from_raw_fd(1)) };
-        let md = match f.metadata() {
-            Ok(md) => md,
-            // Unreadable stdout is not evidence of exposure. Fail OPEN rather
-            // than refusing for a reason we cannot state.
-            Err(_) => return Ok(()),
-        };
-        use std::os::unix::fs::FileTypeExt;
-        if md.file_type().is_char_device() {
+        // THE MECHANISM IS THE SHARED CRATE'S; THE MASK STAYS HERE (P1 row 9).
+        //
+        // `fd::stdout_mode` is the block that used to be written out here, byte
+        // for byte and comment sentences included: `ManuallyDrop` on fd 1 --
+        // because dropping the File would CLOSE stdout out from under the
+        // strings we are about to write -- the character-device exemption, and
+        // the fail-OPEN on a failed `fstat`, since unreadable stdout is not
+        // evidence of exposure. All three are mechanism, and `me` shipped the
+        // identical three.
+        //
+        // What does NOT move is `0o077`. See `file_mode_warning` above for why.
+        let Some(mode) = mnemonic_io_lib::fd::stdout_mode() else {
             return Ok(());
-        }
-        let mode = md.permissions().mode() & 0o777;
+        };
         if mode & 0o077 == 0 {
             return Ok(());
         }

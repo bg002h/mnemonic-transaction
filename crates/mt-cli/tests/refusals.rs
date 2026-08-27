@@ -1897,3 +1897,196 @@ fn does_not_refuse_dev_null() {
     let (err, ok) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
     assert!(ok, "/dev/null is 0666 but persists nothing: {err}");
 }
+
+// ── P1 row 9 — the fd adoption ───────────────────────────────────────────────
+//
+// Both mode sites now ask `mnemonic_io_lib::fd` what was MEASURED, and keep the
+// `0o077` mask at mt's own call sites -- exactly as `me` keeps its `0o044` at
+// `crates/me-cli/src/main.rs:1093`. The crate publishes no disqualifying mask,
+// because `me` rules `0o044` and `mt` rules `0o077` and a shared dependency does
+// not get to settle which of them is right.
+//
+// The tests below are the two halves of that: what must NOT change, and the one
+// thing that must.
+
+/// **WHAT MUST NOT CHANGE, as a differential with a live control — and the 0620
+/// row is the whole of it.**
+///
+/// `0o620 & 0o044 == 0`: a group-WRITABLE destination with no read bit outside
+/// the owner is invisible to `me`'s mask and refused by `mt`'s, because someone
+/// who can WRITE the file can alter the strings before they are cut into metal.
+/// So this test goes RED the moment adoption quietly brings the weaker mask
+/// across with the mechanism — which is the one way this row could do harm, on
+/// the path where the artifact ends up in steel.
+///
+/// The 0600 row is the control, and it pins the BYTE COUNT rather than
+/// `written > 0`: a run that exits 0 having written nothing would satisfy the
+/// weaker assertion, and then the two refusing rows would be measuring an
+/// encode that produces no artifact at all. **796 bytes, measured 2026-08-27**
+/// against `fixtures/p5_base.json`'s `finalized_psbt_b64`. If the fixture or the
+/// default rendering changes, RE-MEASURE and put the new number here; do not
+/// relax it to a comparison.
+#[test]
+#[cfg(unix)]
+fn refuses_a_group_writable_stdout_no_read_mask_can_see() {
+    let v = base();
+    let body = s(&v, "finalized_psbt_b64");
+
+    let (written, err, ok) = encode_to_file(&body, &[], 0o600);
+    assert!(ok, "the CONTROL: an owner-only stdout is permitted: {err}");
+    assert_eq!(
+        written, 796,
+        "the control must produce the artifact, or the two rows below are \
+         measuring an encode that writes nothing"
+    );
+
+    let (written, err, ok) = encode_to_file(&body, &[], 0o620);
+    assert!(
+        !ok,
+        "0620 is GROUP-WRITABLE. mt refuses it and me permits it, and `0o620 & \
+         0o044 == 0` is why -- if this ever passes, mt has adopted me's mask \
+         along with the crate's mechanism: {err}"
+    );
+    assert_eq!(written, 0, "a refusal must leave no artifact");
+    assert!(
+        err.contains("0620"),
+        "the refusal must name the mode it measured: {err}"
+    );
+
+    let (written, err, ok) = encode_to_file(&body, &[], 0o644);
+    assert!(!ok, "0644 is readable by everyone: {err}");
+    assert_eq!(written, 0, "a refusal must leave no artifact");
+}
+
+// ── §8.2g — the INPUT warning, and the case its keying exempted ──────────────
+
+/// Run `mt encode --in <a named fifo>` and return `(stderr, success)`.
+///
+/// A fifo has no bytes until somebody writes them, and opening one for WRITING
+/// blocks until a reader arrives — so the writer is spawned first and unblocks
+/// when `mt` opens the fifo to read. `mt` reads the input to EOF long before it
+/// looks at the mode, so there is no ordering hazard between the two.
+#[cfg(unix)]
+fn encode_from_fifo(body: &str, mode: u32) -> (String, bool) {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("tx.fifo");
+    let st = std::process::Command::new("mkfifo")
+        .arg(&p)
+        .status()
+        .unwrap();
+    assert!(
+        st.success(),
+        "mkfifo failed; nothing below can be concluded"
+    );
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+
+    let writer_path = p.clone();
+    let payload = body.to_string();
+    let writer = std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&writer_path)
+            .unwrap();
+        f.write_all(payload.as_bytes()).unwrap();
+    });
+
+    let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .arg("--in")
+        .arg(&p)
+        .output()
+        .unwrap();
+    writer.join().unwrap();
+    (
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
+/// **THE ONE THING THAT CHANGES — and mt's own source already called the old
+/// keying false.**
+///
+/// The §8.2g warning asked `is_file()`, and skipped anything that was not a
+/// regular file on the stated grounds that "a FIFO or a TTY is not a file whose
+/// mode means anything here". §8.2h's own comment, twelve lines further down in
+/// the same file, records that as **measured false**: a NAMED fifo carries a
+/// mode (`mkfifo` gives 0666) and a third party reading it really does receive
+/// the bytes. The correction was applied to the refusal at R0 round 0 and never
+/// to the warning that shares its mask.
+///
+/// `fd::mode_of` returns `None` for a character device and the raw mode for
+/// everything else, so adopting it applies mt's own ruling to the site it was
+/// never applied to.
+///
+/// **It stays a WARNING.** mt warns about damage already done and refuses damage
+/// it is about to do, and an input file's exposure has already happened.
+#[test]
+#[cfg(unix)]
+fn a_world_readable_named_fifo_as_input_warns_and_does_not_refuse() {
+    let v = base();
+    let (err, ok) = encode_from_fifo(&s(&v, "finalized_psbt_b64"), 0o666);
+    assert!(
+        ok,
+        "§8.2g WARNS about the input and never refuses it -- refusing an already \
+         exposed file prevents nothing and blocks the operator's work: {err}"
+    );
+    assert!(
+        !err.contains("REFUSED"),
+        "warn on input, refuse on output. This must not have become a refusal: {err}"
+    );
+    assert!(
+        err.contains("0666"),
+        "the warning must name the mode it measured on the fifo: {err}"
+    );
+}
+
+/// The CONTROL for the row above, and the reason it is not vacuous: a fifo at
+/// **0600** must stay silent. A warning keyed on "is it a fifo" rather than on
+/// the mode would fire here too, and would pass the test above while telling
+/// every `mt encode < <(...)` operator their input was exposed.
+#[test]
+#[cfg(unix)]
+fn an_owner_only_named_fifo_as_input_says_nothing() {
+    let v = base();
+    let (err, ok) = encode_from_fifo(&s(&v, "finalized_psbt_b64"), 0o600);
+    assert!(ok, "an owner-only fifo is not an exposure: {err}");
+    assert!(
+        !err.contains("0600"),
+        "nothing about the input's mode should be said when no group or other \
+         bit is set: {err}"
+    );
+}
+
+/// The site's ORDINARY case, which had no test at all before this row: a plain
+/// world-readable regular file as `--in`.
+///
+/// It passes both before and after the adoption, and that is the point — it is
+/// the backstop that catches an adoption which fixed the fifo by breaking the
+/// case the warning already handled.
+#[test]
+#[cfg(unix)]
+fn a_world_readable_input_file_warns() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = base();
+    let f = tmp(&s(&v, "finalized_psbt_b64"));
+    std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "§8.2g warns; it does not refuse: {err}"
+    );
+    assert!(
+        err.contains("0644"),
+        "the warning must name the mode it measured: {err}"
+    );
+}

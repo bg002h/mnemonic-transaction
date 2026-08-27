@@ -18,6 +18,28 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# 0600 FOR EVERY FILE THIS SCRIPT CREATES, and it is not housekeeping.
+#
+# §8.2h refuses a world-readable stdout, and the default umask here is 022 -- so
+# `"$MT" encode ... >"$WORK/a.out"` hands mt a 0644 destination and mt correctly
+# refuses to write the engraving into it. Under `set -e` that ends the run at
+# journey A's first line.
+#
+# **This gate has never actually run against an unmutated binary.** CI's step
+# order is refusal-coverage, refusal-mutation, journeys -- and until 2026-08-27
+# `mutate-refusals.sh` restored the SOURCE while leaving `target/debug/mt`
+# linked from its last mutation, which is `world_readable_stdout_guard`. The
+# journeys therefore ran against a binary with that refusal deleted and passed.
+# Fixing the mutation script exposed this; reproduced at the previous commit,
+# where journeys fails identically once the binary is rebuilt.
+#
+# `umask 077` is the right fix rather than `--allow-world-readable`, because it
+# is the FIRST remedy mt's own refusal offers -- so the script now does what the
+# tool tells an operator to do, instead of overriding the tool. The explicit
+# `chmod 600` below is kept: it covers the files python writes, which this umask
+# does not reach.
+umask 077
+
 MT=target/debug/mt
 [ -x "$MT" ] || { echo "FAIL: $MT not built. Run: cargo build"; exit 1; }
 VECTORS=crates/mt-codec/src/test_vectors/mt1_v1.json
