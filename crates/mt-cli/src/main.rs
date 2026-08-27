@@ -138,6 +138,27 @@ struct EncodeArgs {
     #[arg(long, value_name = "PATH")]
     r#in: Option<std::path::PathBuf>,
 
+    /// Write the artifact to a FILE, **created owner-only (0600)**, instead of
+    /// stdout.
+    ///
+    /// §6b. It exists for F-244 and for nothing else: a shell redirect cannot
+    /// create a file 0600 — `>` obeys the umask, which is 022 on a default
+    /// machine — so `mt encode … > strings.txt` produces the exact destination
+    /// §8.2h refuses. `--out` is mt creating the file itself, through the
+    /// shared crate's `write_private`, which also tightens a target that
+    /// ALREADY exists: `OpenOptions::mode()` binds on create only, and
+    /// re-running a command is the case an operator actually hits.
+    ///
+    /// **It OVERWRITES.** Ruled by the operator 2026-08-26, and stated because
+    /// an unstated behaviour is one a later reader "fixes": running the same
+    /// command twice destroys the first artifact.
+    ///
+    /// **On `encode` alone.** §6b's reasoning is entirely about the refusal mt
+    /// prints, and that refusal fires from encode; giving `decode` the channel
+    /// would half-close a hazard while reading as a whole fix.
+    #[arg(long, value_name = "PATH")]
+    out: Option<std::path::PathBuf>,
+
     /// Wallet id or fingerprint for the legend's `FROM` line.
     #[arg(long, value_name = "ID")]
     from: Option<String>,
@@ -778,33 +799,97 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         let _ = writeln!(stderr);
     }
 
-    // §8.2g's other half: mt warns about the INPUT file's permissions and then
-    // writes the strings to an output file it never mentions again. Only when
-    // stdout is REDIRECTED — on a terminal the strings scroll past and there is
-    // no file to destroy.
-    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        let _ = writeln!(stderr, "{}", blocks::redirected_output_warning(form));
-    }
-
-    // §8.2h. The refusal is ADDITIVE to the warning above, not a replacement:
-    // that one is about how long the file LASTS (a 0600 file still outlives the
-    // session), this one is about who can READ it. Placed before a single byte
-    // of stdout is written, because a refusal must leave no artifact.
-    validate::world_readable_stdout_guard(args.allow_world_readable, form)?;
-
-    // stdout: the strings, lowercase, and nothing else — or, with `--qr`, the
-    // one `tx:` record instead.
-    let out = std::io::stdout();
-    let mut out = out.lock();
+    // THE ARTIFACT, rendered once. Both destinations get the SAME bytes: a
+    // `--out` file that differed from what the pipeline receives would put the
+    // operator engraving from one artifact while a downstream tool checked
+    // another.
     let rendered = if args.qr {
         vec![encode_tx_record(&tx_bytes)]
     } else {
         render(&strings, &args)
     };
-    for line in rendered {
-        let _ = writeln!(out, "{line}");
+    let mut body = String::new();
+    for line in &rendered {
+        body.push_str(line);
+        body.push('\n');
+    }
+
+    // §6b — WHERE THE BYTES ARE GOING, classified by the shared crate.
+    //
+    // `channel::destination` is a pure function of two facts and decides
+    // nothing about whether the destination is acceptable; that is each
+    // binary's, and mt's differs from me's at exactly one arm:
+    //
+    //   Terminal  me REFUSES (F-253). **mt does not**, and P1 does not change
+    //             that -- giving mt a terminal refusal is a RULING, and this
+    //             phase does not make it. mt has a terminal-aware WARNING
+    //             instead (`welcome_if_tty`), and the strings scroll past with
+    //             no file to destroy.
+    //   Stream    a pipe or a redirect: §8.2h applies, because `>` obeys the
+    //             umask and mt did not choose the mode.
+    //   File      mt created the file itself, owner-only, so there is no mode
+    //             it did not choose and §8.2h has nothing to say.
+    let destination = mnemonic_io_lib::channel::destination(
+        args.out.is_some(),
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    );
+
+    match (destination, args.out.as_deref()) {
+        (mnemonic_io_lib::Destination::File, Some(path)) => {
+            let _ = writeln!(
+                stderr,
+                "{}",
+                blocks::redirected_output_warning(form, Some(path))
+            );
+            // §6b: `write_private`, never `std::fs::write` (F-244). It creates
+            // at 0600 AND sets the mode a second time on the OPEN FILE, which
+            // is the half that catches a target that already existed at 0644 --
+            // and it truncates, so a shrinking overwrite leaves no tail.
+            mnemonic_io_lib::write::write_private(path, body.as_bytes()).map_err(|e| {
+                Refusal::new(
+                    "encode",
+                    "§6b",
+                    format!("cannot write {}", path.display()),
+                    format!(
+                        "The file could not be created or written: {e}. Nothing \
+                         was engraved and nothing was left behind."
+                    ),
+                )
+                .with_remedy(
+                    "Check the directory exists and is writable, then re-run. \
+                     Without --out the artifact goes to stdout.",
+                )
+            })?;
+        }
+        // `destination` returns File exactly when `--out` was given, so the
+        // (File, None) pair cannot be constructed. It is folded in here rather
+        // than panicking: a run that has passed every check must not die at the
+        // last step over a case that cannot happen.
+        (mnemonic_io_lib::Destination::Stream, _) | (mnemonic_io_lib::Destination::File, None) => {
+            // §8.2g's other half: mt warns about the INPUT file's permissions
+            // and then writes the strings to an output file it never mentions
+            // again.
+            let _ = writeln!(stderr, "{}", blocks::redirected_output_warning(form, None));
+
+            // §8.2h. The refusal is ADDITIVE to the warning above, not a
+            // replacement: that one is about how long the file LASTS (a 0600
+            // file still outlives the session), this one is about who can READ
+            // it. Placed before a single byte of stdout is written, because a
+            // refusal must leave no artifact.
+            validate::world_readable_stdout_guard(args.allow_world_readable, form)?;
+            emit(&body);
+        }
+        (mnemonic_io_lib::Destination::Terminal, _) => emit(&body),
     }
     Ok(())
+}
+
+/// stdout: the strings, lowercase, and nothing else — or, with `--qr`, the one
+/// `tx:` record instead.
+fn emit(body: &str) {
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let _ = write!(out, "{body}");
 }
 
 /// The `tx:` record: the reserved prefix and the transaction's canonical

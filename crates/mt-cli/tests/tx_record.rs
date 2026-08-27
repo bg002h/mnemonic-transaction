@@ -315,6 +315,16 @@ fn the_redirected_warning_names_what_actually_left() {
 /// already exists. Reached by the commonest divergence there is: `mt encode
 /// --qr > rec.txt`, where `>` creates the file 0644 under the usual
 /// umask.
+///
+/// **THE REMEDY HALF IS GONE, and that is P1 row 10 rather than a weakening.**
+/// This test used to pin *"stdout IS the record"* and *"stdout IS the strings"*
+/// — fragments of the sentence *"mt has no --out: stdout IS the strings, by
+/// design (§3b)"*. §6b gave mt `--out`, so that sentence is now false; the
+/// citation was false already, because §3b rules WHICH STREAM carries the
+/// artifact and not whether a file channel exists. The form-specific noun
+/// survives where it is still form-specific — in the MECHANISM — and the
+/// remedy, which is the same four lines whatever was emitted, is asserted as
+/// naming `--out` instead.
 #[test]
 fn the_world_readable_refusal_names_the_artifact_this_run_made() {
     use std::os::unix::fs::PermissionsExt;
@@ -352,10 +362,13 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
     let raw = out("qr", &["--qr"]);
     assert!(raw.contains("§8.2h"), "{raw}");
     assert!(raw.contains("This record IS the engraving"), "{raw}");
-    assert!(raw.contains("stdout IS the record"), "{raw}");
     assert!(
-        !raw.contains("These strings ARE") && !raw.contains("stdout IS the strings"),
+        !raw.contains("These strings ARE"),
         "the raw form emitted ONE record, not strings: {raw}"
+    );
+    assert!(
+        raw.contains("--out <FILE>"),
+        "the remedy names the channel that creates the file 0600: {raw}"
     );
 
     // THE CONTROL: the strings form keeps the plural, because it is true there.
@@ -364,7 +377,10 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
         chunks.contains("These strings ARE the engraving"),
         "{chunks}"
     );
-    assert!(chunks.contains("stdout IS the strings"), "{chunks}");
+    assert!(
+        !chunks.contains("This record IS"),
+        "and the strings form must not claim a record: {chunks}"
+    );
 }
 
 // ── `--qr`: one flag, after the record family collapsed ──────────────────────

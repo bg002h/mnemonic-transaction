@@ -2550,6 +2550,7 @@ exactly as permanent, as a machine-engraved one.
          Anyone who can read that file can broadcast this transaction. It is
          the engraving, in a form that copies itself.
 
+           --out <FILE>              mt creates it owner-only (0600)
            umask 077                 then re-run; the shell creates it 0600
            chmod 600 <file>          then re-run — `>` keeps the mode
            --allow-world-readable    proceed anyway
@@ -2561,11 +2562,30 @@ exactly as permanent, as a machine-engraved one.
    whole of the remedy. **You warn about damage done and refuse damage you are
    about to do.**
 
-   **THE REMEDIES ARE THE SHELL'S, because `mt encode` HAS NO `--out`** — and a
-   first draft of this section advised one. `mt`'s stdout **is** the strings by
-   ruling (§3b), so there is no path for `mt` to open and create owner-only the
-   way `me` does. A refusal naming a flag that does not exist is worse than one
-   naming none: it sends the operator to `--help` to find it.
+   **`mt encode` HAS `--out` — REVERSED 2026-08-27 by §6b of
+   `SPEC_constellation_cli_uniformity`, built as P1 row 10.** This paragraph
+   used to read *"the remedies are the shell's, because `mt encode` has no
+   `--out`"*, and argued from `mt`'s stdout being the strings *by ruling (§3b)*.
+
+   **That citation was checked and §3b does not say it.** §3b rules *which
+   stream* carries the artifact — stdout the artifact, stderr what the human
+   must see — which is a rule about streams, not about whether a file channel
+   exists. So the old sentence contradicted nothing except its own restatement
+   of §3b.
+
+   The reason to add the channel is §8.2h itself: `umask` and `chmod` are
+   remedies that exist **because** there was no `--out`, and neither creates the
+   file owner-only in the run the operator just made. `--out` does, through the
+   shared crate's `write_private` — which also tightens a target that **already
+   exists**, since `OpenOptions::mode()` binds on create only and re-running a
+   command is the case an operator actually hits (F-244).
+
+   **It OVERWRITES**, ruled by the operator 2026-08-26, and **it is on `encode`
+   alone**: §6b's reasoning is entirely about the refusal this section defines,
+   and that refusal fires from `encode`.
+
+   The shell remedies stay, below `--out`, for an operator who cannot change the
+   command line.
 
    **KEYED ON MODE BITS, NOT ON "is it a file".** `mode & 0o077 == 0` passes.
    **CHARACTER DEVICES are exempt** — a terminal and `/dev/null` persist nothing,
@@ -2591,6 +2611,11 @@ exactly as permanent, as a machine-engraved one.
    `shred -u` it once the plates are cut and verified still fires on every
    redirection. The refusal is **additive**: a new check about *who can read it*,
    beside the existing warning about *how long it lasts*.
+
+   **With `--out` that warning names the FILE and says `mt` made it 0600**, and
+   drops the sentence *"stdout is not a terminal"* — which is about a redirect
+   that did not happen, since `--out` writes to a file whether or not stdout is
+   a terminal. The `shred -u` advice is identical and is written once.
 
 3. **An unsigned or unfinalized transaction offered for engraving** → refuse. It
    cannot be broadcast, so it is not a backup.

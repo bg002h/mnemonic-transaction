@@ -326,7 +326,10 @@ pub fn malleability_caveat() -> String {
 /// Printed only when stdout is REDIRECTED. On a terminal the strings scroll
 /// past and the advice would be noise; redirected, there is a file sitting on
 /// disk that outlives the session.
-pub fn redirected_output_warning(form: Form) -> crate::refusal::Warning {
+pub fn redirected_output_warning(
+    form: Form,
+    out: Option<&std::path::Path>,
+) -> crate::refusal::Warning {
     // The NOUN is the artifact that actually left. Same hazard either way; a
     // warning about "the strings" after emitting one record makes an operator
     // go looking for six of something.
@@ -334,21 +337,44 @@ pub fn redirected_output_warning(form: Form) -> crate::refusal::Warning {
         Form::Strings => ("the strings", "keeps them"),
         Form::RawRecord => ("the record", "keeps it"),
     };
-    crate::refusal::Warning::new(
-        format!(
-            "{subject} just left this terminal — and {} BEARER, exactly \
-             like the plate.",
-            if form == Form::Strings {
-                "they are"
-            } else {
-                "it is"
-            }
+    let are = if form == Form::Strings {
+        "they are"
+    } else {
+        "it is"
+    };
+    // WHERE IT WENT, SAID TRULY — P1 row 10. With `--out` the artifact goes to
+    // a file whether or not stdout is a terminal, so "stdout is not a terminal"
+    // is a sentence about a run that did not happen. The DESTROY-IT advice is
+    // identical either way and is written once, below, rather than copied into
+    // a second block that can drift.
+    let (headline, where_it_went) = match out {
+        Some(p) => (
+            format!(
+                "{subject} went into {} — and {are} BEARER, exactly like the plate.",
+                p.display()
+            ),
+            "mt created that file mode 0600, so only its owner can read it \
+             today — that is what --out is for, and a shell redirect cannot do \
+             it. The mode still becomes dangerous the moment the file is \
+             copied, moved into a backup, or its parent relaxed."
+                .to_string(),
         ),
+        None => (
+            format!(
+                "{subject} just left this terminal — and {are} BEARER, exactly like the plate."
+            ),
+            format!(
+                "stdout is not a terminal, so {subject} went somewhere that \
+                 {keeps} — a file, a pipe, or another program. mt did not choose \
+                 that file's mode; `--out <FILE>` is the channel where it does."
+            ),
+        ),
+    };
+    crate::refusal::Warning::new(
+        headline,
         format!(
-            "stdout is not a terminal, so {subject} went somewhere that {keeps} \
-         — a file, a pipe, or another program. Wherever that is, anyone who \
-         reads it can broadcast this transaction: it is the engraving, in a form \
-         that copies itself.\n\
+            "{where_it_went} Wherever that is, anyone who reads it can broadcast \
+         this transaction: it is the engraving, in a form that copies itself.\n\
          \n\
          If it landed in a FILE, destroy it once the plates are cut and \
          verified: `shred -u <file>` on Linux, `rm -P <file>` on macOS. Plain \

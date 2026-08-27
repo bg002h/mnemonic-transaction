@@ -518,3 +518,307 @@ fn pasting_a_tx_record_back_into_encode_is_recognised_too() {
     );
     assert!(a.stdout.is_empty(), "nothing on stdout");
 }
+
+// ── P1 row 10 — the `--out` channel (§6b) ────────────────────────────────────
+//
+// §6b rules `--out FILE`: the artifact goes to a file **created 0600 by the
+// shared crate's `write_private`**, never `std::fs::write`. It exists for
+// F-244: a shell redirect cannot create a file owner-only, which is why mt's
+// world-readable remedies were `umask 077` and `chmod 600` -- remedies that
+// existed BECAUSE there was no `--out`.
+//
+// The ruling also settles a contradiction the spec fold caught: mt's refusal
+// said it has no `--out` because "stdout IS the strings, by design (§3b)", and
+// §3b does not say that. §3b rules WHICH STREAM carries the artifact, not
+// whether a file channel exists.
+//
+// `--out` is on `encode` ALONE. §6b's reasoning is entirely about the refusal
+// mt prints, and that refusal fires from encode; adding the channel to `decode`
+// would half-close a hazard while reading as a whole fix.
+
+/// The offline mechanism, as everywhere else: never `PATH`, which is
+/// process-global and would silently change neighbouring tests.
+#[cfg(unix)]
+const OUT_OFFLINE: &[&str] = &["--bitcoin-cli", "/nonexistent/bitcoin-cli"];
+
+#[cfg(unix)]
+fn mode_of(p: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+/// **THE GATE, and the PRE-EXISTING TARGET is the whole of it — F-244.**
+///
+/// `OpenOptions::mode()` binds on CREATE only. An implementation that passes
+/// `0o600` to the open and stops leaves an existing 0644 target at 0644 and
+/// reports success, and re-running a command is the case an operator actually
+/// hits. The crate's `write_private` sets the mode a second time on the OPEN
+/// FILE — on the handle rather than on the path, because between two calls that
+/// name a file the name can be made to point somewhere else.
+///
+/// It pins the CONTENTS too: a function that tightened the mode and wrote
+/// nothing would satisfy a permissions-only assertion.
+#[test]
+#[cfg(unix)]
+fn out_tightens_a_pre_existing_world_readable_target_to_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = corpus()["vectors"].as_array().unwrap()[0].clone();
+    let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("strings.txt");
+
+    std::fs::write(&dest, b"stale").unwrap();
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        mode_of(&dest),
+        0o644,
+        "the CONTROL: the target really is 0644 before the run"
+    );
+
+    let out = mt()
+        .args(["encode"])
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .arg("--out")
+        .arg(&dest)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "--out must write the artifact: {err}");
+    assert_eq!(
+        mode_of(&dest),
+        0o600,
+        "F-244: `0o600` binds on CREATE, so an implementation that only passes it \
+         to OpenOptions leaves this at 0644 and reports success"
+    );
+
+    let written = std::fs::read_to_string(&dest).unwrap();
+    assert!(
+        !written.contains("stale"),
+        "a shrinking overwrite must leave no tail of the previous file: {written}"
+    );
+    let want: Vec<&str> = v["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        written.lines().collect::<Vec<_>>(),
+        want,
+        "the file must hold the artifact, not just a tightened empty file"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "with --out the artifact goes to the FILE and nothing goes to stdout"
+    );
+}
+
+/// **`--out` SUPPRESSES §8.2h ENTIRELY**, because mt creates the file
+/// owner-only and there is no longer a destination it did not choose.
+///
+/// stdout is a real 0644 file here — the exact destination §8.2h refuses — and
+/// the run must still succeed, because nothing is going there.
+#[test]
+#[cfg(unix)]
+fn out_suppresses_the_world_readable_stdout_gate() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = corpus()["vectors"].as_array().unwrap()[0].clone();
+    let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("artifact.txt");
+    let sink = dir.path().join("stdout.txt");
+    let handle = std::fs::File::create(&sink).unwrap();
+    std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    // `std::process::Command`, not `assert_cmd`: the gate under test is about
+    // the MODE OF FD 1, so stdout has to be a real 0644 file.
+    let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+        .arg("encode")
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .arg("--out")
+        .arg(&dest)
+        .stdout(std::process::Stdio::from(handle))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(
+        o.status.success(),
+        "stdout's mode is nobody's business once --out is given: {err}"
+    );
+    assert!(
+        !err.contains("8.2h"),
+        "§8.2h must not fire with --out: {err}"
+    );
+    assert_eq!(
+        std::fs::metadata(&sink).unwrap().len(),
+        0,
+        "nothing may reach stdout when --out was given"
+    );
+    assert_eq!(mode_of(&dest), 0o600, "and the artifact is owner-only");
+}
+
+/// `--out` and a shell redirect must produce the **same bytes**.
+///
+/// Without this, an `--out` that dropped the trailing newline, or joined the
+/// strings differently, would satisfy every assertion above — and the operator
+/// engraving from the file would be reading a different artifact from the one
+/// the pipeline sees.
+#[test]
+#[cfg(unix)]
+fn out_writes_the_same_bytes_the_pipeline_gets() {
+    let v = corpus()["vectors"].as_array().unwrap()[0].clone();
+    let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("strings.txt");
+
+    let piped = mt()
+        .args(["encode"])
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(piped.status.success());
+
+    let out = mt()
+        .args(["encode"])
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .arg("--out")
+        .arg(&dest)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        piped.stdout,
+        "--out must write byte-for-byte what the pipeline receives"
+    );
+}
+
+/// The `--qr` form goes through the same channel, and the record is one line.
+#[test]
+#[cfg(unix)]
+fn out_carries_the_qr_record_too() {
+    let v = corpus()["vectors"].as_array().unwrap()[0].clone();
+    let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("record.txt");
+
+    let out = mt()
+        .args(["encode", "--qr"])
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .arg("--out")
+        .arg(&dest)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = std::fs::read_to_string(&dest).unwrap();
+    assert_eq!(mode_of(&dest), 0o600);
+    assert_eq!(written.lines().count(), 1, "one tx: record: {written}");
+    assert!(written.starts_with("tx:"), "{written}");
+}
+
+/// **The operator is told WHERE the artifact went, and that mt made it 0600.**
+///
+/// The `stdout is not a terminal` warning cannot say this: with `--out` the
+/// artifact goes to a file whether or not stdout is a terminal, so the sentence
+/// that block prints would be false about the run that just happened.
+#[test]
+#[cfg(unix)]
+fn out_names_the_file_it_wrote_and_the_mode_it_made_it() {
+    let v = corpus()["vectors"].as_array().unwrap()[0].clone();
+    let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("strings.txt");
+
+    let out = mt()
+        .args(["encode"])
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .arg("--out")
+        .arg(&dest)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains(&dest.display().to_string()),
+        "the artifact left in a file mt named on the command line, and the \
+         operator must be told which: {err}"
+    );
+    assert!(
+        err.contains("0600"),
+        "and that mt created it owner-only, which is the whole reason --out \
+         exists: {err}"
+    );
+    assert!(
+        !err.contains("stdout is not a terminal"),
+        "that sentence is about a REDIRECT, and this run did not have one: {err}"
+    );
+    assert!(
+        err.contains("shred -u"),
+        "the destroy-it-afterwards advice is the same either way, and must not \
+         have been lost with the sentence that no longer applies: {err}"
+    );
+}
+
+/// **The §8.2h remedy names `--out` first.** The whole reason the ruling was
+/// made is that a shell redirect cannot create a file 0600; a refusal that
+/// offers only `umask` and `chmod` is a refusal written for a tool without this
+/// channel.
+#[test]
+#[cfg(unix)]
+fn the_world_readable_remedy_offers_out_before_the_shells_workarounds() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = corpus()["vectors"].as_array().unwrap()[0].clone();
+    let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let sink = dir.path().join("out.txt");
+    let handle = std::fs::File::create(&sink).unwrap();
+    std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+        .arg("encode")
+        .args(OUT_OFFLINE)
+        .arg("--in")
+        .arg(f.path())
+        .stdout(std::process::Stdio::from(handle))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "§8.2h still refuses a 0644 stdout");
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("--out"), "the remedy must name --out: {err}");
+    assert!(
+        !err.contains("mt has no --out"),
+        "the sentence that said mt has no --out is retired with the ruling that \
+         gave it one: {err}"
+    );
+    assert!(
+        !err.contains("by design (§3b)"),
+        "and so is the §3b citation it leaned on -- §3b rules WHICH STREAM \
+         carries the artifact, not whether a file channel exists. **Only that \
+         PHRASE is forbidden, not the reference**: the legend block on the same \
+         stderr cites §3b legitimately, for the plate layout, and a bare \
+         `!contains(\"§3b\")` fails on it -- measured, this assertion did: {err}"
+    );
+    // The workarounds stay: an operator who cannot change the command line
+    // still needs them.
+    assert!(err.contains("umask 077"), "{err}");
+    assert!(err.contains("--allow-world-readable"), "{err}");
+}

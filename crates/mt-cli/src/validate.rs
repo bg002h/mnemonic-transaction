@@ -827,21 +827,22 @@ pub fn world_readable_stdout_guard(allow: bool, form: crate::blocks::Form) -> Re
             ),
         )
         .with_remedy(
-            format!(
+            // §6b, P1 row 10. This used to say "mt has no --out: stdout IS the
+            // strings, by design (§3b)" -- and the spec fold CHECKED that
+            // citation: §3b rules WHICH STREAM carries the artifact, not
+            // whether a file channel exists. So the sentence contradicted
+            // nothing but mt's own restatement of §3b, and `--out` is now the
+            // FIRST remedy because it is the only one that creates the file
+            // 0600 rather than asking the operator to arrange it.
             "Only the file's OWN mode was checked. If a directory above it \
              denies search to others -- a 0700 home directory does -- nobody \
              else can open it today; the mode still becomes dangerous the \
-             moment the file is moved, copied, or its parent relaxed (F-252).\n\n\
-             mt has no --out: stdout IS the {}, by design (§3b). So the \
-             remedies are the shell's:\n\n  \
+             moment the file is moved, copied, or its parent relaxed \
+             (F-252).\n\nFour ways on:\n\n  \
+             --out <FILE>              mt creates it owner-only (0600)\n  \
              umask 077                 then re-run; the shell creates it 0600\n  \
              chmod 600 <file>          then re-run -- `>` truncates but keeps the mode\n  \
              --allow-world-readable    proceed anyway",
-            match form {
-                crate::blocks::Form::Strings => "strings",
-                crate::blocks::Form::RawRecord => "record",
-            }
-            ),
         ));
     }
     #[allow(unreachable_code)]
