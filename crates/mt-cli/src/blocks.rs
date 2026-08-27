@@ -338,10 +338,14 @@ pub fn redirected_output_warning(form: Form) -> crate::refusal::Warning {
         format!(
             "{subject} just left this terminal — and {} BEARER, exactly \
              like the plate.",
-            if form == Form::Strings { "they are" } else { "it is" }
+            if form == Form::Strings {
+                "they are"
+            } else {
+                "it is"
+            }
         ),
         format!(
-        "stdout is not a terminal, so {subject} went somewhere that {keeps} \
+            "stdout is not a terminal, so {subject} went somewhere that {keeps} \
          — a file, a pipe, or another program. Wherever that is, anyone who \
          reads it can broadcast this transaction: it is the engraving, in a form \
          that copies itself.\n\

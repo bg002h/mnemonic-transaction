@@ -1584,7 +1584,10 @@ fn refuses_a_world_readable_named_fifo() {
     let v = base();
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("leak");
-    std::process::Command::new("mkfifo").arg(&p).status().unwrap();
+    std::process::Command::new("mkfifo")
+        .arg(&p)
+        .status()
+        .unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666)).unwrap();
     // O_RDWR: opening a FIFO write-only blocks until a reader arrives.
     let sink = std::fs::OpenOptions::new()

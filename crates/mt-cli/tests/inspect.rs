@@ -649,7 +649,10 @@ fn inspect_reads_a_raw_transaction_and_reports_its_txid() {
 #[test]
 fn the_strings_path_is_unchanged_by_the_raw_subject() {
     let (out, _) = inspect_offline("even");
-    assert!(out.contains("mt1 SET"), "the strings path lost its SET row:\n{out}");
+    assert!(
+        out.contains("mt1 SET"),
+        "the strings path lost its SET row:\n{out}"
+    );
     assert!(out.contains(&txid_of("even")));
 }
 

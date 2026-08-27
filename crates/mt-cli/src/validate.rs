@@ -624,10 +624,7 @@ pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
 /// `mt encode … > /dev/null`. A terminal and `/dev/null` persist nothing, so
 /// neither can leak. There are tests for the FIFO, for `/dev/null`, and for the
 /// anonymous pipe.
-pub fn world_readable_stdout_guard(
-    allow: bool,
-    form: crate::blocks::Form,
-) -> Result<(), Refusal> {
+pub fn world_readable_stdout_guard(allow: bool, form: crate::blocks::Form) -> Result<(), Refusal> {
     if allow {
         return Ok(());
     }

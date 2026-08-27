@@ -387,7 +387,13 @@ fn a_bare_dash_composes_with_qr() {
     let v = &corpus()["vectors"][0];
     let raw = v["raw_hex"].as_str().unwrap();
     let a = mt()
-        .args(["encode", "--qr", "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+        .args([
+            "encode",
+            "--qr",
+            "--bitcoin-cli",
+            "/nonexistent/bitcoin-cli",
+            "-",
+        ])
         .write_stdin(raw)
         .output()
         .unwrap();
@@ -409,7 +415,10 @@ fn a_dash_does_not_open_the_door_to_other_positionals() {
         .write_stdin("00")
         .output()
         .unwrap();
-    assert!(!a.status.success(), "a stray positional must still be refused");
+    assert!(
+        !a.status.success(),
+        "a stray positional must still be refused"
+    );
 }
 
 // ── F-248: mt must recognise its OWN output ──────────────────────────────────
@@ -445,7 +454,10 @@ fn pasting_mt1_strings_back_into_encode_names_them_and_the_right_verb() {
     assert!(!a.status.success(), "still a refusal");
     let err = String::from_utf8_lossy(&a.stderr).to_string();
 
-    assert!(err.contains("mt1"), "it must NAME what it is looking at: {err}");
+    assert!(
+        err.contains("mt1"),
+        "it must NAME what it is looking at: {err}"
+    );
     assert!(
         err.contains(&n.to_string()),
         "and count them -- it saw {n} strings: {err}"

@@ -715,7 +715,6 @@ fn encode(args: EncodeArgs) -> Result<(), Refusal> {
     Ok(())
 }
 
-
 /// The `tx:` record: the reserved prefix and the transaction's canonical
 /// serialization in lowercase hex. **Concatenation, and nothing else.**
 ///
@@ -2033,6 +2032,9 @@ mod tests {
             !looks_like_an_mt1_set("cHNidP8BAHsCAAAAmt1AAAAA"),
             "a PSBT that merely CONTAINS mt1 is not a set"
         );
-        assert!(!looks_like_an_mt1_set(""), "empty stays on the strings path");
+        assert!(
+            !looks_like_an_mt1_set(""),
+            "empty stays on the strings path"
+        );
     }
 }

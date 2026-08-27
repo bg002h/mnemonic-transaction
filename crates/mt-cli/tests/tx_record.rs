@@ -126,7 +126,10 @@ fn the_qr_form_inherits_the_signature_guard() {
     let stripped = even_stripped_hex();
     let a = encode(&["--qr"], &stripped).failure();
     let err = String::from_utf8_lossy(&a.get_output().stderr).to_string();
-    assert!(err.contains("§8.3"), "the guard must name its section: {err}");
+    assert!(
+        err.contains("§8.3"),
+        "the guard must name its section: {err}"
+    );
     assert!(
         err.contains("carry no signature") && err.contains("input 0"),
         "and name WHICH inputs: {err}"
@@ -155,10 +158,7 @@ fn the_qr_form_inherits_the_signature_guard() {
 #[test]
 fn a_failing_run_contributes_nothing_to_stdout() {
     let cases: Vec<(&str, Vec<String>)> = vec![
-        (
-            "a retired flag",
-            vec!["encode".into(), "--record".into()],
-        ),
+        ("a retired flag", vec!["encode".into(), "--record".into()]),
         (
             "a file that does not exist",
             vec![
@@ -184,7 +184,10 @@ fn a_failing_run_contributes_nothing_to_stdout() {
         let mut c = mt();
         c.args(args.iter());
         c.args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"]);
-        let a = c.write_stdin("not a transaction at all\n").assert().failure();
+        let a = c
+            .write_stdin("not a transaction at all\n")
+            .assert()
+            .failure();
         assert!(
             a.get_output().stdout.is_empty(),
             "{name}: {} bytes reached stdout on a failing run — `fish` reports \
@@ -269,7 +272,10 @@ fn the_qr_form_does_not_describe_the_mt1_strings_it_did_not_emit() {
             "the chunks form must keep {kept:?} — it DOES cut six strings:\n{cerr}"
         );
     }
-    assert!(!cerr.contains("mt inspect"), "chunks are verified by typing back");
+    assert!(
+        !cerr.contains("mt inspect"),
+        "chunks are verified by typing back"
+    );
 }
 
 /// The bearer warning about a redirected stdout names the right NOUN. It is
@@ -285,11 +291,20 @@ fn the_redirected_warning_names_what_actually_left() {
     assert!(err.contains("the record just left this terminal"), "{err}");
     // …and the BODY agrees with the subject. The first substitution left
     // "so the record went somewhere that keeps them".
-    assert!(err.contains("the record went somewhere that keeps it"), "{err}");
-    assert!(!err.contains("keeps them"), "singular subject, singular body: {err}");
+    assert!(
+        err.contains("the record went somewhere that keeps it"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("keeps them"),
+        "singular subject, singular body: {err}"
+    );
     let chunks = encode(&[], raw_hex).success();
     let cerr = String::from_utf8_lossy(&chunks.get_output().stderr).to_string();
-    assert!(cerr.contains("the strings just left this terminal"), "{cerr}");
+    assert!(
+        cerr.contains("the strings just left this terminal"),
+        "{cerr}"
+    );
 }
 
 /// The §8.2h refusal names the artifact THAT RUN produced.
@@ -322,7 +337,10 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
             .stderr(std::process::Stdio::piped())
             .output()
             .unwrap();
-        assert!(!o.status.success(), "{label}: §8.2h must refuse a 0644 stdout");
+        assert!(
+            !o.status.success(),
+            "{label}: §8.2h must refuse a 0644 stdout"
+        );
         assert_eq!(
             std::fs::metadata(&sink).unwrap().len(),
             0,
@@ -342,7 +360,10 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
 
     // THE CONTROL: the strings form keeps the plural, because it is true there.
     let chunks = out("strings", &[]);
-    assert!(chunks.contains("These strings ARE the engraving"), "{chunks}");
+    assert!(
+        chunks.contains("These strings ARE the engraving"),
+        "{chunks}"
+    );
     assert!(chunks.contains("stdout IS the strings"), "{chunks}");
 }
 
@@ -357,7 +378,11 @@ fn the_qr_form_is_the_prefix_and_the_transaction_hex_and_nothing_else() {
     let raw_hex = v["raw_hex"].as_str().unwrap();
     let a = encode(&["--qr"], raw_hex).success();
     let out = String::from_utf8_lossy(&a.get_output().stdout).to_string();
-    assert_eq!(out, format!("tx:{raw_hex}\n"), "the record IS concatenation");
+    assert_eq!(
+        out,
+        format!("tx:{raw_hex}\n"),
+        "the record IS concatenation"
+    );
     assert_eq!(out.lines().count(), 1, "ONE record, one line");
 }
 
@@ -436,7 +461,10 @@ fn the_world_readable_refusal_states_the_mode_and_claims_no_more() {
     assert!(!o.status.success(), "§8.2h must still refuse");
     let err = String::from_utf8_lossy(&o.stderr).to_string();
 
-    assert!(err.contains("0644"), "it must name the mode it measured: {err}");
+    assert!(
+        err.contains("0644"),
+        "it must name the mode it measured: {err}"
+    );
     assert!(
         !err.contains("readable by other users on this machine"),
         "it must NOT assert reachability the guard never checked -- the \
