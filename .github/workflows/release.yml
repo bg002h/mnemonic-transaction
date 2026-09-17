@@ -41,6 +41,10 @@ permissions:
 env:
   RUST_TOOLCHAIN: '1.85.0'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  # The constellation's release-signing key, pinned. Signing is SKIPPED entirely
+  # when MINISIGN_SECRET_KEY is absent, so this works unsigned today and starts
+  # signing the moment the secret is added -- no change here.
+  MINISIGN_PUBKEY: 'RWQPmgBXsuw5yi8W0SfDr8KF+IqY/Z5U2p724emSODS1UPfJBP3agbKW'
 
 jobs:
   test:
@@ -165,22 +169,54 @@ jobs:
         with:
           path: artifacts
 
+      - name: Decide whether this release is signed
+        id: signing
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -n "$MINISIGN_SECRET_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::MINISIGN_SECRET_KEY is not set -- publishing checksums UNSIGNED."
+          fi
+
+      - name: Install minisign
+        if: steps.signing.outputs.enabled == 'true'
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
       - name: Assemble archives
+        env:
+          SIGNED: ${{ steps.signing.outputs.enabled }}
         run: |
           set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
           mkdir -p release
-          cat > VERIFY.txt <<'EOF'
+          if [ "$SIGNED" = "true" ]; then
+            cat > VERIFY.txt <<EOF
+          Verifying this release
+          ======================
+
+          1. Verify the checksum file's signature:
+
+                 minisign -Vm SHA256SUMS.portable -P ${MINISIGN_PUBKEY}
+
+          2. Verify the binaries against the now-trusted checksums:
+
+                 sha256sum -c SHA256SUMS.portable --ignore-missing
+          EOF
+          else
+            cat > VERIFY.txt <<'EOF'
           Verifying this release
           ======================
 
           These binaries are NOT signed. Verify them against the checksums:
 
-              sha256sum -c SHA256SUMS --ignore-missing
+              sha256sum -c SHA256SUMS.portable --ignore-missing
 
-          A checksum file alone proves INTEGRITY, not ORIGIN. Signed releases
-          are tracked separately.
+          A checksum file alone proves INTEGRITY, not ORIGIN.
           EOF
+          fi
 
           pack() {
             local target="$1" a_os="$2" a_arch="$3" ext="$4"
@@ -214,6 +250,35 @@ jobs:
           sha256sum mt-* > SHA256SUMS.portable
           cat SHA256SUMS.portable
 
+      - name: Write minisign secret key to a temp file
+        if: steps.signing.outputs.enabled == 'true'
+        id: minisign_key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          KEYFILE="$(mktemp)"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$KEYFILE"
+          echo "keyfile=$KEYFILE" >> "$GITHUB_OUTPUT"
+
+      - name: Sign SHA256SUMS.portable
+        if: steps.signing.outputs.enabled == 'true'
+        working-directory: release
+        env:
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_SECRET_KEY_PASSWORD }}
+          KEYFILE: ${{ steps.minisign_key.outputs.keyfile }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$MINISIGN_PASSWORD" |             minisign -S -s "$KEYFILE" -m SHA256SUMS.portable -t "mt ${TAG} SHA256SUMS.portable"
+          minisign -Vm SHA256SUMS.portable -P "$MINISIGN_PUBKEY"
+
+      - name: Remove minisign secret key
+        if: always()
+        env:
+          KEYFILE: ${{ steps.minisign_key.outputs.keyfile }}
+        run: rm -f "$KEYFILE" || true
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v1
         with:
@@ -229,4 +294,5 @@ jobs:
           gh release upload "$TAG" release/mt-*.tar.gz --clobber 2>/dev/null || true
           gh release upload "$TAG" release/mt-*.zip --clobber 2>/dev/null || true
           gh release upload "$TAG" release/SHA256SUMS.portable --clobber
+          [ -f release/SHA256SUMS.portable.minisig ] &&             gh release upload "$TAG" release/SHA256SUMS.portable.minisig --clobber || true
           gh release view "$TAG" --json assets -q '.assets[].name'
