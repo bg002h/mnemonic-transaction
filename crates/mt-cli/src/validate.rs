@@ -770,6 +770,24 @@ pub fn grants_write(mode: u32) -> bool {
 /// mode, so the redirect form is checkable too. Piped input gives a FIFO and
 /// typed input gives no file — in both, the permissions are **unknown** rather
 /// than silently skipped.
+/// Non-POSIX platforms: there are no `0o077` mode bits to inspect.
+///
+/// Returns `None`, which is EXACTLY what the unix arm returns when it cannot
+/// stat the source (a pipe, a terminal, a failed `metadata`) -- this is not a
+/// new silent path, it is the existing unknown one.
+///
+/// IT IS STILL A GAP, and a named one: a Windows user gets no warning that the
+/// PSBT they are reading is readable by other accounts. The real check there is
+/// an NTFS ACL inspection, not a mode mask, and that is a different piece of
+/// work than a cfg arm. Tracked in design/FOLLOWUPS.md.
+///
+/// Every other refusal and warning mt makes is platform-independent and
+/// unaffected.
+#[cfg(not(unix))]
+pub fn file_mode_warning(_path: Option<&std::path::Path>) -> Option<Warning> {
+    None
+}
+
 #[cfg(unix)]
 pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
     use std::os::unix::io::AsRawFd;

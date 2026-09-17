@@ -57,6 +57,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install the shells the history-purge tests drive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+          /usr/bin/zsh --version
+          /usr/bin/fish --version
       - name: cargo test
         run: cargo test --locked --workspace
 
