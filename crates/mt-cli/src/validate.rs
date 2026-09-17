@@ -770,22 +770,41 @@ pub fn grants_write(mode: u32) -> bool {
 /// mode, so the redirect form is checkable too. Piped input gives a FIFO and
 /// typed input gives no file — in both, the permissions are **unknown** rather
 /// than silently skipped.
-/// Non-POSIX platforms: there are no `0o077` mode bits to inspect.
+/// Non-POSIX platforms: SAY that the check did not happen.
 ///
-/// Returns `None`, which is EXACTLY what the unix arm returns when it cannot
-/// stat the source (a pipe, a terminal, a failed `metadata`) -- this is not a
-/// new silent path, it is the existing unknown one.
+/// There are no `0o077` mode bits to inspect here, so §8.2g cannot run. The
+/// first version of this arm returned `None` -- the same thing the unix arm
+/// returns when it cannot stat the source -- and that was wrong in a way worth
+/// naming: on unix, `None` means "this input has no mode to read" (a pipe, a
+/// terminal), which is genuinely nothing to report. On Windows it would have
+/// meant "mt did not look", rendered identically to "mt looked and it was
+/// fine". Silence that is indistinguishable from an all-clear is the failure
+/// mode this whole module exists to avoid.
 ///
-/// IT IS STILL A GAP, and a named one: a Windows user gets no warning that the
-/// PSBT they are reading is readable by other accounts. The real check there is
-/// an NTFS ACL inspection, not a mode mask, and that is a different piece of
-/// work than a cfg arm. Tracked in design/FOLLOWUPS.md.
+/// So it warns, every run, and states the mechanism rather than the caution.
+/// The real check here is an NTFS ACL inspection, not a mode mask -- different
+/// work than a cfg arm, tracked in design/FOLLOWUPS.md.
 ///
 /// Every other refusal and warning mt makes is platform-independent and
-/// unaffected.
+/// unaffected; this is the ONE check that does not run here.
 #[cfg(not(unix))]
-pub fn file_mode_warning(_path: Option<&std::path::Path>) -> Option<Warning> {
-    None
+pub fn file_mode_warning(path: Option<&std::path::Path>) -> Option<Warning> {
+    let what = match path {
+        Some(p) => p.display().to_string(),
+        None => "the redirected input".to_string(),
+    };
+    Some(Warning::new(
+        "file permissions were NOT checked on this platform.",
+        format!(
+            "On Unix, mt reads the source's mode and warns loudly when a PSBT is \
+             readable by anyone but its owner (SPEC 8.2g). That check inspects \
+             POSIX `0o077` bits, which do not exist on Windows, so it did not \
+             run against {what}.\n\nNothing is known either way: the file may be \
+             perfectly restricted, or readable by every account on this machine. \
+             Check its permissions yourself before treating this transaction as \
+             private. Every OTHER check mt makes ran normally."
+        ),
+    ))
 }
 
 #[cfg(unix)]
