@@ -412,7 +412,7 @@ source = "git+https://github.com/bg002h/mnemonic-engrave?rev=6c24e62823e6c1ac02a
 
 [[package]]
 name = "mt-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "bitcoin",
