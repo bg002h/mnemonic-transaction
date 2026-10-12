@@ -1,0 +1,4 @@
+# ci/docs-only*: LF on every OS (Git Bash cannot run a CRLF script).
+ci/docs-only.sh text eol=lf
+ci/docs-only.test.sh text eol=lf
+ci/docs-only-paths.txt text eol=lf
