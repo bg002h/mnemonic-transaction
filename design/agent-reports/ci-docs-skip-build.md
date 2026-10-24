@@ -47,3 +47,7 @@ run 40043011654    ci                             pull_request   success    ok
   ci/test (rust)                                   success    ok
 pr-checks: PASS (mnemonic-transaction e9f952dca7d40a53502bc34562d5f51b189d137c)
 ```
+
+## L2 (docs head 342b40cb142b9c7a3da85f595b8ffa7f9de5be31, previous head e9f952dca7d40a53502bc34562d5f51b189d137c)
+
+- run 40043647700 job 120720237985 `release/release test (ubuntu-latest)`: `docs-only: all 1 files changed since the previous PR head e9f952dca7d40a53502bc34562d5f51b189d137c are documentation, the merged base ba8ab91228ce733633e4b88a6e35d14f594b858d is an ancestor of it, and 'release test (ubuntu-latest)' passed on it; skipping the guarded steps`
