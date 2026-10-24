@@ -1,0 +1,7 @@
+# ci/code-docs-exempt.txt -- files ci/code-docs-check.sh does not scan. One
+# ERE per line, matched against the repo-relative path; # starts a comment.
+# List a file here only when no step that ci/docs-only.sh guards runs it, and
+# say why in the comment above it.
+
+# Not run by CI (a manual provenance check).
+^scripts/check-provenance\.sh$
