@@ -156,9 +156,12 @@ jobs:
         run: cargo test --locked --workspace --doc
 
   build:
-    name: build mt (${{ matrix.name }})
+    name: build mt (${{ matrix.name }})${{ (github.event.inputs.tag || startsWith(github.ref, 'refs/tags/')) && ' (tag)' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      checks: read
     strategy:
       fail-fast: false
       matrix:
@@ -186,26 +189,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref) || github.sha }}
+
+      - name: Docs-only change? (skips the steps below when every changed file is documentation)
+        if: github.event.inputs.tag == ''
+        id: docs
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          CHECK_NAME: build mt (${{ matrix.name }})
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/docs-only.sh
 
       - name: Install Rust toolchain
+        if: steps.docs.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
       - name: Install cross
-        if: matrix.use_cross
+        if: matrix.use_cross && steps.docs.outputs.docs_only != 'true'
         run: cargo install cross --locked --version 0.2.5
 
       - name: Build (cross)
-        if: matrix.use_cross
+        if: matrix.use_cross && steps.docs.outputs.docs_only != 'true'
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
         run: cross build --release --locked --target ${{ matrix.target }} -p mt-cli
 
       - name: Build (cargo)
-        if: ${{ !matrix.use_cross }}
+        if: ${{ !matrix.use_cross && steps.docs.outputs.docs_only != 'true' }}
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
         run: cargo build --release --locked --target ${{ matrix.target }} -p mt-cli
@@ -214,7 +230,7 @@ jobs:
         # Only where the runner can execute what it just built. A cross build for
         # aarch64 cannot run on an x86_64 runner, and saying so beats a green job
         # that never ran its own artifact.
-        if: ${{ !matrix.use_cross }}
+        if: ${{ !matrix.use_cross && steps.docs.outputs.docs_only != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -226,6 +242,7 @@ jobs:
           echo "binary runs; subcommands resolve"
 
       - name: Stage binary
+        if: steps.docs.outputs.docs_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -237,6 +254,7 @@ jobs:
           fi
 
       - name: Upload artifact
+        if: steps.docs.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mt-${{ matrix.target }}
