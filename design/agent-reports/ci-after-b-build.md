@@ -45,3 +45,13 @@ run 40236022011    ci                             pull_request   success    ok
   ci/test (rust)                                   success    ok
 pr-checks: PASS (mnemonic-transaction cb5d335b8b167fbdcea5fa347785637bff0236cd)
 ```
+
+## L2 (docs head 6c685cf04a8b1e8392084b4f59b57aa5cc499d93, previous head cb5d335b8b167fbdcea5fa347785637bff0236cd)
+
+- run 40236583357 job 121299356568 `ci/test (rust)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'test (rust)' passed on it; skipping the guarded steps`
+- run 40236583355 job 121299356454 `release/release test (ubuntu-latest)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'release test (ubuntu-latest)' passed on it; skipping the guarded steps`
+- run 40236583355 job 121299356610 `release/build mt (linux-x86_64)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'build mt (linux-x86_64)' passed on it; skipping the guarded steps`
+- run 40236583355 job 121299356633 `release/build mt (linux-aarch64)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'build mt (linux-aarch64)' passed on it; skipping the guarded steps`
+- run 40236583355 job 121299356680 `release/build mt (macos-aarch64)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'build mt (macos-aarch64)' passed on it; skipping the guarded steps`
+- run 40236583355 job 121299356697 `release/build mt (macos-x86_64)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'build mt (macos-x86_64)' passed on it; skipping the guarded steps`
+- run 40236583355 job 121299356706 `release/build mt (windows-x86_64)`: `docs-only: all 1 files changed since the previous PR head cb5d335b8b167fbdcea5fa347785637bff0236cd are documentation, the merged base 402af07b6267906a8d43d496b23fced60b567e79 is an ancestor of it, and 'build mt (windows-x86_64)' passed on it; skipping the guarded steps`
