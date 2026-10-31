@@ -7,9 +7,9 @@ Paths below are relative to this Git root, including when working inside a crate
 Read [design/PROVENANCE.md](design/PROVENANCE.md); this checkout has no local CLAUDE.md.
 Read applicable ancestor guidance too. Existing process rules remain applicable;
 verify historical architecture/status statements against source.
-Read the shared [guide](https://github.com/bg002h/mnemonic-toolkit/blob/docs/constellation-architecture/docs/architecture/README.md) and [workflow](https://github.com/bg002h/mnemonic-toolkit/blob/docs/constellation-architecture/docs/architecture/WORKFLOW.md).
+Read the shared [guide](https://github.com/bg002h/mnemonic-toolkit/blob/99b4801cb9fa14b17d48d7b11dc793112eb2bafd/docs/architecture/README.md) and [workflow](https://github.com/bg002h/mnemonic-toolkit/blob/99b4801cb9fa14b17d48d7b11dc793112eb2bafd/docs/architecture/WORKFLOW.md).
 For sibling checkouts/worktrees, prefer local `../mnemonic-toolkit/docs/architecture/`;
-remote links support standalone checkouts while documentation branches await integration.
+remote fallbacks pin a delivered guide revision. See its workflow for refreshing the pin.
 Check Git status, the current branch, Cargo.toml and Cargo.lock before editing.
 Preserve unrelated work and use explicit task-owned paths when staging.
 
