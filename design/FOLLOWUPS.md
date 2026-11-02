@@ -232,3 +232,17 @@
 - **Location / scenario / fix (review text, verbatim):** The existing "only {} characters" message counts with `full.len()`, which is a byte count, not a character count. This predates the fix and is outside its scope.
 - **Status:** deferred-minor.
 - **Owning phase:** none (ownerless residue).
+
+### `fixc-10e-literal-pin` — bughunt_mt_10e does not pin that other characters stay literal
+
+- **Surfaced:** 2026-11-02 whole-diff review (FIX-C), M1 (`design/agent-reports/whole-diff-fix-c.md` lines 30-39, exact fix text there).
+- **Location / scenario / fix:** Mutants `report.rs:443:22` (guard to `true`) and `:443:33` (`<` to `<=`) survive because the test never checks a non-control character renders as itself. The fix text adds a literal space to the warning and an `out.contains(...)` assertion; the reviewer ran it: real code PASS, both mutants FAIL.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-spec-10-10b-literal-clause` — Spec §10.10b leaves "anything else is literal" to the FIX doc
+
+- **Surfaced:** 2026-11-02 whole-diff review (FIX-C), N2.
+- **Location / scenario / fix:** Optional one-clause addition to spec §10.10b; not needed once `fixc-10e-literal-pin` is folded. (N1 was a no-change note.)
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
