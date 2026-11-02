@@ -725,4 +725,29 @@ mod tests {
         );
         assert!(w.contains("None of it is confirmed"));
     }
+
+    /// Bug hunt FIX-C, grade R9: `render_json` escapes U+0000-U+001F (RFC 8259
+    /// §7), so a warning carrying a control character stays one valid string.
+    #[test]
+    fn bughunt_mt_10e_render_json_escapes_control_characters() {
+        let r = Report {
+            txid: "abc".into(),
+            set: None,
+            set_prefix: None,
+            outputs: vec![],
+            network: None,
+            fee: None,
+            locktime: (Lock::None, Chain::default()),
+            inputs: vec![],
+            status: Status::Unknown,
+        };
+        let w = "a\nb\rc\td\u{8}e\u{c}f\u{0}g\u{1}h\u{1f}i\"j\\k".to_string();
+        let out = render_json(&r, std::slice::from_ref(&w));
+        for esc in ["\\n", "\\r", "\\t", "\\b", "\\f"] {
+            assert!(out.contains(esc), "{esc} not escaped:\n{out}");
+        }
+        let doc: serde_json::Value = serde_json::from_str(&out)
+            .unwrap_or_else(|e| panic!("render_json emitted invalid JSON ({e}):\n{out:?}"));
+        assert_eq!(doc["warnings"][0].as_str(), Some(w.as_str()));
+    }
 }
