@@ -406,6 +406,68 @@ fn bughunt_mt_03d_pushdata4_sig_counts() {
     );
 }
 
+/// QA3: a legacy P2PKH `<sig ALL> <65-byte uncompressed pubkey 04..>` is an
+/// honest signed spend. A scriptSig push is never Schnorr, so the pubkey's last
+/// byte (here 0x07) is not a sighash and the input encodes.
+#[test]
+fn bughunt_mt_03e_uncompressed_p2pkh_encodes() {
+    let mut pk = vec![0x04u8];
+    pk.extend([0x55u8; 63]);
+    pk.push(0x07);
+    let sig = ecdsa_sig(0x44, 0x01);
+    let mut ss = vec![sig.len() as u8];
+    ss.extend(&sig);
+    ss.push(65);
+    ss.extend(&pk);
+    let spk = bitcoin::ScriptBuf::new_p2pkh(
+        &<bitcoin::PubkeyHash as bitcoin::hashes::Hash>::from_byte_array([0x44; 20]),
+    );
+    let out = encode_psbt(&finalized(spk, Some(bitcoin::ScriptBuf::from(ss)), None));
+    assert!(
+        out.status.success(),
+        "an uncompressed-key P2PKH input was refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// A v0 P2WSH witness `[32-byte preimage, script]` with a `script_len`-byte
+/// witnessScript and no signature anywhere.
+fn p2wsh_keyless(script_len: usize) -> std::process::Output {
+    // OP_SHA256 <32> OP_EQUALVERIFY, OP_NOP padding, then OP_TRUE.
+    let mut ws = vec![0xa8u8, 0x20];
+    ws.extend([0x66u8; 32]);
+    ws.push(0x88);
+    while ws.len() < script_len - 1 {
+        ws.push(0x61);
+    }
+    ws.push(0x51);
+    assert_eq!(ws.len(), script_len);
+    let mut spk = vec![0x00, 0x20];
+    spk.extend([0x44u8; 32]);
+    let w = bitcoin::Witness::from_slice(&[vec![0x77u8; 32], ws]);
+    encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)))
+}
+
+/// QA1: a 64-byte witnessScript in a v0 witness is not a Schnorr signature;
+/// the keyless input is refused with the existing "no signature" text.
+#[test]
+fn bughunt_mt_01e_p2wsh_keyless_64_byte_script_refused() {
+    assert_refused_with(
+        &p2wsh_keyless(64),
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
+/// QA1: the same with a 65-byte witnessScript (not an explicit-sighash Schnorr
+/// signature), refused with the "no signature" text, not a sighash text.
+#[test]
+fn bughunt_mt_01f_p2wsh_keyless_65_byte_script_refused() {
+    assert_refused_with(
+        &p2wsh_keyless(65),
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
 // ---- #5 ----------------------------------------------------------------------
 
 /// `getindexinfo` says txindex is still syncing while another index is synced.
