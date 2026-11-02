@@ -295,6 +295,13 @@ pub fn decode(strings: &[String]) -> Result<DecodedSet> {
                 index: idx + 1,
             });
         }
+        if c.header.count != count {
+            return Err(Error::CountMismatch {
+                expected: count,
+                found: c.header.count,
+                index: idx + 1,
+            });
+        }
         if idx >= count {
             return Err(Error::MissingChunk {
                 missing: count,
