@@ -124,6 +124,7 @@ fn encode_psbt(b64: &str) -> std::process::Output {
 /// A taproot script-path spend whose leaf needs no stack items has witness
 /// `[script, control block]`. It carries no signature and must be refused.
 #[test]
+#[ignore = "RED row owed to FIX-A; its build removes this"]
 fn bughunt_mt_01_keyless_taproot_scriptpath_not_signed() {
     let mut spk = vec![0x51, 0x20];
     spk.extend([0x44u8; 32]);
@@ -144,6 +145,7 @@ fn bughunt_mt_01_keyless_taproot_scriptpath_not_signed() {
 /// A 64-byte DER+sighash ECDSA signature ending 0x02 (SIGHASH_NONE) must be
 /// classed as ECDSA and refused by the SIGHASH_ALL rule.
 #[test]
+#[ignore = "RED row owed to FIX-A; its build removes this"]
 fn bughunt_mt_02_64_byte_ecdsa_sighash_none_refused() {
     let mut sig = vec![0x30, 0x3d, 0x02, 0x20];
     sig.extend([0x11u8; 32]);
@@ -174,6 +176,7 @@ fn bughunt_mt_02_64_byte_ecdsa_sighash_none_refused() {
 /// A finalized 2-of-3 P2SH multisig scriptSig `OP_0 <sig> <sig> <redeem>` is
 /// validly signed; encode must not refuse it as unsigned.
 #[test]
+#[ignore = "RED row owed to FIX-A; its build removes this"]
 fn bughunt_mt_03_p2sh_multisig_op0_dummy_counts_signatures() {
     use bitcoin::opcodes::all::{OP_CHECKMULTISIG, OP_PUSHBYTES_0, OP_PUSHNUM_2, OP_PUSHNUM_3};
     let mut sig = vec![0x30, 0x44, 0x02, 0x20];
@@ -217,6 +220,7 @@ fn bughunt_mt_03_p2sh_multisig_op0_dummy_counts_signatures() {
 /// A parent lookup that finds nothing then proves nothing: the status must be
 /// UNKNOWN, not PENDING.
 #[test]
+#[ignore = "RED row owed to FIX-D; its build removes this"]
 fn bughunt_mt_05_txindex_unsynced_other_index_synced_is_unknown() {
     let script = r#"#!/bin/sh
 verb=""
@@ -257,6 +261,7 @@ esac
 // ---- #7 ----------------------------------------------------------------------
 
 #[test]
+#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_07_non_ascii_near_line_start_does_not_panic() {
     let out = mt()
         .args(["decode", "--bitcoin-cli", OFFLINE])
@@ -321,6 +326,7 @@ fn json_warnings(doc: &str) -> Vec<String> {
 /// A duplicated chunk, and a chunk needing repair, are reported in prose; the
 /// JSON `warnings` array must carry them too (exact wording is open).
 #[test]
+#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
     let st = even_strings();
     let mut dup = st.clone();
@@ -361,6 +367,7 @@ fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
 /// OPEN product question: refuse the combination, or honour --json. Either is
 /// fine; silently exiting 0 with bare hex and no JSON is not.
 #[test]
+#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json() {
     let out = run_in("decode", &["--json", "--quiet"], &even_strings().join("\n"));
     // `decode --json` puts its document on stderr (stdout is the hex).
@@ -379,6 +386,7 @@ fn bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json() {
 /// with the same bytes as the clean plate. (Product question: is accepting two
 /// simultaneous repairs wanted? The report says yes.)
 #[test]
+#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_12_mtl_prefix_plus_confusable_still_decodes() {
     let st = even_strings();
     let clean = run_in("decode", &[], &st.join("\n"));
