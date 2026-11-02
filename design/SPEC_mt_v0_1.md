@@ -3049,6 +3049,25 @@ exactly as permanent, as a machine-engraved one.
       > signatures only among the remaining elements. **This is still a
       > heuristic and the spec does not claim otherwise.**
       >
+      > **Script path and pushes, exactly (bughunt FIX-A).** A witness is a
+      > taproot script-path spend when, after removing an annex (BIP-341: the
+      > last element begins `0x50` and at least two elements are present),
+      > **two or more** elements remain and the last is shaped like a control
+      > block (`33 + 32m` bytes, first byte `0xc0` or `0xc1`). A
+      > signature-shaped element is judged by where it sits. In a taproot
+      > witness (after removing an annex, exactly one element, or a script
+      > path as above) only a 64-byte Schnorr element or a 65-byte one with an
+      > explicit sighash byte counts. In any other witness and in a
+      > `scriptSig` only a DER ECDSA element `30 <len>` of 9 to 73 bytes
+      > including its trailing sighash byte counts, so a 64-byte `30 3d` ECDSA
+      > signature is ECDSA and a 64- or 65-byte witnessScript or public key is
+      > not a signature. A one-element segwit v0 witness reads as a taproot
+      > key path; without the spent output `mt` cannot tell them apart. The
+      > walk over a `scriptSig` treats every push opcode as a push: `OP_0` (an
+      > empty element), direct pushes `0x01`-`0x4b`, `OP_PUSHDATA1/2/4`, and
+      > `OP_1NEGATE` and `OP_1`-`OP_16` (small-integer elements); any other
+      > opcode ends the walk.
+      >
       > **Limited by §8.2's removal.** Without a script engine `mt` inspects the
       > spending structure **structurally** — it can tell that a stack element is
       > *shaped* like a signature (a 64-byte Schnorr element, or a DER-encoded
