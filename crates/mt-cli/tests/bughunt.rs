@@ -401,3 +401,34 @@ fn bughunt_mt_12_mtl_prefix_plus_confusable_still_decodes() {
     );
     assert_eq!(s(&out.stdout), s(&clean.stdout));
 }
+
+/// FIX-B R4 at the CLI: chunks from sets of different sizes reach
+/// `explain_failure`'s generic fallback with the `CountMismatch` text, exit 1,
+/// for every verb that reads a set (decode, verify, inspect).
+#[test]
+fn bughunt_mt_04_cli_count_mismatch_refusal() {
+    let txid = "abcde00000000000000000000000000000000000000000000000000000000000";
+    let a = mt_codec::encode(&[0x11u8; 70], txid).unwrap();
+    let b = mt_codec::encode(&[0x22u8; 100], txid).unwrap();
+    assert_eq!((a.len(), b.len()), (2, 3), "need count 2 vs 3");
+    let input = format!("{}\n{}\n", a[0], b[1]);
+    for verb in ["decode", "verify", "inspect"] {
+        let out = run_in(verb, &[], &input);
+        let err = s(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{verb}: {err}");
+        assert!(
+            out.stdout.is_empty(),
+            "{verb} wrote stdout: {}",
+            s(&out.stdout)
+        );
+        assert_eq!(
+            err.lines().next(),
+            Some(format!("mt {verb}: REFUSED — §1.1, the set does not verify").as_str()),
+            "{verb}: {err}"
+        );
+        assert!(
+            err.contains("chunk set size mismatch: expected 2 chunks, chunk 2 carries 3"),
+            "{verb}: {err}"
+        );
+    }
+}
