@@ -27,6 +27,8 @@ Input comes from a **file or stdin, never an argument**: an argument lands in
 shell history and in `ps` for every user on the machine, and this material is
 bearer.
 
+`mt` keeps `encode` and `decode`. It has no `repair` verb: `decode`, `verify` and `inspect` correct substituted characters themselves, and the toolkit's `mnemonic repair` does not accept `mt1` yet (planned). `verify` and `inspect` are candidates to move to the toolkit later, only where their code is largely the same as other formats'; a part specific to `mt1`, such as `inspect`'s node query, stays here. Full table: [Which tool owns which verb](https://github.com/bg002h/mnemonic-toolkit/blob/master/docs/manual/src/50-comparing/51-format-decision.md#which-tool-owns-which-verb).
+
 ## Try it
 
 ```sh
