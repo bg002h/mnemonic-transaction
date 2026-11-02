@@ -214,6 +214,198 @@ fn bughunt_mt_03_p2sh_multisig_op0_dummy_counts_signatures() {
     );
 }
 
+// ---- FIX-A rows (rulings R1-R3) ------------------------------------------------
+
+/// Asserts exit code 1 and that stderr's FIRST line is exactly `verdict`.
+fn assert_refused_with(out: &std::process::Output, verdict: &str) {
+    let err = s(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 with `{verdict}`, got {:?}:\n{err}",
+        out.status.code()
+    );
+    assert_eq!(
+        err.lines().next().unwrap_or(""),
+        verdict,
+        "wrong verdict line:\n{err}"
+    );
+}
+
+/// A taproot output script (`OP_1 <32 bytes>`).
+fn p2tr_spk() -> bitcoin::ScriptBuf {
+    let mut spk = vec![0x51, 0x20];
+    spk.extend([0x44u8; 32]);
+    bitcoin::ScriptBuf::from(spk)
+}
+
+/// A depth-1 BIP-341 control block (65 bytes) whose last byte is 0x01, so a
+/// length-only recognizer reads it as a Schnorr signature with SIGHASH_ALL.
+fn control_block_65() -> Vec<u8> {
+    let mut cb = vec![0xc0u8];
+    cb.extend([0x55u8; 63]);
+    cb.push(0x01);
+    cb
+}
+
+/// A DER ECDSA signature of `der_len` bytes after `30 <len>` (r of 32 bytes,
+/// s filling the rest) followed by the sighash byte `flag`.
+fn ecdsa_sig(der_len: u8, flag: u8) -> Vec<u8> {
+    let s_len = der_len - 2 - 32 - 2;
+    let mut sig = vec![0x30, der_len, 0x02, 0x20];
+    sig.extend([0x11u8; 32]);
+    sig.extend([0x02, s_len]);
+    sig.extend(std::iter::repeat_n(0x22u8, s_len as usize));
+    sig.push(flag);
+    sig
+}
+
+/// A compressed public key.
+fn pk33() -> Vec<u8> {
+    let mut p = vec![0x02u8];
+    p.extend([0x33u8; 32]);
+    p
+}
+
+/// R1: the bughunt 01 witness is refused with the existing §8.6(b) text, exit 1.
+#[test]
+fn bughunt_mt_01b_keyless_scriptpath_refusal_text() {
+    let w = bitcoin::Witness::from_slice(&[vec![0x51u8], control_block_65()]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
+/// R1: the annex is removed first; `[OP_TRUE, control block, annex]` is the
+/// same keyless script-path spend and is refused the same way.
+#[test]
+fn bughunt_mt_01c_keyless_scriptpath_with_annex_refused() {
+    let w = bitcoin::Witness::from_slice(&[vec![0x51u8], control_block_65(), vec![0x50, 0xaa]]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
+/// R1 guard (GREEN before and after): a P2WPKH witness `[sig, pubkey]` has two
+/// elements but its last is no control block, so it is not a script path and
+/// its signature still counts.
+#[test]
+fn bughunt_mt_01d_p2wpkh_two_elements_is_not_scriptpath() {
+    let mut spk = vec![0x00, 0x14];
+    spk.extend([0x44u8; 20]);
+    let w = bitcoin::Witness::from_slice(&[ecdsa_sig(0x44, 0x01), pk33()]);
+    let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
+    assert!(
+        out.status.success(),
+        "a signed P2WPKH input was refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// R2: the bughunt 02 witness is refused with the existing §8.6(a) text, exit 1.
+#[test]
+fn bughunt_mt_02b_64_byte_ecdsa_sighash_none_refusal_text() {
+    let sig = ecdsa_sig(0x3d, 0x02);
+    assert_eq!(sig.len(), 64);
+    let mut spk = vec![0x00, 0x14];
+    spk.extend([0x44u8; 20]);
+    let w = bitcoin::Witness::from_slice(&[sig, pk33()]);
+    let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
+    );
+}
+
+/// R2 guard (GREEN before and after): a 73-byte (`30 46`, high-S) SIGHASH_NONE
+/// signature is still refused; the DER range is not narrowed.
+#[test]
+fn bughunt_mt_02c_73_byte_ecdsa_sighash_none_still_refused() {
+    let sig = ecdsa_sig(0x46, 0x02);
+    assert_eq!(sig.len(), 73);
+    let mut spk = vec![0x00, 0x14];
+    spk.extend([0x44u8; 20]);
+    let w = bitcoin::Witness::from_slice(&[sig, pk33()]);
+    let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
+    );
+}
+
+/// R3 extra row: `OP_0 <sig NONE> <redeem>` reaches the signature after the
+/// OP_0 and is refused by R2's sighash rule, not as unsigned.
+#[test]
+fn bughunt_mt_03b_p2sh_op0_sighash_none_still_refused() {
+    use bitcoin::opcodes::all::{OP_CHECKMULTISIG, OP_PUSHBYTES_0, OP_PUSHNUM_1};
+    let redeem = bitcoin::script::Builder::new()
+        .push_opcode(OP_PUSHNUM_1)
+        .push_slice(pb(&pk33()))
+        .push_opcode(OP_PUSHNUM_1)
+        .push_opcode(OP_CHECKMULTISIG)
+        .into_script();
+    let script_sig = bitcoin::script::Builder::new()
+        .push_opcode(OP_PUSHBYTES_0)
+        .push_slice(pb(&ecdsa_sig(0x44, 0x02)))
+        .push_slice(pb(redeem.as_bytes()))
+        .into_script();
+    let spk = bitcoin::ScriptBuf::new_p2sh(&redeem.script_hash());
+    let out = encode_psbt(&finalized(spk, Some(script_sig), None));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
+    );
+}
+
+/// R3: a small-integer push (OP_1) before the signature is a push, so the walk
+/// reaches the signature: `OP_1 <sig> <redeem>` encodes.
+#[test]
+fn bughunt_mt_03c_small_int_before_sig_counts() {
+    use bitcoin::opcodes::all::{OP_CHECKSIG, OP_DROP, OP_PUSHNUM_1};
+    let redeem = bitcoin::script::Builder::new()
+        .push_opcode(OP_DROP)
+        .push_slice(pb(&pk33()))
+        .push_opcode(OP_CHECKSIG)
+        .into_script();
+    let script_sig = bitcoin::script::Builder::new()
+        .push_opcode(OP_PUSHNUM_1)
+        .push_slice(pb(&ecdsa_sig(0x44, 0x01)))
+        .push_slice(pb(redeem.as_bytes()))
+        .into_script();
+    let spk = bitcoin::ScriptBuf::new_p2sh(&redeem.script_hash());
+    let out = encode_psbt(&finalized(spk, Some(script_sig), None));
+    assert!(
+        out.status.success(),
+        "a signed input with a leading OP_1 was refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// R3: OP_PUSHDATA4 (0x4e, 4-byte little-endian length) is a push, so a
+/// signature it pushes counts: `PUSHDATA4 <sig> <pubkey>` on P2PKH encodes.
+#[test]
+fn bughunt_mt_03d_pushdata4_sig_counts() {
+    let sig = ecdsa_sig(0x44, 0x01);
+    let mut ss = vec![0x4eu8];
+    ss.extend((sig.len() as u32).to_le_bytes());
+    ss.extend(&sig);
+    ss.push(33);
+    ss.extend(pk33());
+    let spk = bitcoin::ScriptBuf::new_p2pkh(
+        &<bitcoin::PubkeyHash as bitcoin::hashes::Hash>::from_byte_array([0x44; 20]),
+    );
+    let out = encode_psbt(&finalized(spk, Some(bitcoin::ScriptBuf::from(ss)), None));
+    assert!(
+        out.status.success(),
+        "a signature pushed by OP_PUSHDATA4 was not counted:\n{}",
+        s(&out.stderr)
+    );
+}
+
 // ---- #5 ----------------------------------------------------------------------
 
 /// `getindexinfo` says txindex is still syncing while another index is synced.
