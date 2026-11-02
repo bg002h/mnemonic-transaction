@@ -1250,15 +1250,28 @@ fn is_taproot_script_path(w: &[Vec<u8>]) -> bool {
     w.len() >= 2 && last.len() >= 33 && (last.len() - 33) % 32 == 0 && (last[0] & 0xfe) == 0xc0
 }
 
-/// Pull the pushed data out of a `scriptSig`. Only pushes — a `scriptSig` in a
-/// standard transaction contains nothing else.
+/// Pull the pushed data out of a `scriptSig`. Every push opcode counts: `OP_0`,
+/// direct pushes, `OP_PUSHDATA1/2/4`, `OP_1NEGATE` and `OP_1`-`OP_16`; any other
+/// opcode ends the walk.
 fn script_sig_pushes(mut b: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     while let Some(&op) = b.first() {
         let (skip, len) = match op {
-            0x01..=0x4b => (1usize, op as usize),
+            0x00 => (1usize, 0usize),
+            0x01..=0x4b => (1, op as usize),
             0x4c if b.len() >= 2 => (2, b[1] as usize),
             0x4d if b.len() >= 3 => (3, u16::from_le_bytes([b[1], b[2]]) as usize),
+            0x4e if b.len() >= 5 => (5, u32::from_le_bytes([b[1], b[2], b[3], b[4]]) as usize),
+            0x4f => {
+                out.push(vec![0x81]);
+                b = &b[1..];
+                continue;
+            }
+            0x51..=0x60 => {
+                out.push(vec![op - 0x50]);
+                b = &b[1..];
+                continue;
+            }
             _ => return out,
         };
         if b.len() < skip + len {
