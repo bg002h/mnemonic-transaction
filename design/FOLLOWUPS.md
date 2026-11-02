@@ -169,3 +169,80 @@
 - **Failure scenario:** both mutants are equivalent for every shape the rows can build: neither value is signature-shaped in the Ecdsa context. No defect.
 - **Fix:** none.
 - **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixc-elided-prefix-source-nonascii` — Option (c) can pick a later non-ASCII full line as prefix source
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), M1.
+- **Location / scenario / fix (review text, verbatim):** The option (c) selection can pick a later `mt1` line with non-ASCII characters past byte 11 as the prefix source. This fails closed: the restored lines do not decode, so it refuses. It needs two unusual conditions: (1) non-ASCII damage on the first line inside its first 11 bytes, and (2) a second full line with damage of its own. It is not a wrong result.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-gate-step11-skips-alone` — Gate step 11 cannot run in a lone mt worktree
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), M2.
+- **Location / scenario / fix (review text, verbatim):** §5 step 11 cannot run as printed in a lone mt worktree. It prints "SKIP: ../mnemonic-engrave not found; set MT_SPEC_SOURCE", so the Q0 mismatch the step expects is never observed. The step should name `MT_SPEC_SOURCE=<engrave checkout>/design/SPEC_mt_v0_1.md`, or say a SKIP is acceptable. It fails closed (SKIP, not a false ok). ## Nits
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-doc-anchor-quote-wraps` — Section 1 anchor quote spans a spec line wrap
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N1.
+- **Location / scenario / fix (review text, verbatim):** The §1 anchor quote spans a line wrap in the spec. A literal grep for it misses, though a careful reader finds it.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-row-10c-needed-filter-loose` — Row 10c needed filter is loose
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N2.
+- **Location / scenario / fix (review text, verbatim):** Row 10c's `needed` filter has the same loose pattern as the one I1 fixes. It passes only because 10c has no duplicate input. Use `contains(" needed ")` there too.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-doc-n-undefined` — Section 2.1 does not say how n is computed
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N3.
+- **Location / scenario / fix (review text, verbatim):** §2.1 does not say how to compute `n`, the count of elided lines. It can be inferred from the restore loop.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-doc-short-mt1-first-line` — Short mt1 first line is skipped as prefix source, undocumented
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N4.
+- **Location / scenario / fix (review text, verbatim):** An `mt1` first line shorter than 11 bytes is now skipped as a prefix source. That is correct, but the doc should say so.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-doc-correction-warnings-placement` — Placement wording for correction_warnings
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N5.
+- **Location / scenario / fix (review text, verbatim):** "Add one function next to `margin_report`" (§2.4) can be read as "between `margin_report`'s doc comment and its `fn`". Say "above `margin_report`'s doc comment".
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-doc-format-not-fmt-clean` — Section 2.4 format! fails cargo fmt as printed
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N6.
+- **Location / scenario / fix (review text, verbatim):** §2.4's `format!` with an inline `if` fails `cargo fmt --check` as printed. `cargo fmt` fixes it; the doc could say to run `cargo fmt` before step 2.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-full-len-is-bytes` — Existing "only {} characters" message counts bytes
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-C), N7.
+- **Location / scenario / fix (review text, verbatim):** The existing "only {} characters" message counts with `full.len()`, which is a byte count, not a character count. This predates the fix and is outside its scope.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-10e-literal-pin` — bughunt_mt_10e does not pin that other characters stay literal
+
+- **Surfaced:** 2026-11-02 whole-diff review (FIX-C), M1 (`design/agent-reports/whole-diff-fix-c.md` lines 30-39, exact fix text there).
+- **Location / scenario / fix:** Mutants `report.rs:443:22` (guard to `true`) and `:443:33` (`<` to `<=`) survive because the test never checks a non-control character renders as itself. The fix text adds a literal space to the warning and an `out.contains(...)` assertion; the reviewer ran it: real code PASS, both mutants FAIL.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixc-spec-10-10b-literal-clause` — Spec §10.10b leaves "anything else is literal" to the FIX doc
+
+- **Surfaced:** 2026-11-02 whole-diff review (FIX-C), N2.
+- **Location / scenario / fix:** Optional one-clause addition to spec §10.10b; not needed once `fixc-10e-literal-pin` is folded. (N1 was a no-change note.)
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).

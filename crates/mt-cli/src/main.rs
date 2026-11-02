@@ -1032,6 +1032,29 @@ fn read_input(
     })
 }
 
+/// The JSON form of `margin_report`'s entries (spec §10.10b): one line per
+/// repaired chunk, most corrections first, ties in set order.
+fn correction_warnings(chunks: &[mt_codec::DecodedChunk]) -> Vec<String> {
+    let mut repaired: Vec<&mt_codec::DecodedChunk> =
+        chunks.iter().filter(|c| c.corrected > 0).collect();
+    repaired.sort_by(|a, b| b.corrected.cmp(&a.corrected));
+    repaired
+        .iter()
+        .map(|c| {
+            format!(
+                "chunk {} needed {} of 4 corrections{}",
+                c.header.index + 1,
+                c.corrected,
+                if c.corrected >= 4 {
+                    "; NO MARGIN LEFT"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect()
+}
+
 /// The margin report §1.1 requires: not just a verdict, but how much of the
 /// correction budget each chunk spent — and WHERE.
 ///
@@ -1227,6 +1250,7 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 }
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    json_quiet_guard(args.json, args.quiet, "decode")?;
     let text = read_input(&args.r#in, argv_material, "decode")?;
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
@@ -1298,6 +1322,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     d.kept_corrections
                 ));
             }
+            warnings.extend(correction_warnings(&set.chunks));
             // F-275 UNDER `--json`: the warning becomes DATA, inside the one
             // document. Printing it beside the JSON would mean a caller who
             // asked for machine-readable output has to slice prose off stderr
@@ -1368,6 +1393,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 }
 
 fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    quiet_unsupported_guard(args.quiet, "verify")?;
     json_unsupported_guard(args.json, "verify")?;
     let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
@@ -1600,6 +1626,7 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
 }
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    quiet_unsupported_guard(args.quiet, "inspect")?;
     let text = read_input(&args.r#in, argv_material, "inspect")?;
     // WALK O -- `mt inspect` GAINS A RAW-TRANSACTION SUBJECT.
     //
@@ -1655,6 +1682,14 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
             u.input_position, u.reason
         ));
     }
+    for d in &set.duplicates {
+        warnings.push(format!(
+            "chunk {} was present twice; kept the copy needing {} corrections",
+            d.index + 1,
+            d.kept_corrections
+        ));
+    }
+    warnings.extend(correction_warnings(&set.chunks));
 
     let out = std::io::stdout();
     let mut out = out.lock();
@@ -1987,6 +2022,40 @@ fn txid_paste_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
         "Fetch the transaction: `bitcoin-cli getrawtransaction <txid>`, then pass \
          that. Or `bitcoin-cli finalizepsbt <psbt>` if you have not broadcast yet.",
     ))
+}
+
+/// §10.10, R10: `--json` asks for the report as a document, `--quiet` for no
+/// report. Called from `decode` only; `inspect` and `verify` refuse `--quiet`
+/// first (R11).
+fn json_quiet_guard(json: bool, quiet: bool, verb: &str) -> Result<(), Refusal> {
+    if !(json && quiet) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        "--json and --quiet contradict each other",
+        "`--json` asks for the inspection report as a document and `--quiet` asks \
+         for no report; mt refuses rather than silently ignoring one.",
+    )
+    .with_remedy(
+        "Drop `--quiet` for the JSON report on stderr, or drop `--json` for the hex alone.",
+    ))
+}
+
+/// §10.10, R11: `inspect` and `verify` have no report to suppress; their
+/// output is their report.
+fn quiet_unsupported_guard(quiet: bool, verb: &str) -> Result<(), Refusal> {
+    if !quiet {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        format!("--quiet has no meaning for `{verb}`"),
+        format!("{verb}'s output is its report; mt refuses rather than print it anyway."),
+    )
+    .with_remedy("Drop `--quiet`."))
 }
 
 /// A flag that cannot work must REFUSE, not sit there inert.

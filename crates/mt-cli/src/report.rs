@@ -429,7 +429,23 @@ fn btc(sats: u64) -> String {
 pub fn render_json(r: &Report, warnings: &[String]) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
-    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let esc = |v: &str| {
+        let mut o = String::with_capacity(v.len());
+        for c in v.chars() {
+            match c {
+                '\\' => o.push_str("\\\\"),
+                '"' => o.push_str("\\\""),
+                '\n' => o.push_str("\\n"),
+                '\r' => o.push_str("\\r"),
+                '\t' => o.push_str("\\t"),
+                '\u{8}' => o.push_str("\\b"),
+                '\u{c}' => o.push_str("\\f"),
+                c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+                c => o.push(c),
+            }
+        }
+        o
+    };
     let _ = writeln!(s, "{{");
     let _ = writeln!(s, "  \"txid\": \"{}\",", esc(&r.txid));
     match r.set {
@@ -724,5 +740,34 @@ mod tests {
             "the txid must be printed for lookup"
         );
         assert!(w.contains("None of it is confirmed"));
+    }
+
+    /// Bug hunt FIX-C, grade R9: `render_json` escapes U+0000-U+001F (RFC 8259
+    /// §7), so a warning carrying a control character stays one valid string.
+    #[test]
+    fn bughunt_mt_10e_render_json_escapes_control_characters() {
+        let r = Report {
+            txid: "abc".into(),
+            set: None,
+            set_prefix: None,
+            outputs: vec![],
+            network: None,
+            fee: None,
+            locktime: (Lock::None, Chain::default()),
+            inputs: vec![],
+            status: Status::Unknown,
+        };
+        let w = "a\nb\rc\td\u{8}e\u{c}f\u{0}g\u{1}h\u{1f}i\"j\\k".to_string();
+        let out = render_json(&r, std::slice::from_ref(&w));
+        for esc in ["\\n", "\\r", "\\t", "\\b", "\\f"] {
+            assert!(out.contains(esc), "{esc} not escaped:\n{out}");
+        }
+        // Architect QC5: `\u00XX` is lowercase hex.
+        for esc in ["\\u0000", "\\u0001", "\\u001f"] {
+            assert!(out.contains(esc), "{esc} not escaped:\n{out}");
+        }
+        let doc: serde_json::Value = serde_json::from_str(&out)
+            .unwrap_or_else(|e| panic!("render_json emitted invalid JSON ({e}):\n{out:?}"));
+        assert_eq!(doc["warnings"][0].as_str(), Some(w.as_str()));
     }
 }

@@ -591,7 +591,6 @@ esac
 // ---- #7 ----------------------------------------------------------------------
 
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_07_non_ascii_near_line_start_does_not_panic() {
     let out = mt()
         .args(["decode", "--bitcoin-cli", OFFLINE])
@@ -656,7 +655,6 @@ fn json_warnings(doc: &str) -> Vec<String> {
 /// A duplicated chunk, and a chunk needing repair, are reported in prose; the
 /// JSON `warnings` array must carry them too (exact wording is open).
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
     let st = even_strings();
     let mut dup = st.clone();
@@ -697,7 +695,6 @@ fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
 /// OPEN product question: refuse the combination, or honour --json. Either is
 /// fine; silently exiting 0 with bare hex and no JSON is not.
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json() {
     let out = run_in("decode", &["--json", "--quiet"], &even_strings().join("\n"));
     // `decode --json` puts its document on stderr (stdout is the hex).
@@ -716,7 +713,6 @@ fn bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json() {
 /// with the same bytes as the clean plate. (Product question: is accepting two
 /// simultaneous repairs wanted? The report says yes.)
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_12_mtl_prefix_plus_confusable_still_decodes() {
     let st = even_strings();
     let clean = run_in("decode", &[], &st.join("\n"));
@@ -1020,4 +1016,334 @@ fn s2_f_keyless_scriptpath_with_64_and_65_byte_leaf_refused() {
         let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
         assert_refused_with(&out, NOSIG);
     }
+}
+// ---- FIX-C rows (design/FIX_bughunt_mt_c.md) ---------------------------------
+//
+// The rows above check only the absence of the bug; these pin the rulings'
+// exact texts (grade R7, R9-R12).
+
+/// Whitespace-flattened stderr: the refusal body is wrapped at 68 columns, so
+/// a sentence is matched on its words, not its line breaks.
+fn flat(b: &[u8]) -> String {
+    s(b).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// R7: a cut point inside a multi-byte character is an unreadable string, and
+/// the CLI says so with the existing `string {n} could not be read` refusal.
+#[test]
+fn bughunt_mt_07b_non_ascii_cut_point_is_an_unreadable_string() {
+    for verb in ["decode", "inspect", "verify"] {
+        let out = run_in(verb, &[], "MT1aaaaaaa\u{e9}qqqqqqqqqq\n");
+        let e = s(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{verb}: rc {:?}\n{e}",
+            out.status.code()
+        );
+        assert!(out.stdout.is_empty(), "{verb}: stdout not empty");
+        assert!(!e.contains("panicked"), "{verb} panicked:\n{e}");
+        let first = e.lines().next().unwrap_or("");
+        assert!(
+            first.starts_with(&format!("mt {verb}: REFUSED"))
+                && first.contains("string 1 could not be read"),
+            "{verb}: first line is not the unreadable-string refusal:\n{e}"
+        );
+    }
+}
+
+/// R7 with elided lines present: the first line (full form) has a non-ASCII
+/// character at byte 10 and the five elided lines need its first 11 bytes as
+/// their prefix. No panic; a refusal, exit 1, with R7's existing `string {n}
+/// could not be read` text (architect QC2: `n` is the 1-based position of the
+/// prefix line).
+#[test]
+fn bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses() {
+    let st = even_strings();
+    let mut c: Vec<char> = st[0].chars().collect();
+    c[10] = '\u{e9}';
+    let mut lines = vec![c.into_iter().collect::<String>()];
+    lines.extend(st[1..].iter().map(|x| x[11..].to_string()));
+    for verb in ["decode", "inspect", "verify"] {
+        let out = run_in(verb, &[], &lines.join("\n"));
+        let e = s(&out.stderr);
+        assert!(!e.contains("panicked"), "{verb} panicked:\n{e}");
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{verb}: rc {:?}\n{e}",
+            out.status.code()
+        );
+        assert!(out.stdout.is_empty(), "{verb}: stdout not empty");
+        assert_eq!(
+            e.lines().next().unwrap_or(""),
+            format!(
+                "mt {verb}: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved"
+            ),
+            "{verb}: wrong first line:\n{e}"
+        );
+    }
+}
+
+/// R7 (architect QC2, option c): with a second intact full line, the prefix is
+/// taken from it, the set reads through the main path, and the unreadable
+/// string 1 is refused with the same first line (richer mechanism follows).
+#[test]
+fn bughunt_mt_07d_second_full_line_supplies_the_prefix() {
+    let st = even_strings();
+    let mut c: Vec<char> = st[0].chars().collect();
+    c[10] = '\u{e9}';
+    let mut lines = vec![c.into_iter().collect::<String>(), st[1].clone()];
+    lines.extend(st[2..].iter().map(|x| x[11..].to_string()));
+    let out = run_in("decode", &[], &lines.join("\n"));
+    let e = s(&out.stderr);
+    assert!(!e.contains("panicked"), "decode panicked:\n{e}");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "rc {:?}\n{e}",
+        out.status.code()
+    );
+    assert!(out.stdout.is_empty(), "stdout not empty");
+    assert_eq!(
+        e.lines().next().unwrap_or(""),
+        "mt decode: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved"
+    );
+    let flat = e.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("read cleanly and 1 did not"),
+        "not the main path:\n{e}"
+    );
+}
+
+/// R9: the duplicate-chunk notice in `inspect --json` is decode's existing text.
+#[test]
+fn bughunt_mt_10b_inspect_json_duplicate_text_is_exact() {
+    let st = even_strings();
+    let mut dup = st.clone();
+    dup.push(st[0].clone());
+    let want = "chunk 1 was present twice; kept the copy needing 0 corrections";
+    let o = run_in("inspect", &["--json"], &dup.join("\n"));
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    let doc: serde_json::Value = serde_json::from_str(&s(&o.stdout)).unwrap();
+    let w: Vec<&str> = doc["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        w,
+        vec![
+            "no bitcoind reachable: nothing here is confirmed against the chain",
+            want
+        ],
+        "inspect --json warnings"
+    );
+}
+
+fn exact_warnings(doc: &str) -> Vec<String> {
+    let j: serde_json::Value =
+        serde_json::from_str(doc).unwrap_or_else(|e| panic!("no JSON document ({e}):\n{doc}"));
+    j["warnings"]
+        .as_array()
+        .expect("no warnings array")
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Flip each listed char of `x` to a different bech32 character.
+fn damage(x: &str, at: &[usize]) -> String {
+    let mut c: Vec<char> = x.chars().collect();
+    for &i in at {
+        c[i] = if c[i] == 'q' { 'p' } else { 'q' };
+    }
+    c.into_iter().collect()
+}
+
+/// R9: one correction entry per repaired chunk, exact text, the same on
+/// `inspect --json` (stdout) and `decode --json` (stderr).
+#[test]
+fn bughunt_mt_10c_json_correction_text_is_exact() {
+    let mut bad = even_strings();
+    bad[0] = damage(&bad[0], &[10]);
+    let want = "chunk 1 needed 1 of 4 corrections";
+    for verb in ["inspect", "decode"] {
+        let o = run_in(verb, &["--json"], &bad.join("\n"));
+        assert!(o.status.success(), "{verb}: {}", s(&o.stderr));
+        let doc = if verb == "inspect" {
+            s(&o.stdout)
+        } else {
+            s(&o.stderr)
+        };
+        let w = exact_warnings(&doc);
+        let hits: Vec<_> = w
+            .iter()
+            .filter(|x| x.starts_with("chunk ") && x.contains(" corrections"))
+            .collect();
+        assert_eq!(hits, vec![want], "{verb} --json warnings = {w:?}");
+    }
+}
+
+/// R9: at the budget the entry carries `; NO MARGIN LEFT`, and entries follow
+/// the prose margin report's order (most corrections first). Architect QC3:
+/// inspect's whole array is `[no-bitcoind, corrections...]`; in decode every
+/// correction entry follows every duplicate entry and precedes the stdout-mode
+/// headline when there is one.
+#[test]
+fn bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left() {
+    let mut bad = even_strings();
+    bad[0] = damage(&bad[0], &[10]);
+    bad[1] = damage(&bad[1], &[10, 20, 30, 40]);
+    let want = vec![
+        "chunk 2 needed 4 of 4 corrections; NO MARGIN LEFT".to_string(),
+        "chunk 1 needed 1 of 4 corrections".to_string(),
+    ];
+    let is_needed = |x: &String| x.starts_with("chunk ") && x.contains(" needed ");
+    let o = run_in("inspect", &["--json"], &bad.join("\n"));
+    assert!(o.status.success(), "inspect: {}", s(&o.stderr));
+    assert_eq!(
+        exact_warnings(&s(&o.stdout)),
+        vec![
+            "no bitcoind reachable: nothing here is confirmed against the chain".to_string(),
+            want[0].clone(),
+            want[1].clone()
+        ],
+        "inspect --json warnings"
+    );
+    // decode, with a duplicate of the clean chunk 3 added so both kinds appear
+    let mut dup = bad.clone();
+    dup.push(even_strings()[2].clone());
+    for (k, input) in [&bad, &dup].into_iter().enumerate() {
+        let o = run_in("decode", &["--json"], &input.join("\n"));
+        assert!(o.status.success(), "decode: {}", s(&o.stderr));
+        let w = exact_warnings(&s(&o.stderr));
+        let hits: Vec<String> = w.iter().filter(|x| is_needed(x)).cloned().collect();
+        assert_eq!(hits, want, "decode --json correction entries: {w:?}");
+        let first = w.iter().position(is_needed).unwrap();
+        let last = w.iter().rposition(is_needed).unwrap();
+        if let Some(d) = w.iter().rposition(|x| x.contains("was present twice")) {
+            assert!(d < first, "a duplicate entry follows a correction: {w:?}");
+        } else {
+            assert_eq!(k, 0, "no duplicate entry: {w:?}");
+        }
+        if last + 1 < w.len() {
+            assert_eq!(last + 2, w.len(), "more than the headline follows: {w:?}");
+        }
+    }
+}
+
+/// R10: `decode --json --quiet` is refused with the ruled text, exit 1.
+#[test]
+fn bughunt_mt_11b_decode_json_quiet_is_refused() {
+    let out = run_in("decode", &["--json", "--quiet"], &even_strings().join("\n"));
+    let e = s(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "rc {:?}\n{e}",
+        out.status.code()
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "stdout not empty: {}",
+        s(&out.stdout)
+    );
+    assert_eq!(
+        e.lines().next().unwrap_or(""),
+        "mt decode: REFUSED — §10.10, --json and --quiet contradict each other"
+    );
+    let f = flat(&out.stderr);
+    for want in [
+        "`--json` asks for the inspection report as a document and `--quiet` asks for no report; mt refuses rather than silently ignoring one.",
+        "Drop `--quiet` for the JSON report on stderr, or drop `--json` for the hex alone.",
+    ] {
+        assert!(f.contains(want), "missing {want:?} in:\n{e}");
+    }
+}
+
+/// R11 (triage row): `--quiet` on `inspect` and `verify` is refused, exit 1.
+#[test]
+fn bughunt_mt_r11_quiet_on_inspect_and_verify_is_refused() {
+    for verb in ["inspect", "verify"] {
+        let out = run_in(verb, &["--quiet"], &even_strings().join("\n"));
+        let e = s(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{verb}: rc {:?}\n{e}",
+            out.status.code()
+        );
+        assert!(out.stdout.is_empty(), "{verb}: stdout not empty");
+        assert_eq!(
+            e.lines().next().unwrap_or(""),
+            format!("mt {verb}: REFUSED — §10.10, --quiet has no meaning for `{verb}`")
+        );
+        let f = flat(&out.stderr);
+        for want in [
+            format!("{verb}'s output is its report; mt refuses rather than print it anyway."),
+            "Drop `--quiet`.".to_string(),
+        ] {
+            assert!(f.contains(&want), "{verb}: missing {want:?} in:\n{e}");
+        }
+    }
+}
+
+/// R10/R11 order: on `inspect` and `verify`, `--json --quiet` gets the R11
+/// refusal (it fires first), not R10's and not verify's `--json` refusal.
+#[test]
+fn bughunt_mt_r11_json_quiet_on_inspect_and_verify_gets_the_quiet_refusal() {
+    for verb in ["inspect", "verify"] {
+        let out = run_in(verb, &["--json", "--quiet"], &even_strings().join("\n"));
+        let e = s(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{verb}: rc {:?}\n{e}",
+            out.status.code()
+        );
+        assert!(out.stdout.is_empty(), "{verb}: stdout not empty");
+        assert_eq!(
+            e.lines().next().unwrap_or(""),
+            format!("mt {verb}: REFUSED — §10.10, --quiet has no meaning for `{verb}`")
+        );
+    }
+}
+
+/// R12: the `mtl` repair plus a positional autocorrect decodes, and the
+/// autocorrect is never silent (its existing notice prints).
+#[test]
+fn bughunt_mt_12b_mtl_repair_keeps_the_autocorrect_notice() {
+    let st = even_strings();
+    let clean = run_in("decode", &[], &st.join("\n"));
+    assert!(clean.status.success());
+    let mut bad = st.clone();
+    let (i, pos) = st
+        .iter()
+        .enumerate()
+        .find_map(|(i, x)| x[3..].find('6').map(|p| (i, p + 3)))
+        .expect("no '6' in the fixture strings");
+    let mut c: Vec<char> = bad[i].chars().collect();
+    c[pos] = 'b';
+    c[2] = 'l';
+    bad[i] = c.into_iter().collect();
+    let out = run_in("decode", &[], &bad.join("\n"));
+    let e = s(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "rc {:?}\n{e}",
+        out.status.code()
+    );
+    assert_eq!(s(&out.stdout), s(&clean.stdout));
+    assert!(
+        e.contains("you typed b, mt read it as 6"),
+        "the autocorrect notice is missing:\n{e}"
+    );
+    // Architect QC4: the free `mtl` repair stays silent.
+    assert!(
+        !e.contains("you typed l") && !e.contains("you typed i"),
+        "the mtl repair printed a notice:\n{e}"
+    );
 }
