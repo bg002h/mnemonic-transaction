@@ -246,3 +246,17 @@
 - **Location / scenario / fix:** Optional one-clause addition to spec §10.10b; not needed once `fixc-10e-literal-pin` is folded. (N1 was a no-change note.)
 - **Status:** deferred-minor.
 - **Owning phase:** none (ownerless residue).
+
+### `fixd-r5-unrowed-cases` — R5's trailing-text, array, non-object-txindex, null/1 cases have no rows
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-D), M2 (`design/agent-reports/fix-review-r1-d.md`).
+- **Location / scenario / fix (review text, verbatim):** R5's trailing-text, top-level-array, non-object-txindex and `null`/`1` cases have no rows. They hold only because the doc prescribes `from_str`, and the probes above give UNKNOWN for each. A wrong PENDING needs two unusual conditions: a builder who deviates to a streaming or first-document parse, and a node that appends text after valid JSON.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `fixd-redundant-trim` — Second trim() before from_str is redundant
+
+- **Surfaced:** 2026-11-02 FIX review r1 (FIX-D), N1 (`design/agent-reports/fix-review-r1-d.md`).
+- **Location / scenario / fix (review text, verbatim):** §6 step 2 has `from_str::<Value>(reply.trim())`, but `Node::call` already trims, so the second `trim()` is redundant. It is harmless.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).

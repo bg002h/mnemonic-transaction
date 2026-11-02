@@ -155,9 +155,18 @@ impl Node {
     /// printing DEAD on evidence that cannot tell those apart, because telling a
     /// recoverer their engraving is scrap when it is merely early is the worst
     /// error available.
+    ///
+    /// The reply is parsed as JSON and only txindex's own boolean
+    /// `synced: true` counts; anything else, a parse failure included, is "no
+    /// index", which reads UNKNOWN (§6a's fail-safe direction), because another
+    /// synced index once made an unsynced txindex read as synced (bug hunt #5).
     pub fn has_txindex(&self) -> bool {
-        self.call(&["getindexinfo"])
-            .is_some_and(|s| s.contains("txindex") && s.contains("\"synced\": true"))
+        self.call(&["getindexinfo"]).is_some_and(|s| {
+            serde_json::from_str::<serde_json::Value>(s.trim()).is_ok_and(|v| {
+                v.get("txindex").and_then(|t| t.get("synced"))
+                    == Some(&serde_json::Value::Bool(true))
+            })
+        })
     }
 
     /// Has this transaction **confirmed**?

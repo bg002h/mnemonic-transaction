@@ -550,7 +550,6 @@ fn bughunt_mt_01j_two_element_scriptpath_der_shaped_script_refused() {
 /// A parent lookup that finds nothing then proves nothing: the status must be
 /// UNKNOWN, not PENDING.
 #[test]
-#[ignore = "RED row owed to FIX-D; its build removes this"]
 fn bughunt_mt_05_txindex_unsynced_other_index_synced_is_unknown() {
     let script = r#"#!/bin/sh
 verb=""
@@ -586,6 +585,129 @@ esac
         "txindex is NOT synced yet a missing parent was reported PENDING:\n{o}"
     );
     assert!(o.contains("STATUS    UNKNOWN"), "expected UNKNOWN:\n{o}");
+}
+
+// ---- #5, FIX-D rows (ruling R5) -------------------------------------------
+//
+// R5: `has_txindex` parses the `getindexinfo` reply as JSON and returns true
+// only when the top-level object has a member `txindex` that is an object whose
+// own member `synced` is the boolean `true`. Anything else, including a parse
+// failure, is false, which reads UNKNOWN (§6a's fail-safe direction). Each row
+// drives `mt inspect` against a stub `bitcoin-cli` whose `getindexinfo` prints
+// `reply`; `gettxout` and `getrawtransaction` fail, so every parent is NOT
+// FOUND and the STATUS row depends on `has_txindex` alone.
+
+/// Runs `mt inspect` on the `even` vector against a stub node; returns
+/// (rc, stdout, stderr).
+fn inspect_with_indexinfo(reply: &str) -> (Option<i32>, String, String) {
+    assert!(
+        !reply.contains('\''),
+        "the stub echoes the reply in single quotes"
+    );
+    let script = r#"#!/bin/sh
+verb=""
+while read -r line; do
+  if [ -z "$verb" ]; then verb="$line"; fi
+done
+case "$verb" in
+  getblockcount) echo 963832 ;;
+  getindexinfo)  echo '@REPLY@' ;;
+  *) exit 1 ;;
+esac
+"#
+    .replace("@REPLY@", reply);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bitcoin-cli");
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let f = tmp(&even_strings().join("\n"));
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli"])
+        .arg(&path)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    (out.status.code(), s(&out.stdout), s(&out.stderr))
+}
+
+fn assert_status(reply: &str, want: &str, why: &str) {
+    let (rc, o, e) = inspect_with_indexinfo(reply);
+    assert_eq!(rc, Some(0), "inspect failed:\n{e}");
+    let other = if want == "PENDING" {
+        "UNKNOWN"
+    } else {
+        "PENDING"
+    };
+    assert!(
+        o.contains(&format!("STATUS    {want}")) && !o.contains(&format!("STATUS    {other}")),
+        "{why}; reply {reply}; expected STATUS {want}:\n{o}"
+    );
+}
+
+/// Compact JSON (no space after the colon) is the same document as the
+/// pretty one: a synced txindex reads PENDING.
+#[test]
+fn bughunt_mt_05b_txindex_compact_json_synced_is_pending() {
+    assert_status(
+        r#"{"txindex":{"synced":true,"best_block_height":963832}}"#,
+        "PENDING",
+        "a synced txindex in compact JSON was not recognised",
+    );
+}
+
+/// A truncated reply does not parse, so it proves nothing: UNKNOWN.
+#[test]
+fn bughunt_mt_05c_txindex_truncated_reply_is_unknown() {
+    assert_status(
+        r#"{"txindex": {"synced": true, "best_block_height": 963832}"#,
+        "UNKNOWN",
+        "a reply that is not valid JSON was trusted",
+    );
+}
+
+/// Only txindex's OWN `synced` member counts, not one nested deeper.
+#[test]
+fn bughunt_mt_05d_txindex_nested_synced_true_is_unknown() {
+    assert_status(
+        r#"{"txindex": {"synced": false, "best_block_height": 10, "detail": {"synced": true}}}"#,
+        "UNKNOWN",
+        "a nested synced:true was read as txindex's own",
+    );
+}
+
+/// No `txindex` member at all: the word appearing as a value does not count.
+#[test]
+fn bughunt_mt_05e_txindex_absent_name_in_value_is_unknown() {
+    assert_status(
+        r#"{"coinstatsindex": {"synced": true, "best_block_height": 963832}, "note": "txindex"}"#,
+        "UNKNOWN",
+        "a reply with no txindex member was read as a synced txindex",
+    );
+}
+
+/// Guard (passes today, must keep passing): Core's pretty form, synced.
+#[test]
+fn bughunt_mt_05f_txindex_pretty_synced_true_is_pending() {
+    assert_status(
+        r#"{"txindex": {"synced": true, "best_block_height": 963832}}"#,
+        "PENDING",
+        "a synced txindex was not recognised",
+    );
+}
+
+/// Guard (passes today, must keep passing): `synced` must be the boolean.
+#[test]
+fn bughunt_mt_05g_txindex_synced_string_is_unknown() {
+    assert_status(
+        r#"{"txindex": {"synced": "true", "best_block_height": 963832}}"#,
+        "UNKNOWN",
+        "the string \"true\" was read as the boolean",
+    );
 }
 
 // ---- #7 ----------------------------------------------------------------------
