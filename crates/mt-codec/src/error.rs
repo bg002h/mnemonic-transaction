@@ -83,6 +83,17 @@ pub enum Error {
         index: usize,
     },
 
+    /// Chunks in one set disagree about how many chunks the set has.
+    #[error("chunk set size mismatch: expected {expected} chunks, chunk {index} carries {found}")]
+    CountMismatch {
+        /// The count the first readable chunk carries.
+        expected: usize,
+        /// The count this chunk carries.
+        found: usize,
+        /// 1-based chunk number, as printed to a human.
+        index: usize,
+    },
+
     /// A chunk is missing from the set.
     #[error("chunk {missing} of {count} is missing")]
     MissingChunk {

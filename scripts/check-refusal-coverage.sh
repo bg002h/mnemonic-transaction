@@ -63,6 +63,12 @@ EXEMPT = {
     "refuses_beyond_the_budget":
         "mt-codec BCH t=4 correction limit, not a §8 refusal -- it matches the "
         "naming convention by coincidence and asserts on a codec error",
+    "bughunt_mt_04_cli_count_mismatch_refusal":
+        "mt-codec's chunk-count check (Error::CountMismatch, bughunt #4), "
+        "reached through explain_failure's generic §1.1 fallback like "
+        "SetIdMismatch -- there is no CLI guard fn for mutate-refusals.sh to "
+        "neuter; the codec check is held by the codec row "
+        "bughunt_mt_04_count_mismatch_variant_and_text and the mutation gate",
 }
 
 problems = []

@@ -295,6 +295,13 @@ pub fn decode(strings: &[String]) -> Result<DecodedSet> {
                 index: idx + 1,
             });
         }
+        if c.header.count != count {
+            return Err(Error::CountMismatch {
+                expected: count,
+                found: c.header.count,
+                index: idx + 1,
+            });
+        }
         if idx >= count {
             return Err(Error::MissingChunk {
                 missing: count,
@@ -364,6 +371,15 @@ pub fn decode(strings: &[String]) -> Result<DecodedSet> {
 /// so an operator can group engravings **by eye, without decoding**.
 pub fn invariant_prefix(s: &str) -> Result<String> {
     let symbols = to_symbols(s)?;
+    let min = HEADER_SYMBOLS + CHECKSUM_SYMBOLS;
+    if symbols.len() < min {
+        return Err(Error::TooShort {
+            len: symbols.len(),
+            header: HEADER_SYMBOLS,
+            checksum: CHECKSUM_SYMBOLS,
+            min,
+        });
+    }
     Ok(symbols[..INVARIANT_PREFIX_SYMBOLS]
         .iter()
         .map(|&v| ALPHABET[v as usize] as char)
