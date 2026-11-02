@@ -3480,6 +3480,20 @@ signed PSBT.
        which is the opposite of what §0a's stderr split is for. It does **not**
        relax §1.1a's rule that stdout stays empty unless every check passes.
 
+       **Under `--json`, every notice is one single-line string in the
+       `warnings` array, the same on `decode` and `inspect`.** A duplicate
+       reads `chunk {n} was present twice; kept the copy needing {k}
+       corrections`. Each repaired chunk reads `chunk {n} needed {c} of 4
+       corrections`, with `; NO MARGIN LEFT` appended when {c} ≥ 4, in the
+       order of the prose margin report (most corrections first), after the
+       duplicate entries and, in `decode`, before the stdout-mode headline;
+       the JSON omits the prose's before-and-after detail. Control characters
+       U+0000-U+001F inside any JSON string are escaped (RFC 8259 §7).
+       **`--json` with `--quiet` is refused** (§10.10, exit 1): one asks for
+       the report as a document and the other for no report. **`--quiet` on
+       `inspect` or `verify` is refused** (§10.10, exit 1), with or without
+       `--json`: their output is their report.
+
     **THE FLAG SPELLINGS — RULED 2026-08-23.** Operator-approved; sibling
     precedent taken verbatim wherever it exists, so an operator who knows `md`
     does not learn a second dialect for the same concept.
