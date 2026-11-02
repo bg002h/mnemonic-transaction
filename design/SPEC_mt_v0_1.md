@@ -221,7 +221,8 @@ overturned an earlier assumption and are marked.
    It checks: every string parses, every BCH checksum holds, the set is complete
    (**chunks 1 through `count` present**, i.e. wire indices `0..count-1`), every
    chunk carries the same
-   `chunk_set_id`, and the reassembled transaction re-derives that id.
+   `chunk_set_id` and the same `count`, and the reassembled transaction
+   re-derives that id.
 
    **TWO CHUNKS SHARING AN INDEX IS NOT AN ERROR, AND AN EARLIER DRAFT OF THIS
    LINE MADE IT ONE.** It required *"no duplicates"* — which put this section in
