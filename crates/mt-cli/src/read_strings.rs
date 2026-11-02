@@ -524,7 +524,12 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
         ));
     }
 
-    let full = candidates.iter().find(|s| s.starts_with("mt1"));
+    // Prefer a full line whose first ELIDED_DROP bytes end on a char boundary
+    // (a multi-byte character there cannot supply a prefix); else the first.
+    let full = candidates
+        .iter()
+        .find(|s| s.starts_with("mt1") && s.is_char_boundary(ELIDED_DROP))
+        .or_else(|| candidates.iter().find(|s| s.starts_with("mt1")));
 
     let Some(full) = full else {
         // **IS THIS AN mt1 SET AT ALL?** Asked FIRST, because the answer decides
@@ -596,7 +601,28 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
              prefix before anything can be restored from it.",
         ));
     }
-    let prefix = full[..ELIDED_DROP].to_string();
+    let Some(prefix) = full.get(..ELIDED_DROP).map(str::to_string) else {
+        let n = candidates
+            .iter()
+            .position(|c| c == full)
+            .map_or(1, |i| i + 1);
+        return Err(Refusal::new(
+            verb,
+            "§1.1",
+            format!(
+                "string {n} could not be read: more than 4 characters differ \
+                 from what was engraved"
+            ),
+            "BCH repairs up to 4 wrong characters per string. Past that it \
+             cannot tell which are wrong, so it refuses rather than guessing \
+             — a wrong guess produces a valid-looking string carrying the \
+             wrong bytes.",
+        )
+        .with_remedy(
+            "Re-read that plate from the steel, character by character. Confusable \
+             pairs to check first: 0/o, 1/l/i, b/6, 2/z, 5/s, 8/b.",
+        ));
+    };
 
     Ok(candidates
         .into_iter()
