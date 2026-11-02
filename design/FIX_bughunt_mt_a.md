@@ -169,15 +169,15 @@ as they are and must stay green.
 ### 4.2 RED rows (`crates/mt-cli/tests/bughunt.rs`, committed with this doc)
 
 Rows 01, 02, 03 are the triage rows (a5e5fd7). The rest are added by this FIX
-(R1-R3 not otherwise covered, plus two guards). "Unmodified" = base `3bfbc98`
+(R1-R3 not otherwise covered, plus four guards). "Unmodified" = base `3bfbc98`
 plus the test commit, run 2026-11-02. Rows 01e, 01f, 03e come from architect
 ruling QA1/QA3.
 
 | row | ruling | asserts | unmodified result |
 |---|---|---|---|
-| `bughunt_mt_01_keyless_taproot_scriptpath_not_signed` | R1 | encode fails | FAIL: encode accepted `[OP_TRUE, cb]` |
-| `bughunt_mt_01b_keyless_scriptpath_refusal_text` | R1 | rc 1, first stderr line `mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature` | FAIL: rc 0 |
-| `bughunt_mt_01c_keyless_scriptpath_with_annex_refused` | R1 (annex) | same line, rc 1 | FAIL: rc 0 |
+| `bughunt_mt_01_keyless_taproot_scriptpath_not_signed` | R1 + QA1 | encode fails | FAIL: encode accepted `[OP_TRUE, cb]` |
+| `bughunt_mt_01b_keyless_scriptpath_refusal_text` | R1 + QA1 | rc 1, first stderr line `mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature` | FAIL: rc 0 |
+| `bughunt_mt_01c_keyless_scriptpath_with_annex_refused` | R1 + QA1 (annex) | same line, rc 1 | FAIL: rc 0 |
 | `bughunt_mt_01d_p2wpkh_two_elements_is_not_scriptpath` | R1 guard | p2wpkh `[71-byte sig ALL, pk33]` encodes, rc 0 | PASS (guard) |
 | `bughunt_mt_02_64_byte_ecdsa_sighash_none_refused` | R2 (now by SigCtx) | encode fails with "sighash 0x02" | FAIL: rc 0 |
 | `bughunt_mt_02b_64_byte_ecdsa_sighash_none_refusal_text` | R2 (now by SigCtx) | rc 1, first line `mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL` | FAIL: rc 0 |
@@ -189,22 +189,27 @@ ruling QA1/QA3.
 | `bughunt_mt_01e_p2wsh_keyless_64_byte_script_refused` | QA1 | v0 P2WSH `[32-byte preimage, 64-byte witnessScript]`: rc 1, first line `mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature` | FAIL: rc 0 (encode accepted) |
 | `bughunt_mt_01f_p2wsh_keyless_65_byte_script_refused` | QA1 | same line, rc 1, for a 65-byte witnessScript | FAIL: wrong first line `mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x51, not SIGHASH_ALL` (0x51 is the test script's last byte) |
 | `bughunt_mt_03e_uncompressed_p2pkh_encodes` | QA3 | P2PKH `<sig ALL> <65-byte 04.. pubkey ending 0x07>` encodes, rc 0 | FAIL: refused `mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x07, not SIGHASH_ALL` |
+| `bughunt_mt_01g_taproot_keypath_303d_schnorr_encodes` | QA1 guard | p2tr key path `[64-byte 30 3d .. 02]` encodes, rc 0 | PASS (guard) |
+| `bughunt_mt_01h_taproot_scriptpath_two_sigs_encodes` | QA1 guard (ctx before the pops) | p2tr `[sig64, sig64, OP_TRUE, cb65]` encodes, rc 0 | PASS (guard) |
+| `bughunt_mt_01i_p2wsh_keyless_65_byte_script_ending_01_refused` | QA1 | v0 P2WSH `[32 bytes, 65-byte script ending 01 01]`: rc 1, first line `mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature` | FAIL: rc 0 (encode accepted) |
+| `bughunt_mt_01j_two_element_scriptpath_der_shaped_script_refused` | R1 | p2tr `[49-byte DER-shaped script, cb65]`: same line, rc 1 | FAIL: rc 0 (encode accepted) |
 
 Rows 01e, 01f and 03e are in `bughunt.rs` (the 01e/01f witnesses are built by
 the shared helper `p2wsh_keyless(script_len)`: witness
 `[32 bytes of 0x77, witnessScript]`, the script being `OP_SHA256 <32 bytes>
 OP_EQUALVERIFY`, `OP_NOP` padding, then `OP_TRUE`). Row `01d` and `02c` are the
 guards for the rule's Ecdsa-context side; `03e` is the guard for the scriptSig
-side.
+side. Rows 01, 01b and 01c are refused by the SigCtx rule even without R1; R1 itself is pinned by `01j`. Rows `01g` and `01h` guard the Taproot side of the rule: a key path is Taproot, and the context is fixed before the pops.
 
 RED command (before §3), and GREEN command (after §3):
 
     PATH=$HOME/.cargo/bin:$PATH cargo nextest run --locked -p mt-cli -E 'test(/^bughunt_mt_0[123]/)' > red-a.log 2>&1
     grep -E "Summary|FAIL \[" red-a.log
 
-Expected before §3: `14 tests run: 2 passed, 12 failed` (failed: 01, 01b, 01c,
-01e, 01f, 02, 02b, 03, 03b, 03c, 03d, 03e; passed: the guards 01d, 02c).
-Expected after §3: `14 tests run: 14 passed`. The filter matches all 14 rows
+Expected before §3: `18 tests run: 4 passed, 14 failed` (failed: 01, 01b, 01c,
+01e, 01f, 01i, 01j, 02, 02b, 03, 03b, 03c, 03d, 03e; passed: the guards 01d, 01g,
+01h, 02c).
+Expected after §3: `18 tests run: 18 passed`. The filter matches all 18 rows
 (run 2026-11-02 on base `3bfbc98` plus these rows: exactly the counts above).
 One row by exact name: `-E 'test(/(^|::)bughunt_mt_01b_keyless_scriptpath_refusal_text$/)'`
 (1 test run).
@@ -240,7 +245,7 @@ Capture each run once to a file and grep it. `$HOME/.cargo/bin` first in PATH;
    `bash ci/code-docs-check.sh`
 10. FIX-A rows by exact name:
     `cargo nextest run --locked -p mt-cli -E 'test(/^bughunt_mt_0[123]/)'`:
-    **expected matched count 14, 14 passed**. A short or empty count is a FAIL.
+    **expected matched count 18, 18 passed**. A short or empty count is a FAIL.
 11. Coordinator mutation gate:
     `coordinator/scripts/mutation-gate.sh <worktree> 3bfbc98`; the missed
     list goes to the review brief.

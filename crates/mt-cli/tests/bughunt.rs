@@ -468,6 +468,85 @@ fn bughunt_mt_01f_p2wsh_keyless_65_byte_script_refused() {
     );
 }
 
+/// QA1 guard (GREEN before and after): a taproot key-path witness has one
+/// element, so its context is Taproot; an honest 64-byte Schnorr signature
+/// that happens to begin `30 3d` and end `0x02` is SIGHASH_DEFAULT and encodes.
+#[test]
+fn bughunt_mt_01g_taproot_keypath_303d_schnorr_encodes() {
+    let mut sig = vec![0x30u8, 0x3d];
+    sig.extend([0x5au8; 61]);
+    sig.push(0x02);
+    let out = encode_psbt(&finalized(
+        p2tr_spk(),
+        None,
+        Some(bitcoin::Witness::from_slice(&[sig])),
+    ));
+    assert!(
+        out.status.success(),
+        "an honest key-path Schnorr signature was refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// QA1 guard (GREEN before and after): the context is computed before the
+/// script-path pops, so a two-signature script path `[sig64, sig64, script,
+/// control block]` is Taproot and both 64-byte signatures count.
+#[test]
+fn bughunt_mt_01h_taproot_scriptpath_two_sigs_encodes() {
+    let w = bitcoin::Witness::from_slice(&[
+        vec![0x5au8; 64],
+        vec![0x5bu8; 64],
+        vec![0x51u8],
+        control_block_65(),
+    ]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert!(
+        out.status.success(),
+        "a signed taproot script path was refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// QA1: a 65-byte witnessScript whose last byte is 0x01 (here the data push
+/// `01 01`) is not a Schnorr signature with SIGHASH_ALL; the keyless input is
+/// refused with the "no signature" text.
+#[test]
+fn bughunt_mt_01i_p2wsh_keyless_65_byte_script_ending_01_refused() {
+    let mut ws = vec![0xa8u8, 0x20];
+    ws.extend([0x66u8; 32]);
+    ws.push(0x88);
+    while ws.len() < 63 {
+        ws.push(0x61);
+    }
+    ws.extend([0x01, 0x01]);
+    assert_eq!(ws.len(), 65);
+    let mut spk = vec![0x00, 0x20];
+    spk.extend([0x44u8; 32]);
+    let w = bitcoin::Witness::from_slice(&[vec![0x77u8; 32], ws]);
+    let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
+/// R1: a two-element script path `[script, control block]` is a script path,
+/// so its script is popped and never read as a signature, even when the
+/// script (here a 49-byte push whose bytes are DER-shaped and end 0x01) looks
+/// like an ECDSA signature with SIGHASH_ALL.
+#[test]
+fn bughunt_mt_01j_two_element_scriptpath_der_shaped_script_refused() {
+    let mut script = vec![0x30u8, 0x2e];
+    script.extend([0x01u8; 47]);
+    assert_eq!(script.len(), 49);
+    let w = bitcoin::Witness::from_slice(&[script, control_block_65()]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
 // ---- #5 ----------------------------------------------------------------------
 
 /// `getindexinfo` says txindex is still syncing while another index is synced.
