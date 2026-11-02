@@ -27,9 +27,12 @@ Commit message (GREEN) carries the line:
 ## Build order
 
 1. Wait for FIX-B to merge. Rebase `fix/bughunt-c` onto master
-   (`git rebase master`). The RED commit adds only test code and this
-   document, so the rebase is expected to be clean; if it is not, STOP and
-   report the conflict.
+   (`git rebase master`). The rebase conflicts in
+   `crates/mt-cli/tests/bughunt.rs`, where both branches append at the end
+   of the file: keep both blocks, FIX-B's first (`bughunt_mt_04_cli_count_mismatch_refusal`
+   and anything above it) and then this document's section, delete the
+   three conflict marker lines, `git add` the file and
+   `git rebase --continue`. Any other conflict: STOP and report it.
 2. Run the RED command (§3). Expected: 15 matched, 15 failed.
 3. Spec delta (§1), in the mt copy (S1, ruled Q0).
 4. R7, `read_strings.rs` (§2.1; S2 ruled QC2).
@@ -237,6 +240,21 @@ test  = "bughunt_mt_r11_json_quiet_on_inspect_and_verify_gets_the_quiet_refusal"
 check = "src/main.rs::quiet_unsupported_guard"
 ```
 
+`scripts/check-refusal-coverage.sh`: in the `EXEMPT` dict, after its
+last entry (FIX-B's `bughunt_mt_04_cli_count_mismatch_refusal`) and
+before the closing `}`, add:
+
+```
+    "bughunt_mt_07d_second_full_line_supplies_the_prefix":
+        "the main path's §1.1 unreadable-string refusal, reached through "
+        "explain_failure (it returns Refusal, so mutate-refusals.sh has no "
+        "neutral return for it) once a later full line supplies the elided "
+        "prefix (QC2 option c); the choice of line is held by row 07d itself",
+```
+
+Row 07d is not given a `refusals.toml` entry. Its refusal comes from
+`explain_failure`, and `restore_elided` returns `Ok` on its input.
+
 The `ReadArgs.quiet` doc comment stays (R11).
 
 ## 3. RED rows
@@ -261,7 +279,7 @@ It matches 15 tests (14 plus the new 07d). Observed on unmodified `3bfbc98`
 | `bughunt_mt_07_non_ascii_near_line_start_does_not_panic` (reused) | non-ASCII near the line start; no panic, rc ≠ 101 | panic, rc 101 |
 | `bughunt_mt_07b_non_ascii_cut_point_is_an_unreadable_string` | `MT1aaaaaaaéqqqqqqqqqq` on decode, inspect, verify: rc 1, empty stdout, no `panicked`, first stderr line starts `mt {verb}: REFUSED` and contains `string 1 could not be read` | decode rc 101, panic at `read_strings.rs:599:22` |
 | `bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses` | `even` string 1 with char 10 set to `é`, strings 2-6 elided (`[11..]`), on all three verbs: no panic, rc 1, empty stdout, first line equals ``mt {verb}: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved`` (QC2) | decode panicked at `read_strings.rs:599:22` |
-| `bughunt_mt_07d_second_full_line_supplies_the_prefix` (new, QC2) | the 07c input with string 2 kept full, on decode: rc 1, empty stdout, first line equal to 07c's | decode panicked at `read_strings.rs:599:22` |
+| `bughunt_mt_07d_second_full_line_supplies_the_prefix` (new, QC2) | the 07c input with string 2 kept full, on decode: rc 1, empty stdout, first line equal to 07c's; stderr (whitespace-flattened) contains `read cleanly and 1 did not` (the main path's mechanism) | decode panicked at `read_strings.rs:599:22` |
 | `bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices` (reused) | inspect/decode `--json` carry a duplicate and a correction notice | no such entry |
 | `bughunt_mt_10b_inspect_json_duplicate_text_is_exact` | `even` plus a second copy of string 1, `inspect --json`: `warnings` equals exactly `["no bitcoind reachable: nothing here is confirmed against the chain", "chunk 1 was present twice; kept the copy needing 0 corrections"]` (QC3) | array holds only the no-bitcoind entry |
 | `bughunt_mt_10c_json_correction_text_is_exact` | `even` with string 1 damaged at char 10: the `needed`-entries equal [`chunk 1 needed 1 of 4 corrections`] on `inspect --json` (stdout) and `decode --json` (stderr) | entries `[]` |
@@ -285,6 +303,8 @@ assert relative order (QC3). Row 10e pins lowercase `\u00XX` (QC5).
   Until then `./scripts/check-refusal-coverage.sh` fails on the RED commit,
   naming the three R10/R11 tests (observed before the fold; the 07c entry
   is added by the fold and not yet run).
+- `scripts/check-refusal-coverage.sh`: one `EXEMPT` entry for row 07d
+  (§2.5), in the GREEN commit.
 - No existing test expectation changes: no current test passes `--quiet` to
   `inspect` or `verify` (the `--quiet` uses in `encode.rs`,
   `decode_verify.rs` and `declined_crate_items.rs` are `encode` and

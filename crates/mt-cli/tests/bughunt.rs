@@ -1113,6 +1113,11 @@ fn bughunt_mt_07d_second_full_line_supplies_the_prefix() {
         e.lines().next().unwrap_or(""),
         "mt decode: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved"
     );
+    let flat = e.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("read cleanly and 1 did not"),
+        "not the main path:\n{e}"
+    );
 }
 
 /// R9: the duplicate-chunk notice in `inspect --json` is decode's existing text.
@@ -1199,7 +1204,7 @@ fn bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left() {
         "chunk 2 needed 4 of 4 corrections; NO MARGIN LEFT".to_string(),
         "chunk 1 needed 1 of 4 corrections".to_string(),
     ];
-    let is_needed = |x: &String| x.starts_with("chunk ") && x.contains(" corrections");
+    let is_needed = |x: &String| x.starts_with("chunk ") && x.contains(" needed ");
     let o = run_in("inspect", &["--json"], &bad.join("\n"));
     assert!(o.status.success(), "inspect: {}", s(&o.stderr));
     assert_eq!(
