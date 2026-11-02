@@ -17,8 +17,12 @@ code for the stated reason (`inspect --quiet` exits 0 and prints the report;
 `verify --quiet` exits 0 and prints the same 65-byte verdict as without the
 flag). R11 is kept.
 
-Five STOP sections (S1-S5) are open at the end. Which steps each one blocks is
-stated in the build order.
+The five STOP sections (S1-S5) at the end are all ruled by the architect
+(`coordinator/reports/architect-bughunt-fixdocs.md`: Q0, QC2-QC5); "C M1" is
+graded Minor and deferred (not folded). No STOP is open.
+
+Commit message (GREEN) carries the line:
+`Spec copy: mt is authoritative; engrave sync owed by F-321.`
 
 ## Build order
 
@@ -26,14 +30,13 @@ stated in the build order.
    (`git rebase master`). The RED commit adds only test code and this
    document, so the rebase is expected to be clean; if it is not, STOP and
    report the conflict.
-2. Run the RED command (§3). Expected: 14 matched, 14 failed.
-3. Spec delta (§1). Blocked by S1 (where the edit goes) and by S3 and S5 if
-   their rulings change a quoted text.
-4. R7, `read_strings.rs` (§2.1). Blocked by S2 for the elided case only.
-5. R12, `read_strings.rs` (§2.2). Blocked by S4.
-6. R9, `report.rs` escaping (§2.3). Blocked by S5.
-7. R9, `main.rs` JSON warnings in decode and inspect (§2.4). Blocked by S3.
-8. R10 and R11, `main.rs` guards plus three `refusals.toml` entries (§2.5).
+2. Run the RED command (§3). Expected: 15 matched, 15 failed.
+3. Spec delta (§1), in the mt copy (S1, ruled Q0).
+4. R7, `read_strings.rs` (§2.1; S2 ruled QC2).
+5. R12, `read_strings.rs` (§2.2; S4 ruled QC4).
+6. R9, `report.rs` escaping (§2.3; S5 ruled QC5).
+7. R9, `main.rs` JSON warnings in decode and inspect (§2.4; S3 ruled QC3).
+8. R10 and R11, `main.rs` guards plus four `refusals.toml` entries (§2.5).
 9. Gate (§5), captured once to a file.
 
 ## 1. Spec delta (`design/SPEC_mt_v0_1.md`, §10.10b)
@@ -49,8 +52,9 @@ like the `b.` item it extends (7 spaces):
        reads `chunk {n} was present twice; kept the copy needing {k}
        corrections`. Each repaired chunk reads `chunk {n} needed {c} of 4
        corrections`, with `; NO MARGIN LEFT` appended when {c} ≥ 4, in the
-       order of the prose margin report (most corrections first); the JSON
-       omits the prose's before-and-after detail. Control characters
+       order of the prose margin report (most corrections first), after the
+       duplicate entries and, in `decode`, before the stdout-mode headline;
+       the JSON omits the prose's before-and-after detail. Control characters
        U+0000-U+001F inside any JSON string are escaped (RFC 8259 §7).
        **`--json` with `--quiet` is refused** (§10.10, exit 1): one asks for
        the report as a document and the other for no report. **`--quiet` on
@@ -68,20 +72,32 @@ report only; never warnings or refusals").
 The panic is `let prefix = full[..ELIDED_DROP].to_string();` (line 599 on
 `3bfbc98`): byte 11 of the full string is not a char boundary when a non-ASCII
 character sits at char offset 10. Replace the slice with
-`full.get(..ELIDED_DROP)`. When it returns `None`, return
-`Ok(candidates)` unchanged, so the string reaches the codec and is refused as
-unreadable by the existing path. The `full.len() < ELIDED_DROP` refusal above
-it stays as it is.
+`full.get(..ELIDED_DROP)`, and choose `full` differently (architect QC2, S2
+ruled "(c) then (b)"): `full` is the first candidate that starts `mt1` and for
+which `is_char_boundary(ELIDED_DROP)` holds, falling back to the first `mt1`
+candidate. When `full.get(..ELIDED_DROP)` is `None`, return
+`Refusal::new(verb, "§1.1", format!("string {n} could not be read: more than 4
+characters differ from what was engraved"), <mechanism>)` with
+`.with_remedy(<remedy>)`. Here `n` is the 1-based position of `full` in
+`candidates`. The mechanism and remedy are the first paragraph and the remedy
+of the existing §1.1 refusal in `main.rs`, verbatim: "BCH repairs up to 4
+wrong characters per string. Past that it cannot tell which are wrong, so it
+refuses rather than guessing — a wrong guess produces a valid-looking string
+carrying the wrong bytes." / "Re-read that plate from the steel, character by
+character. Confusable pairs to check first: 0/o, 1/l/i, b/6, 2/z, 5/s, 8/b."
+The `full.len() < ELIDED_DROP` refusal above it stays as it is.
 
-Result when the set has no elided line (row 07b), verified with this change as
-a scratch patch on `3bfbc98`:
+Results (architect QC2, probed on 15b5263): on row 07c's input (non-ASCII at
+char 10 of the only full string, the other five elided) all three verbs give
+rc 1, empty stdout, and
 
 ```
-mt decode: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved
+mt {verb}: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved
 ```
 
-exit 1, empty stdout. That is the ruling's existing `string {n} could not be
-read` refusal. When elided lines are present (row 07c), see STOP S2.
+Row 07b (no elided line) gives the same shape with `string 1`. With a second
+intact full line (row 07d), decode takes the main path and gives the same first
+line plus its richer mechanism ("This set has 6 chunks. 5 read cleanly ...").
 
 ### 2.2 R12, `crates/mt-cli/src/read_strings.rs`, step 2b of `read`
 
@@ -101,7 +117,10 @@ autocorrect then repairs the confusable and records its existing
 `Transliteration` note. Verified as a scratch patch: exit 0, stdout equals the
 clean decode, and stderr carries `pos  38   you typed b, mt read it as 6`. The
 "and something else wrong too" refusal still fires when neither path decodes.
-Whether the `mtl` repair itself prints a notice: STOP S4.
+The autocorrect notice prints; the free `mtl`/`mti` repair stays silent, as
+today (architect QC4; R12 amended: "Both notices print: the existing prefix
+notice and the existing autocorrect notice" is struck, because no prefix notice
+exists).
 
 ### 2.3 R9, `crates/mt-cli/src/report.rs`, `render_json` escaping
 
@@ -117,7 +136,7 @@ Replace the `esc` closure (line 432 on `3bfbc98`), which escapes only `\` and
 | U+0009 | `\t` |
 | U+0008 | `\b` |
 | U+000C | `\f` |
-| any other U+0000-U+001F | `\u00XX`, two hex digits (case: STOP S5) |
+| any other U+0000-U+001F | `\u00XX`, two lowercase hex digits (`format!("\\u{:04x}", c as u32)`; architect QC5) |
 | anything else | itself |
 
 ### 2.4 R9, `crates/mt-cli/src/main.rs`, JSON warnings
@@ -135,11 +154,16 @@ ties keep `set.chunks` order), and maps each to
 c.corrected, if c.corrected >= 4 { "; NO MARGIN LEFT" } else { "" })`.
 
 - `decode` (the `if args.json` block, lines 1274-1309 on `3bfbc98`): extend
-  `warnings` with `correction_warnings(&set.chunks)`. Position: STOP S3.
+  `warnings` with `correction_warnings(&set.chunks)`, after the duplicate
+  entries and before the stdout-mode headline (architect QC3).
 - `inspect` (the `warnings` vector, lines 1640-1658 on `3bfbc98`): add the
   duplicate loop, copied from decode verbatim (`chunk {} was present twice;
   kept the copy needing {} corrections`, `d.index + 1`, `d.kept_corrections`),
-  then extend with `correction_warnings(&set.chunks)`. Position: STOP S3.
+  then extend with `correction_warnings(&set.chunks)`, after the duplicate
+  entries (architect QC3).
+- Exact order (QC3): decode `[no-bitcoind?, pos..., unreadable..., duplicates...,
+  corrections..., stdout-mode headline?]`; inspect `[no-bitcoind?, pos...,
+  unreadable..., duplicates..., corrections...]`. No existing entry moves.
 - `inspect_transaction` (raw-transaction subject) has no chunks and does not
   change.
 
@@ -188,9 +212,15 @@ mt verify: REFUSED — §10.10, --quiet has no meaning for `verify`
 `mt inspect --json --quiet` and `mt verify --json --quiet` print the R11 line
 for their verb.
 
-`crates/mt-cli/tests/refusals.toml`: append three entries:
+`crates/mt-cli/tests/refusals.toml`: append four entries (the first is
+architect QC2's, for the new `restore_elided` refusal):
 
 ```
+[[refusal]]
+spec  = "§1.1"
+test  = "bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses"
+check = "src/read_strings.rs::restore_elided"
+
 [[refusal]]
 spec  = "§10.10"
 test  = "bughunt_mt_11b_decode_json_quiet_is_refused"
@@ -220,41 +250,41 @@ on the corpus `even` vector (6 strings).
 RED command (also the GREEN command):
 
 ```
-cargo nextest run --locked --no-fail-fast -E 'test(/^(report::tests::)?bughunt_mt_(07|07b|07c|10|10b|10c|10d|10e|11|11b|r11_.*|12|12b)_/)'
+cargo nextest run --locked --no-fail-fast -E 'test(/^(report::tests::)?bughunt_mt_(07|07b|07c|07d|10|10b|10c|10d|10e|11|11b|r11_.*|12|12b)_/)'
 ```
 
-It matches 14 tests. Observed on unmodified `3bfbc98`: 14 run, 14 failed.
+It matches 15 tests (14 plus the new 07d). Observed on unmodified `3bfbc98`
+(after the architect fold): 15 run, 15 failed, each for the stated reason.
 
 | row | input and expectation after GREEN | failure on unmodified code |
 | --- | --- | --- |
 | `bughunt_mt_07_non_ascii_near_line_start_does_not_panic` (reused) | non-ASCII near the line start; no panic, rc ≠ 101 | panic, rc 101 |
 | `bughunt_mt_07b_non_ascii_cut_point_is_an_unreadable_string` | `MT1aaaaaaaéqqqqqqqqqq` on decode, inspect, verify: rc 1, empty stdout, no `panicked`, first stderr line starts `mt {verb}: REFUSED` and contains `string 1 could not be read` | decode rc 101, panic at `read_strings.rs:599:22` |
-| `bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses` | `even` string 1 with char 10 set to `é`, strings 2-6 elided (`[11..]`), on all three verbs: no panic, rc 1, empty stdout, first line starts `mt {verb}: REFUSED` (exact text: STOP S2) | decode panicked at `read_strings.rs:599:22` |
+| `bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses` | `even` string 1 with char 10 set to `é`, strings 2-6 elided (`[11..]`), on all three verbs: no panic, rc 1, empty stdout, first line equals ``mt {verb}: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved`` (QC2) | decode panicked at `read_strings.rs:599:22` |
+| `bughunt_mt_07d_second_full_line_supplies_the_prefix` (new, QC2) | the 07c input with string 2 kept full, on decode: rc 1, empty stdout, first line equal to 07c's | decode panicked at `read_strings.rs:599:22` |
 | `bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices` (reused) | inspect/decode `--json` carry a duplicate and a correction notice | no such entry |
-| `bughunt_mt_10b_inspect_json_duplicate_text_is_exact` | `even` plus a second copy of string 1, `inspect --json`: `warnings` holds exactly one `chunk 1 was present twice; kept the copy needing 0 corrections` | count 0 (warnings hold only the no-bitcoind entry) |
+| `bughunt_mt_10b_inspect_json_duplicate_text_is_exact` | `even` plus a second copy of string 1, `inspect --json`: `warnings` equals exactly `["no bitcoind reachable: nothing here is confirmed against the chain", "chunk 1 was present twice; kept the copy needing 0 corrections"]` (QC3) | array holds only the no-bitcoind entry |
 | `bughunt_mt_10c_json_correction_text_is_exact` | `even` with string 1 damaged at char 10: the `needed`-entries equal [`chunk 1 needed 1 of 4 corrections`] on `inspect --json` (stdout) and `decode --json` (stderr) | entries `[]` |
-| `bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left` | string 1 damaged at [10], string 2 at [10, 20, 30, 40]: entries equal [`chunk 2 needed 4 of 4 corrections; NO MARGIN LEFT`, `chunk 1 needed 1 of 4 corrections`] on both verbs | entries `[]` |
-| `report::tests::bughunt_mt_10e_render_json_escapes_control_characters` | `render_json` with warning `a\nb\rc\td\u{8}e\u{c}f\u{0}g\u{1}h\u{1f}i"j\k`: output contains the `\n \r \t \b \f` escapes, parses with serde_json, `warnings[0]` round-trips | `\n not escaped` |
+| `bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left` | string 1 damaged at [10], string 2 at [10, 20, 30, 40]. `inspect --json`: `warnings` equals exactly `["no bitcoind reachable: nothing here is confirmed against the chain", "chunk 2 needed 4 of 4 corrections; NO MARGIN LEFT", "chunk 1 needed 1 of 4 corrections"]`. `decode --json` (this input, and again with a duplicate of clean string 3 appended): the `needed` entries equal [chunk 2 ..., chunk 1 ...], every `needed` entry follows every `was present twice` entry (the duplicate is required to appear in the second input), and at most the stdout-mode headline follows the last `needed` entry (QC3) | inspect array holds only the no-bitcoind entry |
+| `report::tests::bughunt_mt_10e_render_json_escapes_control_characters` | `render_json` with warning `a\nb\rc\td\u{8}e\u{c}f\u{0}g\u{1}h\u{1f}i"j\k`: output contains the `\n \r \t \b \f` escapes and `\u0000`, `\u0001`, `\u001f` (lowercase, QC5), parses with serde_json, `warnings[0]` round-trips | `\n not escaped` |
 | `bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json` (reused) | `decode --json --quiet`: not rc 0 with the JSON dropped | rc 0, JSON dropped |
 | `bughunt_mt_11b_decode_json_quiet_is_refused` | rc 1, empty stdout, first line `mt decode: REFUSED — §10.10, --json and --quiet contradict each other`; flattened stderr contains the R10 mechanism and remedy (§2.5) | rc 0 |
 | `bughunt_mt_r11_quiet_on_inspect_and_verify_is_refused` | `--quiet` on inspect and verify: rc 1, empty stdout, first line ``mt {verb}: REFUSED — §10.10, --quiet has no meaning for `{verb}` ``; flattened stderr contains the R11 mechanism and remedy | inspect rc 0 (R11 triage) |
 | `bughunt_mt_r11_json_quiet_on_inspect_and_verify_gets_the_quiet_refusal` | `--json --quiet` on inspect and verify: rc 1, empty stdout, the R11 first line | inspect rc 0 (verify gives the `--json has no meaning` refusal) |
 | `bughunt_mt_12_mtl_prefix_plus_confusable_still_decodes` (reused) | `mtl` prefix plus one `6`→`b`: rc 0, same stdout as clean | refused |
-| `bughunt_mt_12b_mtl_repair_keeps_the_autocorrect_notice` | same input: rc 0, same stdout, stderr contains `you typed b, mt read it as 6` | rc 1, `mt decode: REFUSED — §1.1e, a string begins `mtl` — the `1` of `mt1` misread, and something else wrong too` |
+| `bughunt_mt_12b_mtl_repair_keeps_the_autocorrect_notice` | same input: rc 0, same stdout, stderr contains `you typed b, mt read it as 6` and neither `you typed l` nor `you typed i` (QC4) | rc 1, `mt decode: REFUSED — §1.1e, a string begins `mtl` — the `1` of `mt1` misread, and something else wrong too` |
 
-Rows 10b-10d assert membership and relative order, not the position inside
-`warnings` (S3). Row 10e parses rather than pinning the `\u00XX` case (S5).
-Row 07c pins only `REFUSED`, not the text (S2). Row 12b does not assert an
-`mtl` notice (S4). If a ruling decides one of these, add its assertion to that
-row in the GREEN commit.
+Rows 10b and 10d (inspect) assert the whole `warnings` array; decode rows
+assert relative order (QC3). Row 10e pins lowercase `\u00XX` (QC5).
 
 ## 4. Tests that change
 
-- `crates/mt-cli/tests/bughunt.rs`: 9 new rows and 3 helpers. Committed.
+- `crates/mt-cli/tests/bughunt.rs`: 10 new rows (incl. 07d) and 3 helpers. Committed.
 - `crates/mt-cli/src/report.rs`: 1 new row in the test module. Committed.
-- `crates/mt-cli/tests/refusals.toml`: 3 entries (§2.5), in the GREEN commit.
+- `crates/mt-cli/tests/refusals.toml`: 4 entries (§2.5), in the GREEN commit.
   Until then `./scripts/check-refusal-coverage.sh` fails on the RED commit,
-  naming exactly those three tests (observed).
+  naming the three R10/R11 tests (observed before the fold; the 07c entry
+  is added by the fold and not yet run).
 - No existing test expectation changes: no current test passes `--quiet` to
   `inspect` or `verify` (the `--quiet` uses in `encode.rs`,
   `decode_verify.rs` and `declined_crate_items.rs` are `encode` and
@@ -277,68 +307,34 @@ plus the doc tests. With `$HOME/.cargo/bin` first in PATH and
    bughunt rows of FIXes not yet merged, A and D; none of FIX-B's or FIX-C's)
 6. `cargo test --locked --workspace --doc`
 7. `./scripts/check-refusal-coverage.sh`
-8. `./scripts/mutate-refusals.sh` (now includes the 3 new entries; each must
+8. `./scripts/mutate-refusals.sh` (now includes the 4 new entries; each must
    report its test failing when its guard is neutered)
 9. `./scripts/journeys.sh`
 10. `bash ci/code-docs-check.sh`, `bash ci/docs-only.test.sh`,
     `bash ci/code-docs-check.test.sh`
-11. `./scripts/check-provenance.sh` (see S1: an mt-only spec edit makes it
-    report a mismatch for `design/SPEC_mt_v0_1.md`)
-12. The §3 command: 14 matched, 14 passed. Quote the count in the GREEN commit
+11. `./scripts/check-provenance.sh` (Q0: an mt-only spec edit makes it
+    report a mismatch for `design/SPEC_mt_v0_1.md`; expected, sync owed by F-321)
+12. The §3 command: 15 matched, 15 passed. Quote the count in the GREEN commit
     message.
 
 Then `coordinator/scripts/mutation-gate.sh <worktree> <FIX-B merge head>`
 before review (production Rust changed). Review: class A (printed text).
 
-## STOP S1: which copy of the spec the delta edits
+## STOPs: all ruled
 
-`design/PROVENANCE.md` says the spec is COPIED from mnemonic-engrave and "not
-edited in this repo", and `scripts/check-provenance.sh` compares the two
-locally. The grade (§3) says every FIX is "mt repo only" and puts the FIX-C
-delta in §10.10b. Same question as FIX-B's S2; one ruling should cover both.
-Options: (a) edit the mt copy and file a follow-up to carry it to engrave;
-(b) edit engrave, re-sync, update the PROVENANCE pin. Blocks step 3.
+Source: `coordinator/reports/architect-bughunt-fixdocs.md`.
 
-## STOP S2: R7's refusal when elided lines are present
-
-R7 rules the existing `string {n} could not be read` refusal. With §2.1
-applied as a scratch patch, row 07c's input (non-ASCII at char 10 of the only
-full string, the other five elided) gives instead:
-
-```
-mt decode: REFUSED — §1.1e, 1 string is the wrong length for this set (most are 76)
-```
-
-because no prefix is restored and the elided lines stay short. It refuses
-(exit 1, no panic), but not with the ruled text. Options: (a) accept that
-§1.1e refusal for this case; (b) return the §1.1 `string {n} could not be
-read` refusal from `restore_elided` itself when the cut point is not a char
-boundary (it needs the reason text decided); (c) restore from another full
-`mt1` line if one exists, else (a) or (b). Blocks the elided case of step 4
-and the exact assertion in row 07c.
-
-## STOP S3: where the new entries sit in `warnings`
-
-R9 orders the correction entries among themselves but not against the other
-entries. decode today pushes: no-bitcoind, transliterations, unreadable,
-duplicates, stdout-mode headline. Recommended: duplicates, then corrections,
-both before the stdout-mode headline, in both verbs (inspect has no headline).
-Blocks step 7.
-
-## STOP S4: R12's "existing prefix notice" does not exist
-
-R12 says "Both notices print: the existing prefix notice and the existing
-autocorrect notice". The step-2b `mtl`/`mti` repair is silent today; there is
-no prefix notice to print (no `Transliteration` is recorded for it, and no
-other text names it). Options: (a) keep the prefix repair silent, so only the
-autocorrect notice prints (what fix-12 does); (b) record
-`Transliteration { position: 3, from: 'l', to: '1' }` (or `'i'`) for it, so it
-prints in the existing format `pos 3: you typed l, mt read it as 1`. (b)
-changes printed text on the plain `mtl` path too, which the ruling says
-should have no new text. Blocks step 5.
-
-## STOP S5: hex case of the `\u00XX` escape
-
-RFC 8259 allows either case. serde_json writes lowercase (`\u001f`).
-Recommended: lowercase. Blocks step 6 only for the one-line mapping; no row
-depends on it.
+- **S1 (which spec copy): RULED Q0.** Edit the mt copy `design/SPEC_mt_v0_1.md`
+  (§10.10b here); engrave does not get the edit now. The sync is owed by
+  engrave FOLLOWUPS F-321 (the coordinator appends "bughunt FIX-A..C add
+  mt-spec text at §8.6, §1.1, §10.10; carry them in the sync."). No PROVENANCE
+  edit. The commit message carries `Spec copy: mt is authoritative; engrave
+  sync owed by F-321.`
+- **S2 (R7 with elided lines): RULED QC2**, option (c) then (b); text in §2.1,
+  rows 07c and 07d, and a `refusals.toml` entry (below).
+- **S3 (order inside `warnings`): RULED QC3**, the recommendation; §2.4 and
+  rows 10b, 10d.
+- **S4 (R12's "existing prefix notice"): RULED QC4**, option (a); §2.2, row 12b.
+- **S5 (`\u00XX` case): RULED QC5**, lowercase; §2.3, row 10e.
+- **C M1 (R11 wording on verify): graded Minor, not folded.** R11's text
+  stands; FOLLOWUPS `deferred-minor` (the coordinator files it).

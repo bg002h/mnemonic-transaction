@@ -1058,7 +1058,9 @@ fn bughunt_mt_07b_non_ascii_cut_point_is_an_unreadable_string() {
 
 /// R7 with elided lines present: the first line (full form) has a non-ASCII
 /// character at byte 10 and the five elided lines need its first 11 bytes as
-/// their prefix. No panic; a refusal, exit 1. The exact refusal is STOP S2.
+/// their prefix. No panic; a refusal, exit 1, with R7's existing `string {n}
+/// could not be read` text (architect QC2: `n` is the 1-based position of the
+/// prefix line).
 #[test]
 fn bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses() {
     let st = even_strings();
@@ -1077,14 +1079,40 @@ fn bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses() {
             out.status.code()
         );
         assert!(out.stdout.is_empty(), "{verb}: stdout not empty");
-        assert!(
-            e.lines()
-                .next()
-                .unwrap_or("")
-                .starts_with(&format!("mt {verb}: REFUSED")),
-            "{verb}: not a refusal:\n{e}"
+        assert_eq!(
+            e.lines().next().unwrap_or(""),
+            format!(
+                "mt {verb}: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved"
+            ),
+            "{verb}: wrong first line:\n{e}"
         );
     }
+}
+
+/// R7 (architect QC2, option c): with a second intact full line, the prefix is
+/// taken from it, the set reads through the main path, and the unreadable
+/// string 1 is refused with the same first line (richer mechanism follows).
+#[test]
+fn bughunt_mt_07d_second_full_line_supplies_the_prefix() {
+    let st = even_strings();
+    let mut c: Vec<char> = st[0].chars().collect();
+    c[10] = '\u{e9}';
+    let mut lines = vec![c.into_iter().collect::<String>(), st[1].clone()];
+    lines.extend(st[2..].iter().map(|x| x[11..].to_string()));
+    let out = run_in("decode", &[], &lines.join("\n"));
+    let e = s(&out.stderr);
+    assert!(!e.contains("panicked"), "decode panicked:\n{e}");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "rc {:?}\n{e}",
+        out.status.code()
+    );
+    assert!(out.stdout.is_empty(), "stdout not empty");
+    assert_eq!(
+        e.lines().next().unwrap_or(""),
+        "mt decode: REFUSED — §1.1, string 1 could not be read: more than 4 characters differ from what was engraved"
+    );
 }
 
 /// R9: the duplicate-chunk notice in `inspect --json` is decode's existing text.
@@ -1104,9 +1132,12 @@ fn bughunt_mt_10b_inspect_json_duplicate_text_is_exact() {
         .map(|x| x.as_str().unwrap())
         .collect();
     assert_eq!(
-        w.iter().filter(|x| **x == want).count(),
-        1,
-        "inspect --json warnings = {w:?}"
+        w,
+        vec![
+            "no bitcoind reachable: nothing here is confirmed against the chain",
+            want
+        ],
+        "inspect --json warnings"
     );
 }
 
@@ -1155,7 +1186,10 @@ fn bughunt_mt_10c_json_correction_text_is_exact() {
 }
 
 /// R9: at the budget the entry carries `; NO MARGIN LEFT`, and entries follow
-/// the prose margin report's order (most corrections first).
+/// the prose margin report's order (most corrections first). Architect QC3:
+/// inspect's whole array is `[no-bitcoind, corrections...]`; in decode every
+/// correction entry follows every duplicate entry and precedes the stdout-mode
+/// headline when there is one.
 #[test]
 fn bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left() {
     let mut bad = even_strings();
@@ -1165,20 +1199,37 @@ fn bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left() {
         "chunk 2 needed 4 of 4 corrections; NO MARGIN LEFT".to_string(),
         "chunk 1 needed 1 of 4 corrections".to_string(),
     ];
-    for verb in ["inspect", "decode"] {
-        let o = run_in(verb, &["--json"], &bad.join("\n"));
-        assert!(o.status.success(), "{verb}: {}", s(&o.stderr));
-        let doc = if verb == "inspect" {
-            s(&o.stdout)
+    let is_needed = |x: &String| x.starts_with("chunk ") && x.contains(" corrections");
+    let o = run_in("inspect", &["--json"], &bad.join("\n"));
+    assert!(o.status.success(), "inspect: {}", s(&o.stderr));
+    assert_eq!(
+        exact_warnings(&s(&o.stdout)),
+        vec![
+            "no bitcoind reachable: nothing here is confirmed against the chain".to_string(),
+            want[0].clone(),
+            want[1].clone()
+        ],
+        "inspect --json warnings"
+    );
+    // decode, with a duplicate of the clean chunk 3 added so both kinds appear
+    let mut dup = bad.clone();
+    dup.push(even_strings()[2].clone());
+    for (k, input) in [&bad, &dup].into_iter().enumerate() {
+        let o = run_in("decode", &["--json"], &input.join("\n"));
+        assert!(o.status.success(), "decode: {}", s(&o.stderr));
+        let w = exact_warnings(&s(&o.stderr));
+        let hits: Vec<String> = w.iter().filter(|x| is_needed(x)).cloned().collect();
+        assert_eq!(hits, want, "decode --json correction entries: {w:?}");
+        let first = w.iter().position(is_needed).unwrap();
+        let last = w.iter().rposition(is_needed).unwrap();
+        if let Some(d) = w.iter().rposition(|x| x.contains("was present twice")) {
+            assert!(d < first, "a duplicate entry follows a correction: {w:?}");
         } else {
-            s(&o.stderr)
-        };
-        let w = exact_warnings(&doc);
-        let hits: Vec<String> = w
-            .into_iter()
-            .filter(|x| x.starts_with("chunk ") && x.contains(" corrections"))
-            .collect();
-        assert_eq!(hits, want, "{verb} --json correction entries");
+            assert_eq!(k, 0, "no duplicate entry: {w:?}");
+        }
+        if last + 1 < w.len() {
+            assert_eq!(last + 2, w.len(), "more than the headline follows: {w:?}");
+        }
     }
 }
 
@@ -1288,5 +1339,10 @@ fn bughunt_mt_12b_mtl_repair_keeps_the_autocorrect_notice() {
     assert!(
         e.contains("you typed b, mt read it as 6"),
         "the autocorrect notice is missing:\n{e}"
+    );
+    // Architect QC4: the free `mtl` repair stays silent.
+    assert!(
+        !e.contains("you typed l") && !e.contains("you typed i"),
+        "the mtl repair printed a notice:\n{e}"
     );
 }

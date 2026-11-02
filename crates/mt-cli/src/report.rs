@@ -746,6 +746,10 @@ mod tests {
         for esc in ["\\n", "\\r", "\\t", "\\b", "\\f"] {
             assert!(out.contains(esc), "{esc} not escaped:\n{out}");
         }
+        // Architect QC5: `\u00XX` is lowercase hex.
+        for esc in ["\\u0000", "\\u0001", "\\u001f"] {
+            assert!(out.contains(esc), "{esc} not escaped:\n{out}");
+        }
         let doc: serde_json::Value = serde_json::from_str(&out)
             .unwrap_or_else(|e| panic!("render_json emitted invalid JSON ({e}):\n{out:?}"));
         assert_eq!(doc["warnings"][0].as_str(), Some(w.as_str()));
