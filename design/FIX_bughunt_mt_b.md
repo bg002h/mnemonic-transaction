@@ -6,15 +6,15 @@ Small-fix track. Repo: mnemonic-transaction only. Branch `fix/bughunt-b`, base
 CONFIRMED). No new flag, type or command; no new printed text (the one new
 string is a codec `Display` that reaches the CLI through an existing refusal).
 
-Two STOP sections (S1, S2) are open at the end. S2 blocks step 1 (the spec
-edit) only; steps 2-5 do not depend on it.
+Two STOP sections (S1, S2) sit at the end; both are ruled (architect report
+`reports/architect-bughunt-fixdocs.md`, sections Q0 and QB1). No STOP is open.
 
 ## Build order
 
 1. FIX-B builds first. FIX-C (reader, JSON, flags) touches the same reader
    error mapping; FIX-C's base is FIX-B's merged head on master, not `3bfbc98`.
 2. Within FIX-B, in this order:
-   1. Spec delta (after S2 is ruled).
+   1. Spec delta (mt copy; S2 ruled, Q0).
    2. RED rows: already committed on this branch (this document's commit).
       Run the RED command below and confirm 7 matched, 7 failed.
    3. R8: `invariant_prefix` guard.
@@ -24,7 +24,9 @@ edit) only; steps 2-5 do not depend on it.
 
 ## 1. Spec delta (`design/SPEC_mt_v0_1.md`, §1.1 `mt verify` checklist)
 
-Where the edit lands is S2. The text is decided. At the current mt copy, lines
+The edit lands in the mt copy `design/SPEC_mt_v0_1.md` (S2, ruled Q0). Engrave
+does not get it now; the sync is owed by engrave F-321. The text is decided. At
+the current mt copy, lines
 221-223, replace:
 
 ```
@@ -248,21 +250,32 @@ folding before the non-ASCII check). Read only; no test run in those repos.
   (for example U+0171 becomes 0x71, `q`) and can land in the alphabet. Not
   verified by a test; for the coordinator to triage against md.
 
-## STOP S1: non-ASCII in the HRP, or no separator
+## STOP S1: non-ASCII in the HRP, or no separator (RULED, architect QB1)
 
 R6 says "any non-ASCII character" and gives `position` as the data-part
 offset. A non-ASCII character in the HRP, or a string with no `1` separator,
-has no data-part offset. As written (§2), the early scan covers only the data
-part; such strings keep today's result, `InvalidHrp`, which still refuses
-(no non-ASCII character lowercases to `m`, `t` or `1`, so it cannot forge the
-HRP). Recommended: keep `InvalidHrp`. Needs a ruling to confirm.
+has no data-part offset.
 
-## STOP S2: which copy of the spec the delta edits
+Ruling (QB1): confirmed, keep `InvalidHrp`. A Unicode scan of all code points
+finds only U+0130 (lowercases to "i" plus a combining dot) and U+212A (to "k")
+whose lowercase contains ASCII; neither yields `m`, `t` or `1`, so no
+non-ASCII string can spell `mt1` after case folding. A missing separator
+already returns `InvalidHrp`: it fails closed and is today's behaviour. No new
+text, no RED row change; the early scan in section 2 stays data-part only.
 
-mt's `CLAUDE.md` and `design/PROVENANCE.md` say the spec is a copy owned by
-mnemonic-engrave: change it there, then re-sync. The grade (§3) says every
-FIX is "mt repo only". The mt copy has already drifted from mnemonic-engrave
-(`diff` of the two files: 152 lines at engrave `049f1340`), so a re-sync would
-also carry or overwrite unrelated changes. Options: (a) edit the mt copy only,
-as earlier phases did, and file a follow-up to carry it to engrave; (b) edit
-engrave first and re-sync. Needs a ruling; step 2.1 waits on it.
+## STOP S2: which copy of the spec the delta edits (RULED, architect Q0)
+
+Ruling (Q0): edit the mt copy `design/SPEC_mt_v0_1.md` (section 1.1) in this
+repo. Engrave does not get the edit now; the sync is already owed by engrave
+FOLLOWUPS F-321 (OPEN), which rules the `mnemonic-transaction` copy
+authoritative. No PROVENANCE edit. The coordinator appends to F-321 that
+FIX-A..C add mt-spec text at section 8.6, 1.1 and 10.10. Whether one repo stops
+carrying a copy is F-321's own open half, not decided here.
+
+## Commit message (fix commit)
+
+The fix commit message carries this line verbatim:
+
+```
+Spec copy: mt is authoritative; engrave sync owed by F-321.
+```
