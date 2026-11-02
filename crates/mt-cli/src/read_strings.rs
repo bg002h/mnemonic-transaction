@@ -110,7 +110,11 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
         if c.len() > 3 && (c.starts_with("mtl") || c.starts_with("mti")) {
             let mut fixed = c.clone();
             fixed.replace_range(2..3, "1");
-            if pipeline::decode_chunk(&fixed, None).is_ok() {
+            if pipeline::decode_chunk(&fixed, None).is_ok()
+                || positional_autocorrect(&fixed)
+                    .iter()
+                    .any(|x| pipeline::decode_chunk(x, None).is_ok())
+            {
                 *c = fixed;
             }
         }
