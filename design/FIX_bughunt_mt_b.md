@@ -16,7 +16,7 @@ Two STOP sections (S1, S2) sit at the end; both are ruled (architect report
 2. Within FIX-B, in this order:
    1. Spec delta (mt copy; S2 ruled, Q0).
    2. RED rows: already committed on this branch (this document's commit).
-      Run the RED command below and confirm 7 matched, 7 failed.
+      Run the RED command below and confirm 8 matched, 8 failed.
    3. R8: `invariant_prefix` guard.
    4. R4: `Error::CountMismatch` and its check.
    5. R6: early non-ASCII scan in `decode_string`.
@@ -67,7 +67,7 @@ Immediately after `let symbols = to_symbols(s)?;` insert:
 ```
 
 These are the same constants and fields `decode_chunk` uses (11, 13, 24). No
-new text.
+new text. Observable effect: when the first input string is unreadable and has 8..23 data symbols while the set still decodes, the `mt1 SET` row drops its `all begin mt1…` clause and `--json` `set_prefix` becomes null (it was the damaged string's first 8 symbols). No test pins this; it is accepted.
 
 ### R4, `crates/mt-codec/src/error.rs`
 
@@ -156,18 +156,19 @@ rulings fix.
 | `bughunt_mt_06_kelvin_is_invalid_char_at_data_offset` | `crates/mt-codec/tests/bughunt.rs` | new (R6) | fixture's first data-part `k` is at byte 25; error is `InvalidChar { ch: '\u{212A}', position: 22 }`, Display `character '\u{212A}' at data-part offset 22 is not in the bech32 alphabet` |
 | `bughunt_mt_08_invariant_prefix_short_input_does_not_panic` | `crates/mt-codec/tests/bughunt.rs` | reused | `invariant_prefix` on short input does not panic |
 | `bughunt_mt_08_invariant_prefix_short_input_is_too_short` | `crates/mt-codec/tests/bughunt.rs` | new (R8) | `invariant_prefix("mt1qq")` returns `Err(TooShort { len: 2, header: 11, checksum: 13, min: 24 })` |
+| `bughunt_mt_08_ten_symbol_string_is_too_short` | `crates/mt-codec/tests/bughunt.rs` | new (R8, review M2) | `invariant_prefix("mt1qqqqqqqqqq")` returns `Err(TooShort { len: 10, header: 11, checksum: 13, min: 24 })` (pins the 24 threshold) |
 
 Command (RED before step 2.3, GREEN after step 2.5):
 
 ```
-PATH=$HOME/.cargo/bin:$PATH cargo nextest run --locked --no-fail-fast -E 'test(/(^|::)(bughunt_mt_04_decode_rejects_mixed_count_chunks|bughunt_mt_04_count_mismatch_variant_and_text|bughunt_mt_04_cli_count_mismatch_refusal|bughunt_mt_06_kelvin_sign_is_not_k|bughunt_mt_06_kelvin_is_invalid_char_at_data_offset|bughunt_mt_08_invariant_prefix_short_input_does_not_panic|bughunt_mt_08_invariant_prefix_short_input_is_too_short)$/)'
+PATH=$HOME/.cargo/bin:$PATH cargo nextest run --locked --no-fail-fast -E 'test(/(^|::)(bughunt_mt_04_decode_rejects_mixed_count_chunks|bughunt_mt_04_count_mismatch_variant_and_text|bughunt_mt_04_cli_count_mismatch_refusal|bughunt_mt_06_kelvin_sign_is_not_k|bughunt_mt_06_kelvin_is_invalid_char_at_data_offset|bughunt_mt_08_invariant_prefix_short_input_does_not_panic|bughunt_mt_08_invariant_prefix_short_input_is_too_short|bughunt_mt_08_ten_symbol_string_is_too_short)$/)'
 ```
 
-Expected matched count: **7** (6 in `mt-codec::bughunt`, 1 in `mt-cli::bughunt`).
+Expected matched count: **8** (7 in `mt-codec::bughunt`, 1 in `mt-cli::bughunt`).
 A short or empty count is a FAIL.
 
 RED, observed on unmodified code (`3bfbc98` plus this commit's tests), summary
-`7 tests run: 0 passed, 7 failed, 284 skipped`, each for the stated reason:
+`8 tests run: 0 passed, 8 failed, 284 skipped` (7 before review M2 added the ten-symbol row), each for the stated reason:
 
 - `..._04_count_mismatch_variant_and_text`: `left: None`, `right:
   Some("CountMismatch { expected: 2, found: 3, index: 2 }")` (the set is
@@ -188,7 +189,7 @@ RED, observed on unmodified code (`3bfbc98` plus this commit's tests), summary
   `_08_..._does_not_panic` (panic at pipeline.rs:367, bughunt.rs:40).
 
 GREEN was proven reachable with the code in §2 applied as a scratch change
-(reverted; not committed): all 7 rows pass, and `fmt`, `clippy`,
+(reverted; not committed): all 7 original rows pass, and `fmt`, `clippy`,
 `check-refusal-coverage.sh`, `mutate-refusals.sh` and `journeys.sh` pass. The
 only failing tests in the full suite were the 8 bughunt rows owned by FIX-A,
 FIX-C and FIX-D (#01, 02, 03, 05, 07, 10, 11, 12).
@@ -209,7 +210,7 @@ FIX-C and FIX-D (#01, 02, 03, 05, 07, 10, 11, 12).
 - No existing test changes expectation (the scratch GREEN run showed no other
   regressions).
 - README, CHANGELOG, `--help`: no change (O1 lockstep target is mt's own
-  `--help`, README and spec; no flag or printed CLI text changes here).
+  `--help`, README and spec; no flag changes; the one printed-text change is R8's above).
 
 ## 5. Gate (run once to a file, then grep)
 
@@ -227,7 +228,7 @@ The repo has no CLAUDE.md phase-close list; its gate is CI's job
 6. `./scripts/check-refusal-coverage.sh`
 7. `./scripts/mutate-refusals.sh`
 8. `./scripts/journeys.sh`
-9. The RED command of §3: 7 matched, 7 passed. Quote the count in the GREEN
+9. The RED command of §3: 8 matched, 8 passed. Quote the count in the GREEN
    commit message.
 
 Then `coordinator/scripts/mutation-gate.sh <worktree> 3bfbc98` before review

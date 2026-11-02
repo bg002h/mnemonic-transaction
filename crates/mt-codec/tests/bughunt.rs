@@ -103,3 +103,17 @@ fn bughunt_mt_08_invariant_prefix_short_input_is_too_short() {
         }))
     );
 }
+
+/// FIX-B R8 (review M2): the guard threshold is 24 symbols, not 8.
+#[test]
+fn bughunt_mt_08_ten_symbol_string_is_too_short() {
+    assert_eq!(
+        mt_codec::string_layer::invariant_prefix("mt1qqqqqqqqqq"),
+        Err(Error::TooShort {
+            len: 10,
+            header: 11,
+            checksum: 13,
+            min: 24
+        })
+    );
+}
