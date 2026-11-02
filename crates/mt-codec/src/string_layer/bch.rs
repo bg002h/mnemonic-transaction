@@ -679,6 +679,15 @@ impl DecodedString {
 pub fn decode_string(s: &str) -> Result<DecodedString, crate::Error> {
     use crate::Error;
 
+    if let Some(sep) = s.rfind(SEPARATOR) {
+        if let Some((i, ch)) = s[sep + 1..]
+            .chars()
+            .enumerate()
+            .find(|(_, c)| !c.is_ascii())
+        {
+            return Err(Error::InvalidChar { ch, position: i });
+        }
+    }
     if matches!(case_check(s), CaseStatus::Mixed) {
         return Err(Error::MixedCase);
     }
