@@ -1232,6 +1232,11 @@ pub fn satisfaction_elements(input: &bitcoin::TxIn) -> Vec<(Vec<u8>, SigCtx)> {
         if is_taproot_script_path(&w) {
             w.pop(); // control block
             w.pop(); // leaf script
+        } else if ctx == SigCtx::Ecdsa {
+            // BIP-141: the last item of a v0 witness with two or more items
+            // is its witnessScript (P2WSH) or public key (P2WPKH), never a
+            // signature.
+            w.pop();
         }
         v.extend(w.into_iter().map(|e| (e, ctx)));
     }

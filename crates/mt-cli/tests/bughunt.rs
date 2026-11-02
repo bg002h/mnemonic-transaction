@@ -124,7 +124,6 @@ fn encode_psbt(b64: &str) -> std::process::Output {
 /// A taproot script-path spend whose leaf needs no stack items has witness
 /// `[script, control block]`. It carries no signature and must be refused.
 #[test]
-#[ignore = "RED row owed to FIX-A; its build removes this"]
 fn bughunt_mt_01_keyless_taproot_scriptpath_not_signed() {
     let mut spk = vec![0x51, 0x20];
     spk.extend([0x44u8; 32]);
@@ -145,7 +144,6 @@ fn bughunt_mt_01_keyless_taproot_scriptpath_not_signed() {
 /// A 64-byte DER+sighash ECDSA signature ending 0x02 (SIGHASH_NONE) must be
 /// classed as ECDSA and refused by the SIGHASH_ALL rule.
 #[test]
-#[ignore = "RED row owed to FIX-A; its build removes this"]
 fn bughunt_mt_02_64_byte_ecdsa_sighash_none_refused() {
     let mut sig = vec![0x30, 0x3d, 0x02, 0x20];
     sig.extend([0x11u8; 32]);
@@ -176,7 +174,6 @@ fn bughunt_mt_02_64_byte_ecdsa_sighash_none_refused() {
 /// A finalized 2-of-3 P2SH multisig scriptSig `OP_0 <sig> <sig> <redeem>` is
 /// validly signed; encode must not refuse it as unsigned.
 #[test]
-#[ignore = "RED row owed to FIX-A; its build removes this"]
 fn bughunt_mt_03_p2sh_multisig_op0_dummy_counts_signatures() {
     use bitcoin::opcodes::all::{OP_CHECKMULTISIG, OP_PUSHBYTES_0, OP_PUSHNUM_2, OP_PUSHNUM_3};
     let mut sig = vec![0x30, 0x44, 0x02, 0x20];
@@ -771,5 +768,256 @@ fn bughunt_mt_04_cli_count_mismatch_refusal() {
             err.contains("chunk set size mismatch: expected 2 chunks, chunk 2 carries 3"),
             "{verb}: {err}"
         );
+    }
+}
+
+// ---- whole-diff s1: I1 RED row and survivor-killing rows -----------------------
+
+/// I1: a keyless v0 P2WSH `[32 bytes, 64-byte witnessScript]` whose script is
+/// DER-shaped (`30 3d`, 48-byte push, OP_2DROP, OP_NOPs, `01 01`) is not a
+/// signature: BIP-141's last witness item is the witnessScript.
+#[test]
+fn bughunt_mt_01k_p2wsh_keyless_der_shaped_64_byte_script_refused() {
+    let mut ws = vec![0x30u8, 0x3d];
+    ws.extend([0x99u8; 47]);
+    ws.push(0x6d);
+    while ws.len() < 62 {
+        ws.push(0x61);
+    }
+    ws.extend([0x01, 0x01]);
+    assert_eq!(ws.len(), 64);
+    let mut spk = vec![0x00, 0x20];
+    spk.extend([0x44u8; 32]);
+    let w = bitcoin::Witness::from_slice(&[vec![0x77u8; 32], ws]);
+    let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
+/// Survivor validate.rs:1186 (honest side): a key-path 65-byte Schnorr
+/// signature with explicit SIGHASH_ALL encodes.
+#[test]
+fn bughunt_mt_01l_taproot_keypath_65_byte_schnorr_all_encodes() {
+    let mut sig = vec![0x5au8; 64];
+    sig.push(0x01);
+    let out = encode_psbt(&finalized(
+        p2tr_spk(),
+        None,
+        Some(bitcoin::Witness::from_slice(&[sig])),
+    ));
+    assert!(
+        out.status.success(),
+        "honest 65-byte key path refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// Survivor validate.rs:1186 (fail-open side): a script path whose second
+/// signature is 65-byte Schnorr SIGHASH_NONE is refused by its sighash.
+#[test]
+fn bughunt_mt_01m_taproot_scriptpath_65_byte_none_refused() {
+    let mut none = vec![0x5bu8; 64];
+    none.push(0x02);
+    let w =
+        bitcoin::Witness::from_slice(&[vec![0x5au8; 64], none, vec![0x51u8], control_block_65()]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
+    );
+}
+
+/// Survivor validate.rs:1265 (R3, OP_1NEGATE): P2SH
+/// `OP_1NEGATE <sig ALL> <redeem: <pk> CHECKSIGVERIFY OP_1NEGATE OP_EQUAL>`
+/// counts the signature after the OP_1NEGATE push and encodes.
+#[test]
+fn bughunt_mt_03f_op1negate_before_sig_counts() {
+    let mut redeem = vec![0x21u8, 0x02];
+    redeem.extend([0x30u8; 32]);
+    redeem.extend([0xad, 0x4f, 0x87]);
+    let mut sig = vec![0x30u8, 68];
+    sig.resize(70, 0x22);
+    sig.push(0x01);
+    let mut ss = vec![0x4fu8, sig.len() as u8];
+    ss.extend(&sig);
+    ss.push(redeem.len() as u8);
+    ss.extend(&redeem);
+    let mut spk = vec![0xa9u8, 0x14];
+    spk.extend([0x44u8; 20]);
+    spk.push(0x87);
+    let out = encode_psbt(&finalized(
+        bitcoin::ScriptBuf::from(spk),
+        Some(bitcoin::ScriptBuf::from(ss)),
+        None,
+    ));
+    assert!(
+        out.status.success(),
+        "OP_1NEGATE-led P2SH refused:\n{}",
+        s(&out.stderr)
+    );
+}
+
+/// Survivor validate.rs:1264 (PUSHDATA4 guard): a scriptSig that is a
+/// truncated `OP_PUSHDATA4` is refused, not a panic.
+#[test]
+fn bughunt_mt_03g_truncated_pushdata4_refused() {
+    let mut spk = vec![0xa9u8, 0x14];
+    spk.extend([0x44u8; 20]);
+    spk.push(0x87);
+    let out = encode_psbt(&finalized(
+        bitcoin::ScriptBuf::from(spk),
+        Some(bitcoin::ScriptBuf::from(vec![0x4eu8, 0x00])),
+        None,
+    ));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
+    );
+}
+
+// ---- s2 killing rows ---------------------------------------------------------
+
+const NOSIG: &str = "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature";
+
+fn p2pkh_spk() -> bitcoin::ScriptBuf {
+    bitcoin::ScriptBuf::new_p2pkh(
+        &<bitcoin::PubkeyHash as bitcoin::hashes::Hash>::from_byte_array([0x44; 20]),
+    )
+}
+
+fn schnorr65(first: u8, flag: u8) -> Vec<u8> {
+    let mut v = vec![first];
+    v.extend([0x5au8; 63]);
+    v.push(flag);
+    v
+}
+
+#[test]
+fn s2_a_taproot_65_byte_sighash_none_refused() {
+    let out = encode_psbt(&finalized(
+        p2tr_spk(),
+        None,
+        Some(bitcoin::Witness::from_slice(&[schnorr65(0x5a, 0x02)])),
+    ));
+    assert_refused_with(
+        &out,
+        "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
+    );
+}
+
+#[test]
+fn s2_a2_taproot_65_byte_sighash_all_encodes() {
+    let out = encode_psbt(&finalized(
+        p2tr_spk(),
+        None,
+        Some(bitcoin::Witness::from_slice(&[schnorr65(0x5a, 0x01)])),
+    ));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_b_op1negate_before_sig_encodes() {
+    let sig = ecdsa_sig(0x44, 0x01);
+    let mut ss = vec![0x4fu8, sig.len() as u8];
+    ss.extend(&sig);
+    ss.push(33);
+    ss.extend(pk33());
+    let out = encode_psbt(&finalized(
+        p2pkh_spk(),
+        Some(bitcoin::ScriptBuf::from(ss)),
+        None,
+    ));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_b2_op16_before_sig_encodes() {
+    let sig = ecdsa_sig(0x44, 0x01);
+    let mut ss = vec![0x60u8, sig.len() as u8];
+    ss.extend(&sig);
+    ss.push(33);
+    ss.extend(pk33());
+    let out = encode_psbt(&finalized(
+        p2pkh_spk(),
+        Some(bitcoin::ScriptBuf::from(ss)),
+        None,
+    ));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_b3_op_nop_ends_walk_before_sig() {
+    let sig = ecdsa_sig(0x44, 0x01);
+    let mut ss = vec![0x61u8, sig.len() as u8];
+    ss.extend(&sig);
+    let out = encode_psbt(&finalized(
+        p2pkh_spk(),
+        Some(bitcoin::ScriptBuf::from(ss)),
+        None,
+    ));
+    assert_refused_with(&out, NOSIG);
+}
+
+#[test]
+fn s2_c_truncated_pushdata_refuses_not_panics() {
+    for ss in [vec![0x4eu8, 0x01], vec![0x4d, 0x01], vec![0x4c]] {
+        let out = encode_psbt(&finalized(
+            p2pkh_spk(),
+            Some(bitcoin::ScriptBuf::from(ss.clone())),
+            None,
+        ));
+        assert_refused_with(&out, NOSIG);
+    }
+}
+
+#[test]
+fn s2_d_annex_signed_scriptpath_encodes() {
+    let w = bitcoin::Witness::from_slice(&[
+        vec![0x5au8; 64],
+        vec![0x51u8],
+        control_block_65(),
+        vec![0x50u8, 0xaa],
+    ]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_d2_annex_keypath_encodes() {
+    let w = bitcoin::Witness::from_slice(&[vec![0x5au8; 64], vec![0x50u8, 0xaa]]);
+    let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_d3_keypath_sig_starting_0x50_is_not_annex() {
+    let out = encode_psbt(&finalized(
+        p2tr_spk(),
+        None,
+        Some(bitcoin::Witness::from_slice(&[vec![0x50u8; 64]])),
+    ));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_e_keypath_65_byte_sig_starting_c0_is_not_scriptpath() {
+    let out = encode_psbt(&finalized(
+        p2tr_spk(),
+        None,
+        Some(bitcoin::Witness::from_slice(&[schnorr65(0xc0, 0x01)])),
+    ));
+    assert!(out.status.success(), "{}", s(&out.stderr));
+}
+
+#[test]
+fn s2_f_keyless_scriptpath_with_64_and_65_byte_leaf_refused() {
+    for n in [64usize, 65] {
+        let mut leaf = vec![0x61u8; n];
+        leaf[n - 1] = 0x51;
+        let w = bitcoin::Witness::from_slice(&[leaf, control_block_65()]);
+        let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
+        assert_refused_with(&out, NOSIG);
     }
 }

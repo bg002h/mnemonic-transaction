@@ -3061,7 +3061,8 @@ exactly as permanent, as a machine-engraved one.
       > `scriptSig` only a DER ECDSA element `30 <len>` of 9 to 73 bytes
       > including its trailing sighash byte counts, so a 64-byte `30 3d` ECDSA
       > signature is ECDSA and a 64- or 65-byte witnessScript or public key is
-      > not a signature. A one-element segwit v0 witness reads as a taproot
+      > not a signature. The last element of any other witness is its
+      > witnessScript or public key (BIP-141) and is never counted. A one-element segwit v0 witness reads as a taproot
       > key path; without the spent output `mt` cannot tell them apart. The
       > walk over a `scriptSig` treats every push opcode as a push: `OP_0` (an
       > empty element), direct pushes `0x01`-`0x4b`, `OP_PUSHDATA1/2/4`, and

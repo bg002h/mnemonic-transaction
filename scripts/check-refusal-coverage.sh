@@ -87,6 +87,14 @@ EXEMPT = {
         "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
     "bughunt_mt_03b_p2sh_op0_sighash_none_still_refused":
         "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01k_p2wsh_keyless_der_shaped_64_byte_script_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01m_taproot_scriptpath_65_byte_none_refused":
+        "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
+    "bughunt_mt_03g_truncated_pushdata4_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "s2_a_taproot_65_byte_sighash_none_refused":
+        "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
 }
 
 problems = []
