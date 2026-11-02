@@ -1250,6 +1250,7 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 }
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    json_quiet_guard(args.json, args.quiet, "decode")?;
     let text = read_input(&args.r#in, argv_material, "decode")?;
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
@@ -1392,6 +1393,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 }
 
 fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    quiet_unsupported_guard(args.quiet, "verify")?;
     json_unsupported_guard(args.json, "verify")?;
     let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
@@ -1624,6 +1626,7 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
 }
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
+    quiet_unsupported_guard(args.quiet, "inspect")?;
     let text = read_input(&args.r#in, argv_material, "inspect")?;
     // WALK O -- `mt inspect` GAINS A RAW-TRANSACTION SUBJECT.
     //
@@ -2019,6 +2022,40 @@ fn txid_paste_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
         "Fetch the transaction: `bitcoin-cli getrawtransaction <txid>`, then pass \
          that. Or `bitcoin-cli finalizepsbt <psbt>` if you have not broadcast yet.",
     ))
+}
+
+/// §10.10, R10: `--json` asks for the report as a document, `--quiet` for no
+/// report. Called from `decode` only; `inspect` and `verify` refuse `--quiet`
+/// first (R11).
+fn json_quiet_guard(json: bool, quiet: bool, verb: &str) -> Result<(), Refusal> {
+    if !(json && quiet) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        "--json and --quiet contradict each other",
+        "`--json` asks for the inspection report as a document and `--quiet` asks \
+         for no report; mt refuses rather than silently ignoring one.",
+    )
+    .with_remedy(
+        "Drop `--quiet` for the JSON report on stderr, or drop `--json` for the hex alone.",
+    ))
+}
+
+/// §10.10, R11: `inspect` and `verify` have no report to suppress; their
+/// output is their report.
+fn quiet_unsupported_guard(quiet: bool, verb: &str) -> Result<(), Refusal> {
+    if !quiet {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        format!("--quiet has no meaning for `{verb}`"),
+        format!("{verb}'s output is its report; mt refuses rather than print it anyway."),
+    )
+    .with_remedy("Drop `--quiet`."))
 }
 
 /// A flag that cannot work must REFUSE, not sit there inert.

@@ -95,6 +95,11 @@ EXEMPT = {
         "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
     "s2_a_taproot_65_byte_sighash_none_refused":
         "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
+    "bughunt_mt_07d_second_full_line_supplies_the_prefix":
+        "the main path's §1.1 unreadable-string refusal, reached through "
+        "explain_failure (it returns Refusal, so mutate-refusals.sh has no "
+        "neutral return for it) once a later full line supplies the elided "
+        "prefix (QC2 option c); the choice of line is held by row 07d itself",
 }
 
 problems = []
