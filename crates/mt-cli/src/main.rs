@@ -1032,6 +1032,29 @@ fn read_input(
     })
 }
 
+/// The JSON form of `margin_report`'s entries (spec §10.10b): one line per
+/// repaired chunk, most corrections first, ties in set order.
+fn correction_warnings(chunks: &[mt_codec::DecodedChunk]) -> Vec<String> {
+    let mut repaired: Vec<&mt_codec::DecodedChunk> =
+        chunks.iter().filter(|c| c.corrected > 0).collect();
+    repaired.sort_by(|a, b| b.corrected.cmp(&a.corrected));
+    repaired
+        .iter()
+        .map(|c| {
+            format!(
+                "chunk {} needed {} of 4 corrections{}",
+                c.header.index + 1,
+                c.corrected,
+                if c.corrected >= 4 {
+                    "; NO MARGIN LEFT"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect()
+}
+
 /// The margin report §1.1 requires: not just a verdict, but how much of the
 /// correction budget each chunk spent — and WHERE.
 ///
@@ -1298,6 +1321,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     d.kept_corrections
                 ));
             }
+            warnings.extend(correction_warnings(&set.chunks));
             // F-275 UNDER `--json`: the warning becomes DATA, inside the one
             // document. Printing it beside the JSON would mean a caller who
             // asked for machine-readable output has to slice prose off stderr
@@ -1655,6 +1679,14 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
             u.input_position, u.reason
         ));
     }
+    for d in &set.duplicates {
+        warnings.push(format!(
+            "chunk {} was present twice; kept the copy needing {} corrections",
+            d.index + 1,
+            d.kept_corrections
+        ));
+    }
+    warnings.extend(correction_warnings(&set.chunks));
 
     let out = std::io::stdout();
     let mut out = out.lock();
