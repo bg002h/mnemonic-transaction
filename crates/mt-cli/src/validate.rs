@@ -1243,11 +1243,11 @@ pub fn satisfaction_elements(input: &bitcoin::TxIn) -> Vec<(Vec<u8>, SigCtx)> {
     v
 }
 
-/// A taproot script-path spend, by shape: at least three elements, the last a
+/// A taproot script-path spend, by shape: at least two elements (BIP-341), the last a
 /// control block of `33 + 32m` bytes with a valid leaf version in its first byte.
 fn is_taproot_script_path(w: &[Vec<u8>]) -> bool {
     let Some(last) = w.last() else { return false };
-    w.len() >= 3 && last.len() >= 33 && (last.len() - 33) % 32 == 0 && (last[0] & 0xfe) == 0xc0
+    w.len() >= 2 && last.len() >= 33 && (last.len() - 33) % 32 == 0 && (last[0] & 0xfe) == 0xc0
 }
 
 /// Pull the pushed data out of a `scriptSig`. Only pushes — a `scriptSig` in a
