@@ -550,7 +550,6 @@ fn bughunt_mt_01j_two_element_scriptpath_der_shaped_script_refused() {
 /// A parent lookup that finds nothing then proves nothing: the status must be
 /// UNKNOWN, not PENDING.
 #[test]
-#[ignore = "RED row owed to FIX-D; its build removes this"]
 fn bughunt_mt_05_txindex_unsynced_other_index_synced_is_unknown() {
     let script = r#"#!/bin/sh
 verb=""

@@ -421,11 +421,11 @@ fn btc(sats: u64) -> String {
 /// no error — worse than the flag not existing, because a script that asks for
 /// machine output and receives human output will parse *something* out of it.
 ///
-/// Hand-rolled rather than derived: `serde` is not a dependency of this crate,
-/// and every value here is a number or a string mt already formats. Provenance
-/// is emitted as a STRING per input rather than folded away, because the whole
-/// point of the three columns is that a consumer can tell a fetched value from
-/// a claimed one.
+/// Hand-rolled rather than derived: mt-cli takes `serde_json` only to read
+/// `getindexinfo` (node.rs), not serde's derive, and every value here is a
+/// number or a string mt already formats. Provenance is emitted as a STRING
+/// per input rather than folded away, because the whole point of the three
+/// columns is that a consumer can tell a fetched value from a claimed one.
 pub fn render_json(r: &Report, warnings: &[String]) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
