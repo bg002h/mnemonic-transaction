@@ -429,7 +429,23 @@ fn btc(sats: u64) -> String {
 pub fn render_json(r: &Report, warnings: &[String]) -> String {
     use core::fmt::Write as _;
     let mut s = String::new();
-    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let esc = |v: &str| {
+        let mut o = String::with_capacity(v.len());
+        for c in v.chars() {
+            match c {
+                '\\' => o.push_str("\\\\"),
+                '"' => o.push_str("\\\""),
+                '\n' => o.push_str("\\n"),
+                '\r' => o.push_str("\\r"),
+                '\t' => o.push_str("\\t"),
+                '\u{8}' => o.push_str("\\b"),
+                '\u{c}' => o.push_str("\\f"),
+                c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+                c => o.push(c),
+            }
+        }
+        o
+    };
     let _ = writeln!(s, "{{");
     let _ = writeln!(s, "  \"txid\": \"{}\",", esc(&r.txid));
     match r.set {
