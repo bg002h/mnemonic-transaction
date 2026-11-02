@@ -121,3 +121,51 @@
 - **Failure scenario:** "same fail-open class" is wrong. On base, both 0x51 and 0x87 fail closed with the wrong text, as the ruling says ("refused with the wrong text"). The doc's 01f row text is correct.
 - **Fix:** none given by the review (report wording only).
 - **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixa-wd-p2sh-redeem-der-shaped` — whole-diff s1 M2: DER-shaped P2SH redeemScript
+
+- **Surfaced:** 2026-11-02 FIX-A whole-diff s1 (M2), `design/agent-reports/whole-diff-fix-a-s1.md`.
+- **Location:** `crates/mt-cli/src/validate.rs` `satisfaction_elements`, the scriptSig walk.
+- **Failure scenario:** the last scriptSig push cannot be dropped the way a witness's last element is, because P2PK and bare multisig end in a signature. A keyless P2SH whose redeemScript is `30 <n-3>`-shaped still counts as signed. The base already accepted this. Unusual conditions: (1) a deliberately DER-shaped redeemScript; (2) a scriptSig with no real signature.
+- **Fix:** none; file as a declared heuristic residual with the v0 one-element one (b660e03).
+- **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixa-wd-pushdata-len-overflow` — whole-diff s1 N1: `skip + len` can overflow on 32-bit
+
+- **Surfaced:** 2026-11-02 FIX-A whole-diff s1 (N1), `design/agent-reports/whole-diff-fix-a-s1.md`.
+- **Location:** `crates/mt-cli/src/validate.rs` `script_sig_pushes`, `skip + len`.
+- **Failure scenario:** the u32 PUSHDATA4 length is cast to usize, so `skip + len` can overflow on a 32-bit target.
+- **Fix:** use `checked_add`, or compare `len` against `b.len()` before adding.
+- **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixa-wd-scriptpath-no-mod-unpinned` — whole-diff s2 M1: control-block modulus unpinned
+
+- **Surfaced:** 2026-11-02 FIX-A whole-diff s2 (M1), `design/agent-reports/whole-diff-fix-a-s2.md`.
+- **Location:** `is_taproot_script_path`, `(last.len() - 33) % 32 == 0`.
+- **Failure scenario:** removing the modulus survives all rows. Only a v0 witness whose last element starts `0xc0`/`0xc1` with a length not of the form `33 + 32m` is affected, and it fails closed in the other direction.
+- **Fix:** add a row only if wanted.
+- **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixa-wd-der-bounds-unpinned` — whole-diff s2 M2: DER range lower bound and length byte unpinned
+
+- **Surfaced:** 2026-11-02 FIX-A whole-diff s2 (M2), `design/agent-reports/whole-diff-fix-a-s2.md`.
+- **Location:** `sig_shape`, the Ecdsa arm.
+- **Failure scenario:** changing the lower bound 9 to 10, or dropping the `e[1] == n - 3` check, survives all rows. These are pre-existing lines the FIX kept; no row pins a short or length-mismatched DER element.
+- **Fix:** none given (add rows for a short and a length-mismatched element).
+- **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixa-wd-sigshape-old-arms-equivalent` — whole-diff s2 N1: equivalent mutant in the Taproot arm
+
+- **Surfaced:** 2026-11-02 FIX-A whole-diff s2 (N1), `design/agent-reports/whole-diff-fix-a-s2.md`.
+- **Location:** `sig_shape`, Taproot arm 65.
+- **Failure scenario:** restoring `65 if e[0]==0x30 => Ecdsa` survives and is equivalent, since `Ecdsa(b)` and `SchnorrExplicit(b)` share `sighash()` and both count as a signature. No defect.
+- **Fix:** none.
+- **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
+
+### `fixa-wd-equivalent-mutants-4f-ctx` — whole-diff s2 N2: two further equivalent mutants
+
+- **Surfaced:** 2026-11-02 FIX-A whole-diff s2 (N2), `design/agent-reports/whole-diff-fix-a-s2.md`.
+- **Location:** `script_sig_pushes` OP_1NEGATE arm (pushed value `0x81` vs empty); `satisfaction_elements` (`ctx_scriptpath_len1only`).
+- **Failure scenario:** both mutants are equivalent for every shape the rows can build: neither value is signature-shaped in the Ecdsa context. No defect.
+- **Fix:** none.
+- **Status:** `deferred-minor`. **Owning phase:** none, ownerless residue.
