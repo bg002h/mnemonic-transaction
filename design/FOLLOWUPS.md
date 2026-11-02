@@ -56,3 +56,25 @@
   look for a prefix that no plate carries.
 - **Status:** open (needs triage).
 - **Owning phase:** none (not yet triaged).
+
+### `unreadable-branch-masks-mixed-count` — Unreadable-string explanation says "nothing is necessarily lost" for a mixed-count set
+
+- **Surfaced:** 2026-11-02 whole-diff review (FIX-B), M1.
+- **Location:** `crates/mt-cli/src/main.rs:1706-1790` (`explain_failure`).
+- **Scenario / text:** A set with a count disagreement under one set id plus
+  one unreadable string takes the unreadable branch ("every chunk COULD be
+  here — nothing is necessarily lost", "Re-read that plate"). Fails closed
+  (exit 1). Fix: in the unreadable branch, if `readable` holds two distinct
+  `header.count` values, fall through to the generic refusal. SetIdMismatch
+  has the same shape.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
+
+### `countmismatch-text-noun` — CountMismatch text "chunk 2 carries 3" omits the noun
+
+- **Surfaced:** 2026-11-02 whole-diff review (FIX-B), N1.
+- **Location:** `crates/mt-codec/src/error.rs` CountMismatch display text.
+- **Scenario / text:** Reads better as "carries a count of 3"; the FIX doc and
+  RED rows pin the current wording, so a change needs a doc edit.
+- **Status:** deferred-minor.
+- **Owning phase:** none (ownerless residue).
