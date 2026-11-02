@@ -591,7 +591,6 @@ esac
 // ---- #7 ----------------------------------------------------------------------
 
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_07_non_ascii_near_line_start_does_not_panic() {
     let out = mt()
         .args(["decode", "--bitcoin-cli", OFFLINE])
@@ -656,7 +655,6 @@ fn json_warnings(doc: &str) -> Vec<String> {
 /// A duplicated chunk, and a chunk needing repair, are reported in prose; the
 /// JSON `warnings` array must carry them too (exact wording is open).
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
     let st = even_strings();
     let mut dup = st.clone();
@@ -697,7 +695,6 @@ fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
 /// OPEN product question: refuse the combination, or honour --json. Either is
 /// fine; silently exiting 0 with bare hex and no JSON is not.
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json() {
     let out = run_in("decode", &["--json", "--quiet"], &even_strings().join("\n"));
     // `decode --json` puts its document on stderr (stdout is the hex).
@@ -716,7 +713,6 @@ fn bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json() {
 /// with the same bytes as the clean plate. (Product question: is accepting two
 /// simultaneous repairs wanted? The report says yes.)
 #[test]
-#[ignore = "RED row owed to FIX-C; its build removes this"]
 fn bughunt_mt_12_mtl_prefix_plus_confusable_still_decodes() {
     let st = even_strings();
     let clean = run_in("decode", &[], &st.join("\n"));
