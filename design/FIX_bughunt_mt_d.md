@@ -4,8 +4,8 @@ Track: small fix. Inputs: triage `design/agent-reports/bughunt-triage-mt.md`
 (row 5), grade and rulings `design/agent-reports/grade-bughunt-mt.md` (§1 row
 5, §2 R5, §3 FIX-D). Branch `fix/bughunt-d`, from 3bfbc98.
 
-**Three STOP points (§7) must be answered before the build starts.** Everything
-else below is decided.
+**All three STOP points (§7) are ruled** (architect bughunt-fixdocs, QD1, QD2;
+STOP-3 settled as (b)). Everything below is decided.
 
 ## 1. Finding
 
@@ -33,7 +33,9 @@ is the JSON literal `true`. Every other case returns false: no reply
 (including trailing non-whitespace), a top-level array or scalar, no `txindex`
 member, `txindex` not an object, no `synced` member, `synced` any value other
 than the literal `true` (`false`, `"true"`, `1`, `null`), and a `synced: true`
-nested deeper than txindex's own members. Duplicate member names: STOP-2.
+nested deeper than txindex's own members. Duplicate member names take serde_json's last value; Core never emits them
+(UniValue `pushKV` replaces) and a source that did could lie outright (ruled,
+QD2; no rows).
 
 The fix-05 scratch patch (`/scratch/cache/bughunt/mt/fix-05.patch`) is
 rejected: it slices from `"txindex"` to the first `}` and still substring
@@ -42,7 +44,8 @@ matches, so it fails rows 05b, 05c and 05d below (executed, §4).
 ## 3. Spec, README and help delta
 
 None. No printed text, flag, exit code or refusal changes; the PENDING and
-UNKNOWN texts in `report.rs` are untouched. The spec's liveness table (spec
+UNKNOWN texts in `report.rs` are untouched (only a code comment there changes,
+§6 step 2). The spec's liveness table (spec
 lines 579-583) already says UNKNOWN when there is no usable `-txindex`; the
 spec, README and `--help` never mention `getindexinfo`, so nothing there names
 the old mechanism (grep: 0 hits in `design/SPEC_mt_v0_1.md` and `README.md`).
@@ -81,7 +84,7 @@ Recorded result: `7 tests run: 2 passed, 5 failed`; the five failures are rows
 rc assertion). The fix-05 column is from the same command with fix-05 applied
 as a scratch change (log `fixd-fix05.log`): 4 passed, 3 failed.
 
-Rows for STOP-2 (duplicate members) are added only once it is answered (§7).
+No rows for duplicate members: ruled QD2, last-wins, none added (the former 05h and 05i are dropped).
 
 ## 5. Tests that change
 
@@ -94,62 +97,44 @@ is Core's pretty form `{"txindex": {"synced": true, "best_block_height":
 
 1. Commit 1 (RED, already on this branch): rows 05b-05g and their helper in
    `crates/mt-cli/tests/bughunt.rs`, with this document.
-2. Commit 2 (GREEN): `crates/mt-cli/src/node.rs` only (plus
-   `crates/mt-cli/Cargo.toml` under STOP-1 option S):
+2. Commit 2 (GREEN): `crates/mt-cli/src/node.rs`, `crates/mt-cli/Cargo.toml`
+   and the `report.rs` comment below (STOP-1 ruled option S, QD1):
+   - `Cargo.toml`: move `serde_json = "1"` from `[dev-dependencies]` to
+     `[dependencies]`. `Cargo.lock` is unchanged (serde_json 1.0.151 locked).
+   - `report.rs:424-425` comment only: "Hand-rolled rather than derived:
+     `serde` is not a dependency of this crate," becomes "Hand-rolled rather
+     than derived: mt-cli takes `serde_json` only to read `getindexinfo`
+     (node.rs), not serde's derive," (re-wrapped as `///` lines).
    - Replace the body of `has_txindex` with the R5 predicate of §2, built on
-     the parser STOP-1 selects. `call` stays as is.
+     `serde_json`: `from_str::<Value>(reply.trim())`, then
+     `get("txindex").and_then(|t| t.get("synced")) == Some(&Value::Bool(true))`;
+     a parse error is false. serde_json's recursion limit of 128 makes deeper
+     nesting a parse failure. `call` stays as is.
    - Its doc comment gains one paragraph: the reply is parsed as JSON and only
      txindex's own boolean `synced: true` counts; anything else, a parse
      failure included, is "no index", which reads UNKNOWN (§6a's fail-safe
      direction), because another synced index once made an unsynced txindex
      read as synced (bug hunt #5).
-   - No other file changes. `report.rs` is untouched.
+   - No other file changes. `report.rs` changes only the comment above.
 3. Run the gate (§8) once to a file, grep it, and quote the counts in the
    GREEN commit message.
 
-FIX-D touches only `node.rs` (and, under option S, `mt-cli/Cargo.toml`), which
-no other FIX touches, so it does not depend on FIX-A, B or C. Its base is
-STOP-3.
+FIX-D touches `node.rs`, `mt-cli/Cargo.toml` and one comment in `report.rs`.
+Its base is the merged master after A-C (STOP-3 (b)); it expects 0 failures.
 
-## 7. STOP: undecided points
+## 7. STOP points: all ruled
 
-- **STOP-1 (dependency): how is the reply "parsed as JSON"?** mt-cli has no
-  runtime JSON parser, and the crate's stated posture is not to take one
-  (`report.rs:424`: "Hand-rolled rather than derived: `serde` is not a
-  dependency of this crate"; `locktime.rs:239`: "a date library is a
-  dependency"). The two options:
-  - **S: promote `serde_json = "1"`** from `[dev-dependencies]` to
-    `[dependencies]` in `crates/mt-cli/Cargo.toml`, parse into
-    `serde_json::Value`, and test `v.get("txindex").and_then(|t|
-    t.get("synced")) == Some(&Value::Bool(true))`. Machine-checked: with the
-    move, `cargo build --locked -p mt-cli` succeeds and `Cargo.lock` is
-    unchanged (serde_json is already locked). It does add serde, serde_json,
-    itoa, ryu and memchr to the release binary, which the posture above
-    avoids.
-  - **H: hand-rolled strict parser,** private to `node.rs`: an RFC 8259
-    recursive-descent parser into a private value type (null, bool, number,
-    string, array, object as an ordered member list), whitespace per RFC 8259
-    §2, numbers validated per §6 (value not kept), strings per §7 with all
-    escapes, a nesting cap of 128 (deeper is a parse failure), and any
-    trailing non-whitespace a parse failure. About 100 lines plus unit tests
-    for the grammar edges, which the builder then also owns.
+- **STOP-1 (dependency): ruled option S** (architect bughunt-fixdocs, QD1):
+  promote `serde_json = "1"` to a runtime dependency, parse into
+  `serde_json::Value`. Probe on 1.0.151: pretty or compact `synced:true` is
+  true; trailing ` x`, a top-level array and `"true"` are false; 200-deep
+  nesting fails to parse (limit 128). Option H (hand-rolled parser) is dropped.
   Rows 05-05g are the same under either option.
-- **STOP-2 (edge case): duplicate member names.** RFC 8259 §4 says names
-  "SHOULD be unique" and leaves duplicates' meaning open; Core never emits
-  them. R5 does not say what `{"txindex": {"synced": false}, "txindex":
-  {"synced": true}}`, or a duplicated `synced` inside txindex, returns.
-  serde_json's `Value` keeps the last (true here). The fail-safe reading is
-  false (UNKNOWN) whenever `txindex` or its `synced` appears more than once.
-  Once answered, add one row per case (`bughunt_mt_05h_...` top-level
-  duplicate, `bughunt_mt_05i_...` duplicate `synced`), RED-checked on
-  unmodified code before GREEN.
-- **STOP-3 (process): the base, and the other FIXes' RED rows.** All four FIX
-  branches carry a5e5fd7, so on this branch ten bughunt rows owned by FIX-A, B
-  and C fail until those FIXes land (baseline below). The brief orders B
-  before C but does not place D. Either (a) D builds on 3bfbc98 and its gate
-  expects exactly those ten named failures, or (b) D builds on the merged head
-  of A, B and C and its gate expects zero failures. The §8 counts are given
-  for both.
+- **STOP-2 (duplicate member names): ruled** (QD2): serde_json's last value
+  wins; no rows. Core cannot emit duplicates (UniValue `pushKV` replaces; one
+  `SummaryToJSON` per index, each with a distinct name).
+- **STOP-3 (base): ruled (b)** (QD2): D goes on master after A-C and expects
+  0 failures; the (a) list of ten expected failures is dropped.
 
 ## 8. Gate
 
@@ -177,22 +162,9 @@ to one file, then grep:
 
 Expected step-4 totals. Baseline (3bfbc98 + RED rows, log
 `/scratch/cache/bughunt/mt/fixd-baseline-full.log`): `293 tests run: 278
-passed, 15 failed` (the 5 FIX-D RED rows plus 10 others).
-- STOP-3 (a): `293 run: 283 passed, 10 failed`, and the failures are exactly
-  `bughunt_mt_01_keyless_taproot_scriptpath_not_signed`,
-  `bughunt_mt_02_64_byte_ecdsa_sighash_none_refused`,
-  `bughunt_mt_03_p2sh_multisig_op0_dummy_counts_signatures`,
-  `bughunt_mt_04_decode_rejects_mixed_count_chunks`,
-  `bughunt_mt_06_kelvin_sign_is_not_k`,
-  `bughunt_mt_07_non_ascii_near_line_start_does_not_panic`,
-  `bughunt_mt_08_invariant_prefix_short_input_does_not_panic`,
-  `bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices`,
-  `bughunt_mt_11_decode_json_quiet_does_not_silently_drop_json`,
-  `bughunt_mt_12_mtl_prefix_plus_confusable_still_decodes`. Any other failure,
-  or any of these passing, is a FAIL to investigate.
-- STOP-3 (b): 0 failed; the total is 293 plus the rows A, B and C add.
-- Under STOP-1 option H, add the parser's unit tests to the total and run
-  them by name as well.
+passed, 15 failed` (the 5 FIX-D RED rows plus 10 owned by A, B and C). On the
+merged master after A-C (STOP-3 (b)) the gate expects 0 failed; the total is
+293 plus the rows A, B and C add.
 
 Review: class B is not required (no PSBT or transaction code); one whole-diff
 adversarial review of the GREEN diff, persisted per the repo rules.
