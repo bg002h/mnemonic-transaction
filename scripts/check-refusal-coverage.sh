@@ -69,6 +69,24 @@ EXEMPT = {
         "SetIdMismatch -- there is no CLI guard fn for mutate-refusals.sh to "
         "neuter; the codec check is held by the codec row "
         "bughunt_mt_04_count_mismatch_variant_and_text and the mutation gate",
+    "bughunt_mt_01b_keyless_scriptpath_refusal_text":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01c_keyless_scriptpath_with_annex_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01e_p2wsh_keyless_64_byte_script_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01f_p2wsh_keyless_65_byte_script_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01i_p2wsh_keyless_65_byte_script_ending_01_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_01j_two_element_scriptpath_der_shaped_script_refused":
+        "bughunt #1 witness shape that must reach §8.6b's has_signature_guard; the guard is held in refusals.toml by refuses_a_satisfaction_carrying_no_signature, and this row pins the shape that once bypassed it",
+    "bughunt_mt_02b_64_byte_ecdsa_sighash_none_refusal_text":
+        "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
+    "bughunt_mt_02c_73_byte_ecdsa_sighash_none_still_refused":
+        "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
+    "bughunt_mt_03b_p2sh_op0_sighash_none_still_refused":
+        "bughunt #2/#3 signature shape that must reach §8.6a's sighash_all_guard; the guard is held in refusals.toml by refuses_a_signature_that_is_not_sighash_all, and this row pins the shape that once bypassed it",
 }
 
 problems = []
