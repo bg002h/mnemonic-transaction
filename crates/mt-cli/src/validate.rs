@@ -1145,8 +1145,8 @@ pub fn value_mismatch_guard(n: usize, claimed_sat: u64, chain_sat: u64) -> Resul
 ///
 /// **Limited by §8.2's removal, and the spec does not claim otherwise.** Without
 /// a script engine `mt` can tell that an element is *shaped* like a signature —
-/// a 64-byte Schnorr element, or a DER-encoded ECDSA one with a trailing sighash
-/// byte — but not that the script it satisfies actually **requires** one. A
+/// a 64- or 65-byte Schnorr element in a taproot witness, or a DER-encoded ECDSA
+/// element (9 to 73 bytes) elsewhere — but not that the script it satisfies actually **requires** one. A
 /// crafted witness carrying a signature-shaped element the script never checks
 /// would pass. This is a structural heuristic, not a proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1169,17 +1169,32 @@ impl SigShape {
     }
 }
 
+/// Where an element sits, which decides the only signature kinds it can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigCtx {
+    /// A taproot witness (key path or script path): BIP-340 Schnorr only.
+    Taproot,
+    /// Any other witness (segwit v0) or a scriptSig: DER ECDSA only.
+    Ecdsa,
+}
+
 /// Recognise a signature-shaped element.
-pub fn sig_shape(e: &[u8]) -> Option<SigShape> {
-    match e.len() {
-        64 => Some(SigShape::SchnorrDefault),
-        65 if e[0] == 0x30 => Some(SigShape::Ecdsa(e[64])),
-        65 => Some(SigShape::SchnorrExplicit(e[64])),
+pub fn sig_shape(e: &[u8], ctx: SigCtx) -> Option<SigShape> {
+    match ctx {
+        SigCtx::Taproot => match e.len() {
+            64 => Some(SigShape::SchnorrDefault),
+            65 => Some(SigShape::SchnorrExplicit(e[64])),
+            _ => None,
+        },
         // DER: 0x30 <len> 0x02 <r> 0x02 <s>, then one sighash byte.
-        n if (9..=73).contains(&n) && e[0] == 0x30 && e[1] as usize == n - 3 => {
-            Some(SigShape::Ecdsa(e[n - 1]))
+        SigCtx::Ecdsa => {
+            let n = e.len();
+            if (9..=73).contains(&n) && e[0] == 0x30 && e[1] as usize == n - 3 {
+                Some(SigShape::Ecdsa(e[n - 1]))
+            } else {
+                None
+            }
         }
-        _ => None,
     }
 }
 
@@ -1198,8 +1213,8 @@ pub fn sig_shape(e: &[u8]) -> Option<SigShape> {
 /// — and a length-based recognizer counts the control block as the signature it
 /// is looking for. So: last element is the control block, second-last the leaf
 /// script, and signatures are counted only among the rest.
-pub fn satisfaction_elements(input: &bitcoin::TxIn) -> Vec<Vec<u8>> {
-    let mut v: Vec<Vec<u8>> = Vec::new();
+pub fn satisfaction_elements(input: &bitcoin::TxIn) -> Vec<(Vec<u8>, SigCtx)> {
+    let mut v: Vec<(Vec<u8>, SigCtx)> = Vec::new();
 
     if !input.witness.is_empty() {
         let mut w: Vec<Vec<u8>> = input.witness.iter().map(<[u8]>::to_vec).collect();
@@ -1208,16 +1223,22 @@ pub fn satisfaction_elements(input: &bitcoin::TxIn) -> Vec<Vec<u8>> {
         if w.len() >= 2 && w.last().is_some_and(|e| e.first() == Some(&0x50)) {
             w.pop();
         }
+        // The context is fixed before the script-path pops.
+        let ctx = if w.len() == 1 || is_taproot_script_path(&w) {
+            SigCtx::Taproot
+        } else {
+            SigCtx::Ecdsa
+        };
         if is_taproot_script_path(&w) {
             w.pop(); // control block
             w.pop(); // leaf script
         }
-        v.extend(w);
+        v.extend(w.into_iter().map(|e| (e, ctx)));
     }
 
     // A legacy or wrapped-segwit scriptSig: a sequence of pushes.
     for push in script_sig_pushes(input.script_sig.as_bytes()) {
-        v.push(push);
+        v.push((push, SigCtx::Ecdsa));
     }
     v
 }
@@ -1280,7 +1301,7 @@ pub fn satisfaction_guard(tx: &Transaction) -> Result<(), Refusal> {
 pub fn has_signature_guard(tx: &Transaction) -> Result<(), Refusal> {
     for (n, inp) in tx.input.iter().enumerate() {
         let elements = satisfaction_elements(inp);
-        if elements.iter().any(|e| sig_shape(e).is_some()) {
+        if elements.iter().any(|(e, c)| sig_shape(e, *c).is_some()) {
             continue;
         }
         return Err(Refusal::new(
@@ -1308,7 +1329,7 @@ pub fn sighash_all_guard(tx: &Transaction) -> Result<(), Refusal> {
     for (n, inp) in tx.input.iter().enumerate() {
         for s in satisfaction_elements(inp)
             .iter()
-            .filter_map(|e| sig_shape(e))
+            .filter_map(|(e, c)| sig_shape(e, *c))
         {
             let Some(byte) = s.sighash() else { continue }; // SIGHASH_DEFAULT
             if byte != 0x01 {
