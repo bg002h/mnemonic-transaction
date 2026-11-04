@@ -15,7 +15,7 @@ name = "mt"
 path = "src/main.rs"
 
 [dependencies]
-mt-codec = { path = "../mt-codec", version = "0.1.0" }
+mt-codec = { path = "../mt-codec", version = "0.2.0" }
 # THE SHARED IO/SAFETY MECHANISM (P1). Taken by GITHUB REV, not by path: the two
 # repositories are not submodules of each other, so a path dep does not resolve
 # in a fresh CI checkout -- which is the mirror image of the arrangement
