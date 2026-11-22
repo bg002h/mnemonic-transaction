@@ -260,3 +260,4 @@
 - **Location / scenario / fix (review text, verbatim):** §6 step 2 has `from_str::<Value>(reply.trim())`, but `Node::call` already trims, so the second `trim()` is redundant. It is harmless.
 - **Status:** deferred-minor.
 - **Owning phase:** none (ownerless residue).
+- [mt18-null-claimed-overflow-untested] status=open grade=M kind=test owner=none filed=2026-11-22 src=coordinator/agent-reports/review-mt18-merge-fix.md#m1 :: report.rs:275 Null-with-claimed input-sum overflow has no test (only :248 pinned); add a node stub answering null with E8_PSBT and assert FEE UNKNOWN.
