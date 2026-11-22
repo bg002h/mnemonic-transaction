@@ -489,7 +489,11 @@ const TXINDEX_BUILDING: &str =
 
 /// RULED (architect, I-1): the STATUS row when an input is spent, its parent
 /// confirmed, and the node has not reported a synced txindex.
-const STATUS_INDEX_NOT_SYNCED: &str = "STATUS    UNKNOWN — an input is not in the UTXO set, its parent confirmed, and this\n                           node has not reported its -txindex synced: mt cannot tell whether this\n                           transaction is already mined or someone else spent the input. mt will\n                           not guess DEAD. Run mt again once getindexinfo shows the txindex synced\n";
+const STATUS_INDEX_NOT_SYNCED: &str = "STATUS    UNKNOWN — an input is not in the UTXO set, its parent confirmed, and this\n                           node has not reported its -txindex synced: mt cannot tell whether this\n                           transaction is already mined or someone else spent the input. mt will\n                           not guess DEAD. Run mt again once getindexinfo shows the txindex synced\n                           (Bitcoin Core before 0.21 has no getindexinfo: point mt at a newer node)\n";
+
+/// The clause both W5 and W6 carry for a node that has no getindexinfo
+/// (architect mt17-old-core).
+const OLD_CORE_CLAUSE: &str = "Bitcoin Core before 0.21 has no getindexinfo";
 
 /// RULED (architect, I-1): `encode`'s warning headline for the same.
 const ENCODE_INDEX_NOT_SYNCED_HEADLINE: &str = "WARNING: the node has not reported its -txindex synced — mt cannot tell whether this transaction is already mined.";
@@ -575,8 +579,22 @@ fn bh1119_mt_c1_unreported_txindex_own_not_found_is_not_dead() {
         let (rc, o, e) = run("inspect", &s, &[]);
         assert_eq!(rc, Some(0), "{why}: {e}");
         assert_index_not_synced_inspect(&o, why);
+        if arm.contains("exit 89") {
+            assert!(
+                o.contains(OLD_CORE_CLAUSE),
+                "{why}: no old-Core remedy:\n{o}"
+            );
+        }
         let (rc, o, e) = run("encode", &s, &[]);
         assert_index_not_synced_encode(rc, &o, &e, why);
+        if arm.contains("exit 89") {
+            let flat = e.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                flat.contains(OLD_CORE_CLAUSE)
+                    && flat.contains("point mt at Bitcoin Core 0.21 or newer with -txindex"),
+                "{why}: no old-Core remedy:\n{e}"
+            );
+        }
     }
 }
 
@@ -684,6 +702,10 @@ fn bh1119_mt_median_time_exponent_reply_is_not_1970() {
     assert!(
         !row.contains("1970"),
         "an unreadable MTP was printed: {row}"
+    );
+    assert!(
+        row.contains("current MTP unknown (no node)"),
+        "a float mediantime was read as an MTP: {row}"
     );
 }
 
