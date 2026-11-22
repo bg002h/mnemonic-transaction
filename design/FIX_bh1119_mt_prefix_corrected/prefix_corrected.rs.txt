@@ -362,3 +362,103 @@ fn bh1119_mt_f_unelided_counts_unchanged() {
         "{err}"
     );
 }
+
+/// P2 (review r1 M1): a later full copy that resolves supplies the prefix when
+/// the first `mt1` line does not resolve (the second-copy drawer, journey C).
+#[test]
+fn bh1119_mt_f_second_full_copy_supplies_prefix() {
+    let st = even();
+    let broken = damage(&st[0], &[7, 20, 25, 30, 35]);
+    let mut lines = vec![broken, st[0].clone()];
+    lines.extend(st[1..].iter().map(|l| l[ELIDED_DROP..].to_string()));
+    lines[2] = damage(&lines[2], &[5, 10, 15, 20]);
+    let o = run("decode", &[], &join(&lines));
+    assert!(
+        o.status.success(),
+        "the clean copy supplies the prefix:\n{}",
+        s(&o.stderr)
+    );
+    assert!(
+        s(&o.stderr).contains("CORRECTION APPLIED. 1 chunk needed repair:\n"),
+        "{}",
+        s(&o.stderr)
+    );
+}
+
+// ---- E: positions on an elided plate (Brian 2026-11-22 ruling, SPEC §3b) --------
+
+/// The even set with strings 2-6 elided, as `mt encode --elide-prefix` prints it.
+fn even_elided() -> Vec<String> {
+    let st = even();
+    let mut lines = vec![st[0].clone()];
+    lines.extend(st[1..].iter().map(|l| l[ELIDED_DROP..].to_string()));
+    lines
+}
+
+/// One substitution at the 6th character of elided plate 2 prints `pos   6`,
+/// the position counted from the first character engraved on that plate.
+#[test]
+fn bh1119_mt_f_elided_correction_prints_plate_position() {
+    let mut lines = even_elided();
+    assert_eq!(&lines[1][5..6], "d");
+    lines[1] = damage(&lines[1], &[5]);
+    let o = run("decode", &[], &join(&lines));
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    let err = s(&o.stderr);
+    assert!(
+        err.contains("              pos   6   read w, corrected to d\n"),
+        "the plate position, not the restored-string position:\n{err}"
+    );
+    assert!(!err.contains("pos  17"), "{err}");
+}
+
+/// A typed `o` for the `0` at the 15th character of elided plate 2 prints `pos  15`.
+#[test]
+fn bh1119_mt_f_elided_transliteration_prints_plate_position() {
+    let mut lines = even_elided();
+    assert_eq!(&lines[1][14..15], "0");
+    lines[1] = put(&lines[1], 14, 'o');
+    let o = run("decode", &[], &join(&lines));
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    let err = s(&o.stderr);
+    assert!(
+        err.contains("  pos  15   you typed o, mt read it as 0\n"),
+        "the plate position, not the restored-string position:\n{err}"
+    );
+    assert!(!err.contains("pos  26"), "{err}");
+}
+
+/// CONTROL: the same character on a full plate 2 keeps its whole-string position
+/// (a full plate begins `mt1`, so plate and string positions coincide).
+#[test]
+fn bh1119_mt_f_full_plate_correction_keeps_string_position() {
+    let mut st = even();
+    assert_eq!(&st[1][16..17], "d");
+    st[1] = damage(&st[1], &[16]);
+    let o = run("decode", &[], &join(&st));
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    let err = s(&o.stderr);
+    assert!(
+        err.contains("              pos  17   read w, corrected to d\n"),
+        "{err}"
+    );
+}
+
+/// CONTROL: with no full plate the v0.1 §3b answer is unchanged: it names the 8
+/// characters following `mt1` and says the search is not implemented.
+#[test]
+fn bh1119_mt_f_all_elided_still_names_the_prefix() {
+    let lines: Vec<String> = even_elided()[1..].to_vec();
+    let o = run("decode", &[], &join(&lines));
+    assert_eq!(o.status.code(), Some(1), "{}", s(&o.stderr));
+    assert!(o.stdout.is_empty());
+    assert!(
+        flat(&s(&o.stderr)).contains(
+            "Add the 8 characters following `mt1` on any intact string of the same set. \
+             (They are recoverable by search if that string is lost — mt v0.1 does not \
+             implement the search.)"
+        ),
+        "{}",
+        s(&o.stderr)
+    );
+}
