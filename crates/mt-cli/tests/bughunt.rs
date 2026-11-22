@@ -559,6 +559,8 @@ done
 case "$verb" in
   getblockcount) echo 963832 ;;
   getindexinfo)  echo '{"txindex": {"synced": false, "best_block_height": 10}, "basic block filter index": {"synced": true, "best_block_height": 963832}}' ;;
+  gettxout)      exit 0 ;;
+  getrawtransaction) exit 5 ;;
   *) exit 1 ;;
 esac
 "#;
@@ -594,7 +596,8 @@ esac
 // own member `synced` is the boolean `true`. Anything else, including a parse
 // failure, is false, which reads UNKNOWN (§6a's fail-safe direction). Each row
 // drives `mt inspect` against a stub `bitcoin-cli` whose `getindexinfo` prints
-// `reply`; `gettxout` and `getrawtransaction` fail, so every parent is NOT
+// `reply`; `gettxout` answers Core's null (no output, exit 0) and
+// `getrawtransaction` exits 5 (Core's not-found code), so every parent is NOT
 // FOUND and the STATUS row depends on `has_txindex` alone.
 
 /// Runs `mt inspect` on the `even` vector against a stub node; returns
@@ -612,6 +615,8 @@ done
 case "$verb" in
   getblockcount) echo 963832 ;;
   getindexinfo)  echo '@REPLY@' ;;
+  gettxout)      exit 0 ;;
+  getrawtransaction) exit 5 ;;
   *) exit 1 ;;
 esac
 "#

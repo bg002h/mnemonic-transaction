@@ -35,9 +35,10 @@ pub struct Stub {
     path: std::path::PathBuf,
 }
 
-/// Build a stub. `gettxout` is the raw JSON to return (empty = null), and
-/// `confirmations` maps a txid PREFIX to a confirmation count; any txid not
-/// listed is reported as NOT FOUND.
+/// Build a stub. `gettxout` is the raw JSON to return (empty = Core's null:
+/// no output, exit 0), and `confirmations` maps a txid PREFIX to a
+/// confirmation count; any txid not listed exits 5, Core's not-found code
+/// (RPC_INVALID_ADDRESS_OR_KEY), which mt reads as NOT FOUND.
 pub fn node_stub(gettxout: &str, confirmations: &[(&str, u32)]) -> Stub {
     // A `case` arm per known txid, matched by prefix so a test can name a txid
     // without pasting all 64 characters.
@@ -61,13 +62,13 @@ case "$verb" in
   gettxout)          {gettxout} ;;
   getrawtransaction)
     case "$arg1" in
-{arms}      *) exit 1 ;;
+{arms}      *) exit 5 ;;
     esac ;;
   *) exit 1 ;;
 esac
 "#,
         gettxout = if gettxout.is_empty() {
-            "exit 1".to_string()
+            "exit 0".to_string()
         } else {
             format!("echo '{gettxout}'")
         },
