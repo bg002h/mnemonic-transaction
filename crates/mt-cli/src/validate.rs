@@ -114,12 +114,67 @@ pub fn finalized_guard_raw(tx: &Transaction) -> Result<(), Refusal> {
 
 // ── §8.2b — value-blind acceptance ───────────────────────────────────────────
 
+/// Core's `MAX_MONEY`: 21,000,000 BTC in satoshis (`src/consensus/amount.h:26`).
+pub const MAX_MONEY: u64 = 2_100_000_000_000_000;
+
+/// Sentence S, which begins the §8.2b output-range refusal and warning bodies.
+const OUTPUT_RANGE_RULE: &str = "Bitcoin's consensus rules reject a transaction with no \
+    outputs, with an output above 21,000,000 BTC (2100000000000000 sat, every satoshi there \
+    will ever be), or with outputs that together exceed that.";
+
+/// Checked sum of every output value; `None` on u64 overflow. Never panics.
+pub fn checked_output_total(tx: &Transaction) -> Option<u64> {
+    tx.output
+        .iter()
+        .try_fold(0u64, |t, o| t.checked_add(o.value.to_sat()))
+}
+
+/// E1: the output-range check, in Core's `CheckTransaction` order, stopping at
+/// the first hit. Returns the verdict text. Values are unsigned satoshis, so an
+/// output Core reads as negative (2^63 and up) is "above MAX_MONEY" here.
+pub fn output_range_verdict(tx: &Transaction) -> Option<String> {
+    if tx.output.is_empty() {
+        return Some("the transaction has 0 outputs".to_string());
+    }
+    let mut total: u64 = 0;
+    for (n, o) in tx.output.iter().enumerate() {
+        let v = o.value.to_sat();
+        if v > MAX_MONEY {
+            return Some(format!("output {n} pays {v} sat, more than 21,000,000 BTC"));
+        }
+        // Each term and the prior total are at most MAX_MONEY: no overflow.
+        total += v;
+        if total > MAX_MONEY {
+            return Some(format!(
+                "outputs 0 to {n} total {total} sat, more than 21,000,000 BTC"
+            ));
+        }
+    }
+    None
+}
+
+/// W1: `inspect`'s warning for an output-range hit (never a refusal).
+pub fn output_range_warning(tx: &Transaction) -> Option<Warning> {
+    let v = output_range_verdict(tx)?;
+    Some(Warning::new(
+        format!("{v}, so no node will ever accept this transaction."),
+        format!(
+            "{OUTPUT_RANGE_RULE} These bytes can never be broadcast, whatever the fee or the \
+             node. mt shows what they say; it cannot make them valid."
+        ),
+    ))
+}
+
 /// What §8.2b needs and `verify_transaction` never provided.
 ///
 /// `rust-bitcoin`'s `verify_transaction` is a per-input **script** loop: it
 /// iterates `tx.input` calling `verify_script_with_flags` and never compares
 /// input value against output value. Outputs exceeding inputs, duplicate inputs
 /// and an empty `vin` all pass every other refusal in §8.
+///
+/// Also refuses an out-of-range output set (no outputs, one above
+/// [`MAX_MONEY`], or a running total above it) before the duplicate check and
+/// before the "values unknown" skip, so it holds on every input form.
 pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(), Refusal> {
     // `vin` non-empty.
     if tx.input.is_empty() {
@@ -130,6 +185,21 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
             "A transaction with an empty `vin` spends nothing. It is not \
              broadcastable and cannot be a backup of anything.",
         ));
+    }
+
+    // E1/R1: the output range, in Core's order (vin, vout, values, duplicates),
+    // before the "values unknown" skip below so it holds on every input form.
+    if let Some(v) = output_range_verdict(tx) {
+        return Err(Refusal::new(
+            "encode",
+            "§8.2b",
+            v,
+            format!(
+                "{OUTPUT_RANGE_RULE} This transaction can never be broadcast, so \
+                 engraving it produces a plate that is not a backup of anything."
+            ),
+        )
+        .with_remedy("Re-export the transaction from the wallet that built it."));
     }
 
     // No duplicate outpoints. Two inputs naming one outpoint can never both be
@@ -148,7 +218,10 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
         }
     }
 
-    let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+    // E1 has passed, so the total is at most MAX_MONEY and cannot be `None`.
+    let Some(out_total) = checked_output_total(tx) else {
+        return Ok(());
+    };
 
     // Every input's value must be known before the arithmetic means anything.
     // Where it is not, §8.2b's checks are SKIPPED rather than guessed — §8.2e
@@ -217,7 +290,7 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
 /// and is never engraved. A number that ages is only dangerous on steel.
 pub fn low_fee_warning(tx: &Transaction, input_values: &[Option<u64>]) -> Option<Warning> {
     let in_total: u64 = input_values.iter().copied().sum::<Option<u64>>()?;
-    let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+    let out_total = checked_output_total(tx)?;
     let fee = in_total.checked_sub(out_total)?;
     let vb = vsize(tx).max(1) as u64;
     let rate = fee as f64 / vb as f64;
@@ -245,6 +318,9 @@ pub fn low_fee_warning(tx: &Transaction, input_values: &[Option<u64>]) -> Option
 /// §8.4's scope ruling: `mt` never executes a script and learns nothing about
 /// the wallet's policy. Forging a passing value would need a txid collision.
 ///
+/// A record whose hash matches but which has no output at the input's `vout`
+/// is refused always: it proves the outpoint does not exist.
+///
 /// It exists because §8.6 accepts legacy inputs on the grounds that
 /// `non_witness_utxo` *binds the amount* — true of the mechanism, and false of
 /// `mt` until something performed the check.
@@ -265,6 +341,28 @@ pub fn non_witness_utxo_guard(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
                  These differ, so the record does not describe the output being \
                  spent — and the value mt would read from it would be the wrong \
                  one. The fee absorbs any such error in full.",
+            )
+            .with_remedy("Re-export the PSBT from the wallet that built it."));
+        }
+        // E6: the hash matched, so the record IS the previous transaction. If it
+        // has no output at this vout the outpoint does not exist, and no
+        // witness_utxo or --input-value can make it valid.
+        let vout = psbt.unsigned_tx.input[n].previous_output.vout;
+        if prev.output.get(vout as usize).is_none() {
+            return Err(Refusal::new(
+                "encode",
+                "§8.2d",
+                format!(
+                    "input {n} spends output {vout} of {want}, which has {} output(s)",
+                    prev.output.len()
+                ),
+                format!(
+                    "This input's non_witness_utxo is the WHOLE previous transaction, and it \
+                     hashes to the input's txid, so it IS that transaction. It has no output \
+                     {vout}, so the output this input spends does not exist and no node will \
+                     ever accept the transaction. No value supplied with --input-value, and no \
+                     witness_utxo, can change that: the record proves the output is not there."
+                ),
             )
             .with_remedy("Re-export the PSBT from the wallet that built it."));
         }

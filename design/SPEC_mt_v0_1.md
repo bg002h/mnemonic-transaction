@@ -2221,7 +2221,8 @@ exactly as permanent, as a machine-engraved one.
      for a reason worth stating: it is consumed **at encode time, by a human who
      is present**, and is never engraved. A number that ages is only dangerous
      on steel;
-   - **no duplicate outpoints**, and **`vin` non-empty**.
+   - **no duplicate outpoints**, and **`vin` non-empty**;
+   - **`vout` non-empty, every output at most 21,000,000 BTC, and the outputs' running total at most 21,000,000 BTC** (bughunt-1119 FIX-E, ruling T17), checked in Core's `CheckTransaction` order: `vin`, then `vout`, then each output's value and the running total in index order, then duplicate outpoints. The first hit is refused, naming the output or the range of outputs. Every output sum is a checked sum. `inspect` never refuses: it prints the same finding as the first warning.
 
    > **The spec convicts itself here.** §3 rejected the `lean` PSBT form on the
    > grounds that *"the safe API a recoverer reaches for refuses it"*. That API
@@ -2345,7 +2346,7 @@ exactly as permanent, as a machine-engraved one.
    Where a PSBT input carries `non_witness_utxo` — the **whole previous
    transaction**, which BIP-174 requires for legacy inputs — `mt` hashes it and
    requires the result to equal that input's `previous_output.txid`, then reads
-   the value from `output[vout]`. A mismatch is a refusal naming both txids.
+   the value from `output[vout]`. A mismatch is a refusal naming both txids. A record whose hash matches but which has no output at the input's `vout` is also refused, always: it proves the outpoint does not exist, so no witness_utxo and no --input-value can make it valid (bughunt-1119 FIX-E, ruling T16).
 
    **This is a hash comparison, not script evaluation**, so it sits inside the
    2026-08-23 scope ruling (§8.4): `mt` never executes a script, never asks a
@@ -2438,6 +2439,7 @@ exactly as permanent, as a machine-engraved one.
    | §8.1 finalized | ✓ | ✓ | ✓ |
    | §8.6 satisfaction binds outputs | ✓ | ✓ | ✓ |
    | §8.2b value balance | ✓ | **✗** | **✓ via `gettxout`** |
+   | §8.2b outputs in range | ✓ | ✓ | ✓ |
    | the fee | ✓ | **unknown** | **✓** |
 
        WARNING: this is a raw signed transaction, not a PSBT.
@@ -3486,7 +3488,7 @@ signed PSBT.
        corrections`. Each repaired chunk reads `chunk {n} needed {c} of 4
        corrections`, with `; NO MARGIN LEFT` appended when {c} ≥ 4, in the
        order of the prose margin report (most corrections first), after the
-       duplicate entries and, in `decode`, before the stdout-mode headline;
+       duplicate entries and, in `decode`, before the stdout-mode headline; in `inspect`, §8.2b's output-range warning, when present, is the first entry;
        the JSON omits the prose's before-and-after detail. Control characters
        U+0000-U+001F inside any JSON string are escaped (RFC 8259 §7).
        **`--json` with `--quiet` is refused** (§10.10, exit 1): one asks for

@@ -623,7 +623,9 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     // legacy input while asserting mt could not bind the value by txid, which
     // §8.2d now does, so on the common path it printed a false capitalised
     // block and trained the operator to skip the rare case where it is true.
-    let out_total: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+    // E3: checked. `value_guard` has already refused an out-of-range output set,
+    // so `None` is unreachable here; the non-panicking fallback is 0.
+    let out_total: u64 = validate::checked_output_total(&tx).unwrap_or(0);
     let in_total: Option<u64> = values.iter().map(|v| v.map(|(s, _)| s)).sum();
     let fee_sat = in_total.and_then(|i| i.checked_sub(out_total));
     for (n, inp) in tx.input.iter().enumerate() {
@@ -1560,6 +1562,11 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
     let r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
 
     let mut warnings: Vec<String> = Vec::new();
+    // E4: the output-range warning is element 0 (JSON) and first on stderr (text).
+    let range_warning = validate::output_range_warning(&tx);
+    if let Some(w) = &range_warning {
+        warnings.push(w.headline.clone());
+    }
     if node.is_none() {
         warnings
             .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
@@ -1592,6 +1599,10 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
         return Ok(());
     }
     let mut stderr = std::io::stderr();
+    if let Some(w) = &range_warning {
+        let _ = writeln!(stderr);
+        let _ = write!(stderr, "{w}");
+    }
     if node.is_none() {
         let _ = writeln!(stderr);
         let _ = write!(
@@ -1666,6 +1677,11 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
     r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
 
     let mut warnings: Vec<String> = Vec::new();
+    // E4: the output-range warning is element 0 (JSON) and first on stderr (text).
+    let range_warning = validate::output_range_warning(&tx);
+    if let Some(w) = &range_warning {
+        warnings.push(w.headline.clone());
+    }
     if node.is_none() {
         warnings
             .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
@@ -1708,6 +1724,11 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         return Ok(());
     }
 
+    if let Some(w) = &range_warning {
+        let mut stderr = std::io::stderr();
+        let _ = writeln!(stderr);
+        let _ = write!(stderr, "{w}");
+    }
     // The no-node warning goes to STDERR, in its recovery-time wording.
     if node.is_none() {
         let mut stderr = std::io::stderr();

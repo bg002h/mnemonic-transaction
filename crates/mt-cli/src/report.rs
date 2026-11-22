@@ -265,11 +265,11 @@ impl Report {
             }
         }
 
-        let total_out: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let total_out: Option<u64> = crate::validate::checked_output_total(tx);
         // The FEE carries the WEAKEST provenance of any input. If one value was
         // asserted rather than fetched, the whole figure is claimed — and it is
         // the number the operator uses to decide whether to cut at all.
-        let fee = if all_known && total_in >= total_out {
+        let fee = if let Some(total_out) = total_out.filter(|t| all_known && total_in >= *t) {
             // The WEAKEST provenance of any input. One claimed value makes the
             // whole figure claimed — it is a sum, so it is exactly as trustworthy
             // as its least trustworthy term.
