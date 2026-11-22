@@ -489,3 +489,63 @@ fn bh1119_mt_i17_existing_vout_still_encodes() {
     assert!(r.out.starts_with("mt1"), "no strings on stdout: {}", r.out);
     assert!(!r.err.contains("REFUSED"), "stderr:\n{}", r.err);
 }
+
+#[test]
+fn bh1119_mt_i16_inspect_strings_json_carries_the_warning_first() {
+    let tx = mutated_tx(|tx| tx.output.clear());
+    let bytes = bitcoin::consensus::serialize(&tx);
+    let strings =
+        mt_codec::string_layer::pipeline::encode(&bytes, &tx.compute_txid().to_string()).unwrap();
+    let r = inspect_offline(&strings.join("\n"), &["--json"]);
+    assert_eq!(r.code, Some(0), "stderr:\n{}", r.err);
+    let v: serde_json::Value = serde_json::from_str(&r.out).expect("one JSON document");
+    let w = v["warnings"].as_array().expect("a warnings array");
+    assert_eq!(
+        w.first().and_then(|x| x.as_str()),
+        Some(format!("{ZERO_OUT}{SUFFIX}").as_str()),
+        "warnings: {w:?}"
+    );
+}
+
+#[test]
+fn bh1119_mt_i16_inspect_warning_is_first_on_stderr() {
+    let tx = mutated_tx(|tx| tx.output.clear());
+    let bytes = bitcoin::consensus::serialize(&tx);
+    let raw = to_hex(&bytes);
+    let strings =
+        mt_codec::string_layer::pipeline::encode(&bytes, &tx.compute_txid().to_string()).unwrap();
+    for input in [raw, strings.join("\n")] {
+        let r = inspect_offline(&input, &[]);
+        let w = r.err.find(&warned(ZERO_OUT)).expect("range warning");
+        let n = r.err.find("WARNING: no bitcoind reachable").expect("no-node warning");
+        assert!(w < n, "range warning not first; stderr:\n{}", r.err);
+    }
+}
+
+/// E8 (review fold r1, part a): the fixture's finalized segwit PSBT with
+/// `non_witness_utxo` stripped and `witness_utxo` values 2^63+400000000 and
+/// 2^63+399950000 (true fee 100000 sat). The input values sum past u64.
+const E8_PSBT: &str = "cHNidP8BAHsCAAAAApNQa950Pg3SfkkzqbRZcNyXuPVbzwfWYT0ts9C7fD3RAQAAAAD9/////XKNyD5B8HhNv75gtz2h4sZBEu4uSrD+t4GEWwfkyLYBAAAAAP3///8BYIGtLwAAAAAWABR/rnOnEnyPrJsApsti+yrUOelRbQAAAAAAAQEfAITXFwAAAIAWABQAkct5WAAC+kl1h1AXKGIn0Eyu4QEIawJHMEQCIGogM2xZVmrWQ+HXfip3sAsKw180VFJged/QkGRssi5ZAiAB+ci/6tYfMOrYvjabC7bp5vgSnEXGM+OOoNOhffH6FwEhAtlpXPRi5Y9ReNJKPotR0jibAe31BszO7vVxRui0e35YAAEBH7DA1hcAAACAFgAUQ1vZcy0ry5/4I13e7sZCT0okNOYBCGsCRzBEAiB/fwiRSGe/ENERJ/cySc1rRwuZM5LDt6G56nIQs1MLkAIgFaCMN72JfMrYMP7zNTJ+o0e5Lvmb1Tgw9RNEefznYYMBIQINb72XlS6faMZa7Pz9AL18sZZr6uFvN5v6hLy9INS8FgAiAgKlqdUTc7ppxGfRy2TgxyqxlaKf26zuRLpBMuE8znKRkRgbA468VAAAgAEAAIAAAACAAAAAAAgAAAAA";
+
+#[test]
+fn bh1119_mt_e8_input_sum_overflow_does_not_panic() {
+    let r = encode_offline(E8_PSBT, &[]);
+    assert_ne!(r.code, Some(101), "mt panicked: {}", r.err);
+    assert!(!r.err.contains("panicked"), "stderr:\n{}", r.err);
+}
+
+#[test]
+fn bh1119_mt_e8_input_sum_overflow_prints_no_fee_figure() {
+    let r = encode_offline(E8_PSBT, &[]);
+    assert_ne!(r.code, Some(101), "mt panicked: {}", r.err);
+    assert!(
+        !r.err.lines().any(|l| l.starts_with("FEE       0.00050000")),
+        "a wrapped sum printed a fee; stderr:\n{}",
+        r.err
+    );
+    assert!(
+        r.err.lines().any(|l| l.starts_with("FEE       UNKNOWN")),
+        "no FEE UNKNOWN row; stderr:\n{}",
+        r.err
+    );
+}
