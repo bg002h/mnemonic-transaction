@@ -223,7 +223,8 @@ impl Report {
         let mut any_index_not_synced = false;
 
         let mut inputs = Vec::new();
-        let mut total_in = 0u64;
+        // None once the known values overflow u64: no total, so no fee figure.
+        let mut total_in: Option<u64> = Some(0);
         let mut all_known = true;
         let mut any_dead = false;
         let mut any_pending = false;
@@ -237,14 +238,14 @@ impl Report {
                 Some(n) => {
                     match n.txout(&i.previous_output.txid.to_string(), i.previous_output.vout) {
                         Utxo::Unspent(sats) => {
-                            total_in += sats;
+                            total_in = total_in.and_then(|t| t.checked_add(sats));
                             inputs.push((op, Some(sats), Provenance::ChainFetched));
                         }
                         Utxo::Unanswered => {
                             any_unanswered = true;
                             match claimed.iter().find(|(i, _, _)| *i == idx) {
                                 Some(&(_, sats, prov)) => {
-                                    total_in += sats;
+                                    total_in = total_in.and_then(|t| t.checked_add(sats));
                                     if !prov.is_verified() {
                                         operator_supplied = true;
                                     }
@@ -271,7 +272,7 @@ impl Report {
                             // values"; that OR was implemented as an either/or.
                             match claimed.iter().find(|(i, _, _)| *i == idx) {
                                 Some(&(_, sats, prov)) => {
-                                    total_in += sats;
+                                    total_in = total_in.and_then(|t| t.checked_add(sats));
                                     if !prov.is_verified() {
                                         operator_supplied = true;
                                     }
@@ -307,7 +308,7 @@ impl Report {
                     // Which one it was decides the column it renders in.
                     match claimed.iter().find(|(i, _, _)| *i == idx) {
                         Some(&(_, sats, prov)) => {
-                            total_in += sats;
+                            total_in = total_in.and_then(|t| t.checked_add(sats));
                             if !prov.is_verified() {
                                 operator_supplied = true;
                             }
@@ -322,11 +323,13 @@ impl Report {
             }
         }
 
-        let total_out: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let total_out: Option<u64> = crate::validate::checked_output_total(tx);
         // The FEE carries the WEAKEST provenance of any input. If one value was
         // asserted rather than fetched, the whole figure is claimed — and it is
         // the number the operator uses to decide whether to cut at all.
-        let fee = if all_known && total_in >= total_out {
+        let fee = if let Some((total_out, total_in)) =
+            total_out.zip(total_in).filter(|(o, i)| all_known && i >= o)
+        {
             // The WEAKEST provenance of any input. One claimed value makes the
             // whole figure claimed — it is a sum, so it is exactly as trustworthy
             // as its least trustworthy term.
