@@ -1,0 +1,74 @@
+diff --git i/crates/mt-cli/tests/refusals.rs w/crates/mt-cli/tests/refusals.rs
+index 428177a..6f9ca8b 100644
+--- i/crates/mt-cli/tests/refusals.rs
++++ w/crates/mt-cli/tests/refusals.rs
+@@ -1111,17 +1111,22 @@ fn a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound() {
+     // Give it a witness_utxo so a value is still available at all.
+     psbt.inputs[0].witness_utxo = Some(prev.output[0].clone());
+ 
+-    let (_, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
+-    if ok {
+-        assert!(
+-            !err.contains("TXID-BOUND"),
+-            "a value read from witness_utxo was labelled TXID-BOUND:\n{err}"
+-        );
+-        assert!(
+-            err.contains("PSBT-CLAIMED — unverified"),
+-            "the fallback value must render as unverified:\n{err}"
+-        );
+-    }
++    // bughunt-1119 FIX-E (T16): the record proves the outpoint does not exist,
++    // so encode now refuses outright; no row is printed under any heading.
++    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
++    assert_refused(&out, &err, ok, "§8.2d");
++    assert!(
++        err.contains(&format!(
++            "REFUSED — §8.2d, input 0 spends output {high} of {}, which has {} output(s)",
++            prev.compute_txid(),
++            prev.output.len()
++        )),
++        "got:\n{err}"
++    );
++    assert!(
++        !err.contains("TXID-BOUND"),
++        "a value read from witness_utxo was labelled TXID-BOUND:\n{err}"
++    );
+ }
+ 
+ // ── the flags that quietly did nothing ──────────────────────────────────────
+diff --git i/crates/mt-cli/tests/refusals.toml w/crates/mt-cli/tests/refusals.toml
+index b2c1304..b989b22 100644
+--- i/crates/mt-cli/tests/refusals.toml
++++ w/crates/mt-cli/tests/refusals.toml
+@@ -68,6 +68,31 @@ spec  = "§8.2d"
+ test  = "refuses_a_non_witness_utxo_that_does_not_hash_to_its_input"
+ check = "src/validate.rs::non_witness_utxo_guard"
+ 
++# bughunt-1119 FIX-E (T17): §8.2b's output range, in Core's CheckTransaction
++# order -- vout non-empty, each output at most 21,000,000 BTC, the running
++# total at most 21,000,000 BTC. Three checks, three entries.
++[[refusal]]
++spec  = "§8.2b"
++test  = "bh1119_mt_i16_encode_refuses_zero_outputs"
++check = "src/validate.rs::value_guard"
++
++[[refusal]]
++spec  = "§8.2b"
++test  = "bh1119_mt_i16_encode_refuses_output_above_money_range"
++check = "src/validate.rs::value_guard"
++
++[[refusal]]
++spec  = "§8.2b"
++test  = "bh1119_mt_i16_encode_refuses_output_total_above_money_range"
++check = "src/validate.rs::value_guard"
++
++# bughunt-1119 FIX-E (T16): a txid-bound record with no output at the input's
++# vout proves the outpoint does not exist. Refused always.
++[[refusal]]
++spec  = "§8.2d"
++test  = "a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound"
++check = "src/validate.rs::non_witness_utxo_guard"
++
+ [[refusal]]
+ spec  = "§8.2e"
+ test  = "refuses_unrecognised_input_naming_what_was_seen"
