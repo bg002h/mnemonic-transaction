@@ -515,3 +515,77 @@ fn bh1119_mt_f_inspect_json_elided_transliteration_prints_plate_position() {
         "the plate position, not the restored-string position (26)"
     );
 }
+
+// ---- Q2 (Brian 2026-11-22, #23 Q2): a typo inside the restored prefix prints once --
+
+/// Input B of fold r1b: even string 1 with the next charset symbol at 0-based
+/// offsets 20, 25, 30, 35, 40 (unreadable: over budget) and its offset 6 `8`
+/// typed `b` (inside the prefix), then all six strings elided. P2 finds no full
+/// line that resolves and falls back to the typed prefix, so every elided line
+/// inherits the `b`.
+fn unreadable_full_typed_b_then_all_elided() -> String {
+    let st = even();
+    assert_eq!(&st[0][6..7], "8");
+    let mut lines = vec![put(&damage(&st[0], &[20, 25, 30, 35, 40]), 6, 'b')];
+    lines.extend(st.iter().map(|l| l[ELIDED_DROP..].to_string()));
+    join(&lines)
+}
+
+/// The `pos` warnings of a `--json` warnings array, and the rest unchanged.
+fn assert_one_prefix_warning(w: &[String]) {
+    let pos: Vec<&String> = w.iter().filter(|x| x.starts_with("pos ")).collect();
+    assert_eq!(
+        pos,
+        ["pos 7: you typed b, mt read it as 8"],
+        "once, at the full plate's position, none for the elided plates:\n{w:#?}"
+    );
+    let rest: Vec<&String> = w.iter().filter(|x| !x.starts_with("pos ")).collect();
+    assert_eq!(
+        rest,
+        [
+            "no bitcoind reachable: nothing here is confirmed against the chain",
+            "string 1 could not be read: character 'b' at data-part offset 3 is not in the bech32 alphabet",
+        ],
+        "{w:#?}"
+    );
+}
+
+/// Text: exactly one transliteration row, `pos   7` on the full plate; the six
+/// elided plates print none for it.
+#[test]
+fn bh1119_mt_f_prefix_transliteration_inherited_by_elided_prints_once() {
+    let o = run("decode", &[], &unreadable_full_typed_b_then_all_elided());
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    let err = s(&o.stderr);
+    assert_eq!(
+        err.matches("  pos   7   you typed b, mt read it as 8\n")
+            .count(),
+        1,
+        "once, on the full plate:\n{err}"
+    );
+    assert_eq!(err.matches("you typed").count(), 1, "{err}");
+}
+
+/// `mt decode --json` (document on stderr): exactly one `pos 7` warning.
+#[test]
+fn bh1119_mt_f_decode_json_prefix_transliteration_inherited_by_elided_prints_once() {
+    let o = run(
+        "decode",
+        &["--json"],
+        &unreadable_full_typed_b_then_all_elided(),
+    );
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_one_prefix_warning(&json_warnings(&s(&o.stderr)));
+}
+
+/// `mt inspect --json` (document on stdout): the same.
+#[test]
+fn bh1119_mt_f_inspect_json_prefix_transliteration_inherited_by_elided_prints_once() {
+    let o = run(
+        "inspect",
+        &["--json"],
+        &unreadable_full_typed_b_then_all_elided(),
+    );
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_one_prefix_warning(&json_warnings(&s(&o.stdout)));
+}
