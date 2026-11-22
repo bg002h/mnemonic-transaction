@@ -421,7 +421,9 @@ pub fn encode_index_not_synced_warning() -> crate::refusal::Warning {
          Do not build a replacement transaction on this answer: if this one \
          is already mined, a replacement pays twice. Engraving takes about 21 \
          minutes per plate and is permanent. Run mt again once getindexinfo \
-         shows the txindex synced.",
+         shows the txindex synced. Bitcoin Core before 0.21 has no \
+         getindexinfo, so that never happens there: point mt at Bitcoin Core \
+         0.21 or newer with -txindex.",
     )
 }
 

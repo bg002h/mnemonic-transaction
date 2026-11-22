@@ -202,19 +202,20 @@ wording list (`mnemonic-refugium` `design/WORDING_REVIEW.md`) as a row after mer
                                  node has not reported its -txindex synced: mt cannot tell whether this
                                  transaction is already mined or someone else spent the input. mt will
                                  not guess DEAD. Run mt again once getindexinfo shows the txindex synced
+                                 (Bitcoin Core before 0.21 has no getindexinfo: point mt at a newer node)
 
   (Rust source text: `"UNKNOWN — an input is not in the UTXO set, its parent
   confirmed, and this\n` + 27 spaces + `node has not reported its -txindex synced:
   mt cannot tell whether this\n` + 27 spaces + `transaction is already mined or
   someone else spent the input. mt will\n` + 27 spaces + `not guess DEAD. Run mt
-  again once getindexinfo shows the txindex synced"`. True in all four non-synced
+  again once getindexinfo shows the txindex synced\n` + 27 spaces + `(Bitcoin Core before 0.21 has no getindexinfo: point mt at a newer node)"`. True in all four non-synced
   states (it says "not reported", not "building"); names an RPC, prints no command
   line (B8).)
 - **W6 encode warning** (new `blocks.rs` function beside `encode_no_node_warning`,
   rendered by `refusal::Warning`'s Display, body wrapped at 68). Headline:
   `the node has not reported its -txindex synced — mt cannot tell whether this transaction is already mined.`
   Body source text (`\n` are line breaks):
-  `An input is not in the UTXO set and its parent is confirmed. Either this transaction is already in a block (it spent the input itself, and there is nothing left to engrave), or someone else spent the input (the plate would be scrap). Only a synced -txindex tells the two apart, and this node has not reported one.\n\nDo not build a replacement transaction on this answer: if this one is already mined, a replacement pays twice. Engraving takes about 21 minutes per plate and is permanent. Run mt again once getindexinfo shows the txindex synced.`
+  `An input is not in the UTXO set and its parent is confirmed. Either this transaction is already in a block (it spent the input itself, and there is nothing left to engrave), or someone else spent the input (the plate would be scrap). Only a synced -txindex tells the two apart, and this node has not reported one.\n\nDo not build a replacement transaction on this answer: if this one is already mined, a replacement pays twice. Engraving takes about 21 minutes per plate and is permanent. Run mt again once getindexinfo shows the txindex synced. Bitcoin Core before 0.21 has no getindexinfo, so that never happens there: point mt at Bitcoin Core 0.21 or newer with -txindex.`
   Rendered (architect's scratch build; stub: index building, own exit 5, parents
   confirmed):
 
@@ -229,7 +230,9 @@ wording list (`mnemonic-refugium` `design/WORDING_REVIEW.md`) as a row after mer
         Do not build a replacement transaction on this answer: if this one
         is already mined, a replacement pays twice. Engraving takes about 21
         minutes per plate and is permanent. Run mt again once getindexinfo
-        shows the txindex synced.
+        shows the txindex synced. Bitcoin Core before 0.21 has no
+        getindexinfo, so that never happens there: point mt at Bitcoin Core
+        0.21 or newer with -txindex.
 - Not new: `(testnet4)` on the OUT row comes from the existing
   `OUT {n} output(s)   ({network})` form; JSON `"Indeterminate"` is an existing
   value.
@@ -270,7 +273,7 @@ node and txindex UNKNOWN texts; the §8.5 and §6a refusals; the no-node warning
 All 34 rows are in a new test binary `crates/mt-cli/tests/node_tristate.rs`
 (`mt-cli::node_tristate`). Its exact text is the sidecar
 `design/FIX_bh1119_mt_node_tristate/node_tristate.rs.txt` (sha256
-`1d6c6bdfab0f9db85496decceb83e2c8ebe03a30dc590f2614f2bce374583786`); the builder's
+`606cdacb2b01ba238bd68836f68771d4642458155070a479690eeaed3abab5e8`); the builder's
 RED commit copies it to that path unchanged. Every row drives `mt inspect` or
 `mt encode` on `tests/fixtures/p5_base.json`'s `raw_hex` (two inputs, one output,
 regtest) against a scripted `bitcoin-cli` whose defaults are: `getblockcount`

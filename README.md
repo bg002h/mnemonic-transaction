@@ -40,6 +40,7 @@ cargo build
 constellation's normal posture. With a real `bitcoin-cli` on `PATH`, `mt`
 consults it automatically and asks the operator for nothing — `bitcoin-cli`
 already holds the RPC URL, the cookie, the network and the wallet.
+`mt` supports Bitcoin Core 0.21 or newer, with -txindex for full node checks.
 
 ## Verifying the tool, not just running it
 

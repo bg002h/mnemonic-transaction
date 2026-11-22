@@ -146,7 +146,7 @@ impl Status {
                 "UNKNOWN — the node did not answer every question: a call failed or\n                           its reply could not be read. mt will not guess DEAD from a missing\n                           answer. Check the node, then run mt again"
             }
             Self::IndexNotSynced => {
-                "UNKNOWN — an input is not in the UTXO set, its parent confirmed, and this\n                           node has not reported its -txindex synced: mt cannot tell whether this\n                           transaction is already mined or someone else spent the input. mt will\n                           not guess DEAD. Run mt again once getindexinfo shows the txindex synced"
+                "UNKNOWN — an input is not in the UTXO set, its parent confirmed, and this\n                           node has not reported its -txindex synced: mt cannot tell whether this\n                           transaction is already mined or someone else spent the input. mt will\n                           not guess DEAD. Run mt again once getindexinfo shows the txindex synced\n                           (Bitcoin Core before 0.21 has no getindexinfo: point mt at a newer node)"
             }
         }
     }
