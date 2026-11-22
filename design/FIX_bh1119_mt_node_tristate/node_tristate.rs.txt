@@ -475,3 +475,221 @@ fn bh1119_mt_c1_dead_input_outranks_unanswered_input() {
         "{o}"
     );
 }
+
+// ---- I-1 (review r1): a txindex that is not reported synced ----------------
+//
+// Core answers `getrawtransaction` from a txindex that is still building
+// (node/transaction.cpp GetTransaction calls FindTx whether or not the index
+// is synced), so an old parent reads confirmed while THIS transaction, mined
+// above the index frontier, exits 5. Own "not found" proves nothing then, and
+// "input null + parent confirmed" is also exactly the already-mined shape.
+
+const TXINDEX_BUILDING: &str =
+    "  getindexinfo) echo '{\"txindex\": {\"synced\": false, \"best_block_height\": 10}}' ;;";
+
+/// RULED (architect, I-1): the STATUS row when an input is spent, its parent
+/// confirmed, and the node has not reported a synced txindex.
+const STATUS_INDEX_NOT_SYNCED: &str = "STATUS    UNKNOWN — an input is not in the UTXO set, its parent confirmed, and this\n                           node has not reported its -txindex synced: mt cannot tell whether this\n                           transaction is already mined or someone else spent the input. mt will\n                           not guess DEAD. Run mt again once getindexinfo shows the txindex synced\n";
+
+/// RULED (architect, I-1): `encode`'s warning headline for the same.
+const ENCODE_INDEX_NOT_SYNCED_HEADLINE: &str = "WARNING: the node has not reported its -txindex synced — mt cannot tell whether this transaction is already mined.";
+
+fn assert_index_not_synced_inspect(o: &str, why: &str) {
+    assert!(!o.contains("STATUS    DEAD"), "{why}: reported DEAD:\n{o}");
+    assert!(
+        !o.to_lowercase().contains("scrap"),
+        "{why}: said scrap:\n{o}"
+    );
+    assert!(
+        o.ends_with(STATUS_INDEX_NOT_SYNCED),
+        "{why}: STATUS row is not the index-not-synced text:\n{o}"
+    );
+}
+
+fn assert_index_not_synced_encode(rc: Option<i32>, o: &str, e: &str, why: &str) {
+    assert_eq!(rc, Some(0), "{why}: encode refused:\n{e}");
+    assert!(!e.contains("can never be broadcast"), "{why}: {e}");
+    assert!(!e.contains("REFUSED"), "{why}: {e}");
+    assert!(!o.trim().is_empty(), "{why}: no strings produced");
+    assert!(
+        e.contains(ENCODE_INDEX_NOT_SYNCED_HEADLINE),
+        "{why}: warning missing:\n{e}"
+    );
+    assert!(
+        e.contains("Do not build a replacement transaction"),
+        "{why}: pay-twice caution missing:\n{e}"
+    );
+}
+
+/// I-1: txindex building, own txid not found (exit 5), inputs null, parents
+/// confirmed -> not DEAD; the index-not-synced UNKNOWN text.
+#[test]
+fn bh1119_mt_c1_unsynced_txindex_own_not_found_is_not_dead() {
+    let s = stub(&format!(
+        "{TXINDEX_BUILDING}\n  gettxout) exit 0 ;;\n{}",
+        parents_answer(CONFIRMED)
+    ));
+    let (rc, o, e) = run("inspect", &s, &[]);
+    assert_eq!(rc, Some(0), "{e}");
+    assert_index_not_synced_inspect(&o, "txindex building");
+}
+
+/// I-1, `--json`: "Indeterminate", never "Dead".
+#[test]
+fn bh1119_mt_c1_unsynced_txindex_own_not_found_json_is_indeterminate() {
+    let s = stub(&format!(
+        "{TXINDEX_BUILDING}\n  gettxout) exit 0 ;;\n{}",
+        parents_answer(CONFIRMED)
+    ));
+    let (rc, o, e) = run("inspect", &s, &["--json"]);
+    assert_eq!(rc, Some(0), "{e}");
+    let v: serde_json::Value = serde_json::from_str(&o).expect("inspect --json is JSON");
+    assert_eq!(v["status"], "Indeterminate", "{o}");
+}
+
+/// I-1, encode: no §8.5 refusal (its remedy pays twice on a mined plate);
+/// warns and proceeds.
+#[test]
+fn bh1119_mt_c1_unsynced_txindex_own_not_found_encode_is_not_never_broadcast() {
+    let s = stub(&format!(
+        "{TXINDEX_BUILDING}\n  gettxout) exit 0 ;;\n{}",
+        parents_answer(CONFIRMED)
+    ));
+    let (rc, o, e) = run("encode", &s, &[]);
+    assert_index_not_synced_encode(rc, &o, &e, "txindex building");
+}
+
+/// I-1, the other getindexinfo states that are not "synced": a failed call
+/// (Core before 0.21: method not found, -32601 -> exit 89) and a reply with no
+/// txindex member. Neither is a synced index, so neither licenses DEAD.
+#[test]
+fn bh1119_mt_c1_unreported_txindex_own_not_found_is_not_dead() {
+    for (arm, why) in [
+        ("  getindexinfo) exit 89 ;;", "getindexinfo failed"),
+        ("  getindexinfo) echo '{}' ;;", "no txindex member"),
+    ] {
+        let s = stub(&format!(
+            "{arm}\n  gettxout) exit 0 ;;\n{}",
+            parents_answer(CONFIRMED)
+        ));
+        let (rc, o, e) = run("inspect", &s, &[]);
+        assert_eq!(rc, Some(0), "{why}: {e}");
+        assert_index_not_synced_inspect(&o, why);
+        let (rc, o, e) = run("encode", &s, &[]);
+        assert_index_not_synced_encode(rc, &o, &e, why);
+    }
+}
+
+/// The index state is read BEFORE this transaction's own question: an index
+/// that finishes between the two would otherwise license DEAD on a "not
+/// found" given while it was still building. The stub reports synced only
+/// after the own txid was asked.
+fn index_syncs_after_own_question() -> Stub {
+    let (_own, parents) = fixture_txids(&base());
+    let mut arms = String::new();
+    for p in &parents {
+        arms.push_str(&format!("      {}*) echo '{CONFIRMED}' ;;\n", &p[..16]));
+    }
+    stub(&format!(
+        "  getindexinfo)\n    if [ -e \"$(dirname \"$0\")/own-asked\" ]; then echo '{{\"txindex\": {{\"synced\": true, \"best_block_height\": 963832}}}}'; else echo '{{\"txindex\": {{\"synced\": false, \"best_block_height\": 10}}}}'; fi ;;\n  gettxout) exit 0 ;;\n  getrawtransaction)\n    case \"$arg1\" in\n{arms}      *) : > \"$(dirname \"$0\")/own-asked\"; exit 5 ;;\n    esac ;;"
+    ))
+}
+
+#[test]
+fn bh1119_mt_c1_txindex_state_read_before_own_question_inspect() {
+    let s = index_syncs_after_own_question();
+    let (rc, o, e) = run("inspect", &s, &[]);
+    assert_eq!(rc, Some(0), "{e}");
+    assert_index_not_synced_inspect(&o, "index synced after the own question");
+}
+
+#[test]
+fn bh1119_mt_c1_txindex_state_read_before_own_question_encode() {
+    let s = index_syncs_after_own_question();
+    let (rc, o, e) = run("encode", &s, &[]);
+    assert_index_not_synced_encode(rc, &o, &e, "index synced after the own question");
+}
+
+/// N6 order 5 before 6 (review r1 M-1): an unanswered input outranks the
+/// txindex UNKNOWN (parent not found, no synced index).
+#[test]
+fn bh1119_mt_c1_unanswered_outranks_txindex_unknown() {
+    let (_own, parents) = fixture_txids(&base());
+    let s = stub(&format!(
+        "{TXINDEX_BUILDING}\n  gettxout)\n    case \"$arg1\" in\n      {}*) exit 1 ;;\n      *) exit 0 ;;\n    esac ;;",
+        &parents[0][..16]
+    ));
+    let (rc, o, e) = run("inspect", &s, &[]);
+    assert_eq!(rc, Some(0), "{e}");
+    assert_unanswered_inspect(&o, "unanswered beside a txindex UNKNOWN");
+}
+
+/// N6 order 5 before 6a: an unanswered input outranks index-not-synced (the
+/// failed call is the one a re-run in seconds can fix).
+#[test]
+fn bh1119_mt_c1_unanswered_outranks_index_not_synced() {
+    let (_own, parents) = fixture_txids(&base());
+    let s = stub(&format!(
+        "{TXINDEX_BUILDING}\n  gettxout)\n    case \"$arg1\" in\n      {}*) exit 1 ;;\n      *) exit 0 ;;\n    esac ;;\n{}",
+        &parents[0][..16],
+        parents_answer(CONFIRMED)
+    ));
+    let (rc, o, e) = run("inspect", &s, &[]);
+    assert_eq!(rc, Some(0), "{e}");
+    assert_unanswered_inspect(&o, "unanswered beside index-not-synced");
+}
+
+// ---- mt-median-time-substring (folded by architect I-1 ruling) --------------
+
+/// The fixture with a TIMESTAMP lock (2027) that its inputs enforce, so the
+/// LOCKTIME row asks the node for MTP.
+fn timelocked_hex() -> String {
+    let hex = base()["raw_hex"].as_str().unwrap().to_string();
+    let mut tx: bitcoin::Transaction =
+        bitcoin::consensus::deserialize(&common::hex_to_bytes(&hex)).unwrap();
+    tx.lock_time = bitcoin::absolute::LockTime::from_consensus(1_800_000_000);
+    for i in &mut tx.input {
+        i.sequence = bitcoin::Sequence(0xFFFF_FFFE);
+    }
+    bitcoin::consensus::encode::serialize_hex(&tx)
+}
+
+fn locktime_row_with(blockchaininfo: &str) -> String {
+    let s = stub(&format!(
+        "  getblockchaininfo) echo '{blockchaininfo}' ;;\n  gettxout) exit 0 ;;"
+    ));
+    let f = file_with(&timelocked_hex());
+    let out = mt()
+        .args(["inspect", "--bitcoin-cli"])
+        .arg(&s.path)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let o = String::from_utf8_lossy(&out.stdout).into_owned();
+    o.lines()
+        .find(|l| l.starts_with("LOCKTIME"))
+        .unwrap_or_else(|| panic!("no LOCKTIME row:\n{o}"))
+        .to_string()
+}
+
+/// `getblockchaininfo` is parsed as JSON: a `mediantime` that is not a JSON
+/// integer is no answer, never the digits before its first non-digit
+/// (`1.7e9` read as 1, printed as 1970).
+#[test]
+fn bh1119_mt_median_time_exponent_reply_is_not_1970() {
+    let row = locktime_row_with(r#"{"chain": "regtest", "mediantime": 1.7e9}"#);
+    assert!(row.contains("LOCKED UNTIL 2027-"), "{row}");
+    assert!(
+        !row.contains("1970"),
+        "an unreadable MTP was printed: {row}"
+    );
+}
+
+/// Guard: Core's integer `mediantime` is read and printed as a date.
+#[test]
+fn bh1119_mt_median_time_integer_reply_is_read() {
+    let row = locktime_row_with(r#"{"chain": "regtest", "mediantime": 1700000000}"#);
+    assert!(row.contains("current MTP 2023-11-14T22:13Z"), "{row}");
+}

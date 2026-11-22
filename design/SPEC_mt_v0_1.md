@@ -575,7 +575,7 @@ overturned an earlier assumption and are marked.
    | state | how `mt` knows | what the recoverer does |
    | --- | --- | --- |
    | **LIVE** | `gettxout` returns a value | the input is unspent **in the UTXO set**. A conflicting spend may already sit in a mempool this node did not consult — see below |
-   | **DEAD** | `null`, **and** the parent is **CONFIRMED** (`getrawtransaction <parent> true` returns `confirmations ≥ 1`) | the input was spent by someone else. **The plate is scrap** |
+   | **DEAD** | `null`, **and** the parent is **CONFIRMED** (`getrawtransaction <parent> true` returns `confirmations ≥ 1`), **and** the node reported a synced `-txindex` (`getindexinfo`) before `mt` asked about this transaction | the input was spent by someone else. **The plate is scrap** |
    | **PENDING** | `null`, and the parent is **not found — or is found only in the mempool** | the parent has not confirmed. **The plate may still become live** — find out what happened to the parent |
    | **UNKNOWN** | `null`, and no `-txindex` | `mt` cannot distinguish DEAD from PENDING and says so |
 
