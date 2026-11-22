@@ -127,6 +127,18 @@ restore source. Rule P2 applies T19 there; section 9 O1 names the one extension.
   the step-3 resolution into one helper both call, so the two cannot drift.
   Effect: a repair or transliteration is reported once, on the plate that carries
   it; an elided plate spends its own budget only.
+- **P3 (carriers for E1 and the Q3 line).** (a) `mt_codec::string_layer::pipeline::DecodedChunk`
+  gains `pub input_position: usize` (1-based place of the string it was read from,
+  the same number `Unreadable.input_position` prints); `decode` sets it from the
+  `enumerate` index it already has, and a duplicate keeps the position of the copy
+  it keeps. (b) `read_strings::ReadStrings` gains `pub elided: Vec<bool>` (one
+  entry per string, input order; true when the input line did not begin `mt1`) and
+  `pub prefix_fallback: Option<usize>` (the 1-based input place of the line P2 fell
+  back to, `None` otherwise). (c) `Transliteration` gains `pub line: usize` (1-based
+  input place of the string it was found on). (d) `margin_report` and
+  `transliteration_notices` take `&ReadStrings` for those three facts. A chunk is
+  "from an elided line" when `read.elided[chunk.input_position - 1]`; a note when
+  `read.elided[note.line - 1]`.
 - **E1 (Brian 2026-11-22, rows 17-19, 21-29).** An elided line is a line of the input
   that does not begin `mt1` (§3b detection, unchanged). In every CORRECTION row
   (`main.rs:1128`, `              pos {:>3}   read X, corrected to Y`) and every
@@ -140,8 +152,9 @@ restore source. Rule P2 applies T19 there; section 9 O1 names the one extension.
   the `{:>3}` width are unchanged. The rule applies wherever those rows print
   (`decode`, `verify`, `inspect`: the `transliteration_notices` and `margin_report`
   call sites `main.rs:1388-1390`, `:1438-1440`, `:1768-1770`). When a chunk is
-  present twice, its rows describe the copy kept (`set_notices`' KEPT line), so
-  they count that copy's line. The same number is printed in the `--json`
+  present twice, its CORRECTION rows describe the copy kept (`set_notices`' KEPT
+  line) and count that copy's line; a transliteration row describes the line it
+  was typed on, kept or discarded. The same number is printed in the `--json`
   transliteration warning string `pos N: you typed X, mt read it as Y` of
   `decode --json` (`main.rs:1331`, document on stderr) and `inspect --json`
   (`main.rs:1712`, document on stdout): on an elided line N is the plate
