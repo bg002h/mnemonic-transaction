@@ -552,3 +552,38 @@ fn bh1119_mt_e8_input_sum_overflow_prints_no_fee_figure() {
         r.err
     );
 }
+
+const E8_OUT_GT_WRAPPED: &str = "cHNidP8BAHsCAAAAApNQa950Pg3SfkkzqbRZcNyXuPVbzwfWYT0ts9C7fD3RAQAAAAD9/////XKNyD5B8HhNv75gtz2h4sZBEu4uSrD+t4GEWwfkyLYBAAAAAP3///8BAOmkNQAAAAAWABR/rnOnEnyPrJsApsti+yrUOelRbQAAAAAAAQEfAITXFwAAAIAWABQAkct5WAAC+kl1h1AXKGIn0Eyu4QEIawJHMEQCIGogM2xZVmrWQ+HXfip3sAsKw180VFJged/QkGRssi5ZAiAB+ci/6tYfMOrYvjabC7bp5vgSnEXGM+OOoNOhffH6FwEhAtlpXPRi5Y9ReNJKPotR0jibAe31BszO7vVxRui0e35YAAEBH7DA1hcAAACAFgAUQ1vZcy0ry5/4I13e7sZCT0okNOYBCGsCRzBEAiB/fwiRSGe/ENERJ/cySc1rRwuZM5LDt6G56nIQs1MLkAIgFaCMN72JfMrYMP7zNTJ+o0e5Lvmb1Tgw9RNEefznYYMBIQINb72XlS6faMZa7Pz9AL18sZZr6uFvN5v6hLy9INS8FgAiAgKlqdUTc7ppxGfRy2TgxyqxlaKf26zuRLpBMuE8znKRkRgbA468VAAAgAEAAIAAAACAAAAAAAgAAAAA";
+const E8_WRAPPED_FEE_100: &str = "cHNidP8BAHsCAAAAApNQa950Pg3SfkkzqbRZcNyXuPVbzwfWYT0ts9C7fD3RAQAAAAD9/////XKNyD5B8HhNv75gtz2h4sZBEu4uSrD+t4GEWwfkyLYBAAAAAP3///8BTESuLwAAAAAWABR/rnOnEnyPrJsApsti+yrUOelRbQAAAAAAAQEfAITXFwAAAIAWABQAkct5WAAC+kl1h1AXKGIn0Eyu4QEIawJHMEQCIGogM2xZVmrWQ+HXfip3sAsKw180VFJged/QkGRssi5ZAiAB+ci/6tYfMOrYvjabC7bp5vgSnEXGM+OOoNOhffH6FwEhAtlpXPRi5Y9ReNJKPotR0jibAe31BszO7vVxRui0e35YAAEBH7DA1hcAAACAFgAUQ1vZcy0ry5/4I13e7sZCT0okNOYBCGsCRzBEAiB/fwiRSGe/ENERJ/cySc1rRwuZM5LDt6G56nIQs1MLkAIgFaCMN72JfMrYMP7zNTJ+o0e5Lvmb1Tgw9RNEefznYYMBIQINb72XlS6faMZa7Pz9AL18sZZr6uFvN5v6hLy9INS8FgAiAgKlqdUTc7ppxGfRy2TgxyqxlaKf26zuRLpBMuE8znKRkRgbA468VAAAgAEAAIAAAACAAAAAAAgAAAAA";
+const E8_LEGACY: &str = "cHNidP8BAHsCAAAAApNQa950Pg3SfkkzqbRZcNyXuPVbzwfWYT0ts9C7fD3RAQAAAAD9/////XKNyD5B8HhNv75gtz2h4sZBEu4uSrD+t4GEWwfkyLYBAAAAAP3///8BYIGtLwAAAAAWABR/rnOnEnyPrJsApsti+yrUOelRbQAAAAAAAQEfAITXFwAAAIAWABQAkct5WAAC+kl1h1AXKGIn0Eyu4QEHakcwRAIgaiAzbFlWatZD4dd+KnewCwrDXzRUUmB539CQZGyyLlkCIAH5yL/q1h8w6ti+NpsLtunm+BKcRcYz446g06F98foXASEC2Wlc9GLlj1F40ko+i1HSOJsB7fUGzM7u9XFG6LR7flgAAQEfsMDWFwAAAIAWABRDW9lzLSvLn/gjXd7uxkJPSiQ05gEHakcwRAIgf38IkUhnvxDRESf3MknNa0cLmTOSw7ehuepyELNTC5ACIBWgjDe9iXzK2DD+8zUyfqNHuS75m9U4MPUTRHn852GDASECDW+9l5Uun2jGWuz8/QC9fLGWa+rhbzeb+oS8vSDUvBYAIgICpanVE3O6acRn0ctk4McqsZWin9us7kS6QTLhPM5ykZEYGwOOvFQAAIABAACAAAAAgAAAAAAIAAAAAA==";
+#[test]
+fn bh1119_mt_e8_overflow_input_sum_skips_value_guard() {
+    let r = encode_offline(E8_OUT_GT_WRAPPED, &[]);
+    assert_ne!(r.code, Some(101), "{}", r.err);
+    assert!(
+        !r.err.contains("REFUSED"),
+        "refused on a wrapped total:\n{}",
+        r.err
+    );
+    assert_eq!(r.code, Some(0), "{}", r.err);
+}
+#[test]
+fn bh1119_mt_e8_overflow_input_sum_gives_no_low_fee_rate() {
+    let r = encode_offline(E8_WRAPPED_FEE_100, &[]);
+    assert_ne!(r.code, Some(101), "{}", r.err);
+    assert!(
+        !r.err.contains("sat/vB"),
+        "low-fee rate from a wrapped total:\n{}",
+        r.err
+    );
+}
+#[test]
+fn bh1119_mt_e8_overflow_input_sum_gives_legacy_warning_no_fee() {
+    let r = encode_offline(E8_LEGACY, &[]);
+    assert_ne!(r.code, Some(101), "{}", r.err);
+    assert!(
+        !r.err.contains("mt therefore shows a fee of"),
+        "wrapped fee in the legacy warning:\n{}",
+        r.err
+    );
+}

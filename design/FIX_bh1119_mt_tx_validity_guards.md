@@ -382,8 +382,13 @@ Source: reviews s1 (Opus 5.5) and s2 (Sonnet 5.5) of head bebedc7f.
   `FEE UNKNOWN` row; `value_guard` skips, as for an unknown value. No new text.
   Rows: `bh1119_mt_e8_input_sum_overflow_does_not_panic` and
   `bh1119_mt_e8_input_sum_overflow_prints_no_fee_figure`.
+- **Re-review r1 I1** (three checked sums had no failing row): rows
+  `bh1119_mt_e8_overflow_input_sum_skips_value_guard` (`value_guard`),
+  `bh1119_mt_e8_overflow_input_sum_gives_no_low_fee_rate` (`low_fee_warning`) and
+  `bh1119_mt_e8_overflow_input_sum_gives_legacy_warning_no_fee` (`main.rs` encode `in_total`), on three E8 variants
+  (`E8_OUT_GT_WRAPPED`, `E8_WRAPPED_FEE_100`, `E8_LEGACY`). No code change; each fails on a wrapping-sum plant at its site.
 - **E8 is no longer filed open as an input-sum line** (§1 E8, §12): the sums are
   fixed here. Only **s1 I1 part (b)** stays open: whether `encode` refuses a PSBT
   whose input values break Core's `MoneyRange` (open point O3, FOLLOWUPS).
 - Gate row 11 extends to input sums: `grep -nE 'to_sat\(\)\)\.sum|sum::<Option|total_in \+=' crates/mt-cli/src/*.rs` prints nothing.
-  Rows by name: 24 in `tx_validity` (20 + 4).
+  Rows by name: 27 in `tx_validity` (20 + 7).
