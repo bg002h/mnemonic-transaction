@@ -226,7 +226,9 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
     // Every input's value must be known before the arithmetic means anything.
     // Where it is not, §8.2b's checks are SKIPPED rather than guessed — §8.2e
     // rules that a raw transaction with no node is warned about, never refused.
-    let Some(in_total) = input_values.iter().copied().sum::<Option<u64>>() else {
+    // An overflowing total is skipped too (no total, no number): refusing it is
+    // FIX open point O3, not decided here.
+    let Some(in_total) = checked_in_total(input_values).ok().flatten() else {
         return Ok(());
     };
 
@@ -283,13 +285,26 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
     Ok(())
 }
 
+/// Sum of the input values. `Ok(None)` = some value unknown (skip, as before);
+/// `Err(())` = the known values overflow u64 (no total exists, so no figure).
+#[allow(clippy::result_unit_err)]
+pub fn checked_in_total(input_values: &[Option<u64>]) -> Result<Option<u64>, ()> {
+    let Some(vals) = input_values.iter().copied().collect::<Option<Vec<u64>>>() else {
+        return Ok(None);
+    };
+    vals.iter()
+        .try_fold(0u64, |t, &v| t.checked_add(v))
+        .map(Some)
+        .ok_or(())
+}
+
 /// §8.2b's **warning**, not a refusal: there is no minimum fee.
 ///
 /// The threshold is a heuristic and will age, which is fine here for a reason
 /// worth stating: it is consumed **at encode time, by a human who is present**,
 /// and is never engraved. A number that ages is only dangerous on steel.
 pub fn low_fee_warning(tx: &Transaction, input_values: &[Option<u64>]) -> Option<Warning> {
-    let in_total: u64 = input_values.iter().copied().sum::<Option<u64>>()?;
+    let in_total: u64 = checked_in_total(input_values).ok().flatten()?;
     let out_total = checked_output_total(tx)?;
     let fee = in_total.checked_sub(out_total)?;
     let vb = vsize(tx).max(1) as u64;

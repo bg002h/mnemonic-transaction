@@ -517,7 +517,10 @@ fn bh1119_mt_i16_inspect_warning_is_first_on_stderr() {
     for input in [raw, strings.join("\n")] {
         let r = inspect_offline(&input, &[]);
         let w = r.err.find(&warned(ZERO_OUT)).expect("range warning");
-        let n = r.err.find("WARNING: no bitcoind reachable").expect("no-node warning");
+        let n = r
+            .err
+            .find("WARNING: no bitcoind reachable")
+            .expect("no-node warning");
         assert!(w < n, "range warning not first; stderr:\n{}", r.err);
     }
 }

@@ -364,3 +364,26 @@ Review: class B (funds path); up to three rounds (full track).
 One line owed to this build (closed by its GREEN commit) and one new Important
 filed by the author (E8): the input-value sums overflow on hostile `witness_utxo`
 values (exit 101 in the debug build, wrap in release).
+
+## 13. Review fold r1
+
+Source: reviews s1 (Opus 5.5) and s2 (Sonnet 5.5) of head bebedc7f.
+
+- **s2 I1, I2** (two E4 behaviours with no failing row): rows
+  `bh1119_mt_i16_inspect_strings_json_carries_the_warning_first` (strings path,
+  `--json`, `warnings[0]` = V1 + SUFFIX) and
+  `bh1119_mt_i16_inspect_warning_is_first_on_stderr` (W1 precedes the no-node
+  warning, raw and strings input). No code change; each fails on its plant.
+- **s1 I1 part (a)** (E8 input sums): every input-value sum is now checked, via
+  `validate::checked_in_total` (`Ok(None)` = a value unknown, `Err(())` = known
+  values overflow u64): `value_guard`, `low_fee_warning`, `main.rs` encode
+  `in_total`, and `report.rs` `total_in` (now `Option<u64>`, `checked_add`). An
+  overflow gives no total and no fee figure, so the report prints the existing
+  `FEE UNKNOWN` row; `value_guard` skips, as for an unknown value. No new text.
+  Rows: `bh1119_mt_e8_input_sum_overflow_does_not_panic` and
+  `bh1119_mt_e8_input_sum_overflow_prints_no_fee_figure`.
+- **E8 is no longer filed open as an input-sum line** (§1 E8, §12): the sums are
+  fixed here. Only **s1 I1 part (b)** stays open: whether `encode` refuses a PSBT
+  whose input values break Core's `MoneyRange` (open point O3, FOLLOWUPS).
+- Gate row 11 extends to input sums: `grep -nE 'to_sat\(\)\)\.sum|sum::<Option|total_in \+=' crates/mt-cli/src/*.rs` prints nothing.
+  Rows by name: 24 in `tx_validity` (20 + 4).

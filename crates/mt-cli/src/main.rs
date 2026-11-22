@@ -626,7 +626,11 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     // E3: checked. `value_guard` has already refused an out-of-range output set,
     // so `None` is unreachable here; the non-panicking fallback is 0.
     let out_total: u64 = validate::checked_output_total(&tx).unwrap_or(0);
-    let in_total: Option<u64> = values.iter().map(|v| v.map(|(s, _)| s)).sum();
+    // Checked: an overflowing total is no total (`fee_sat` None), not a wrapped one.
+    let in_total: Option<u64> =
+        validate::checked_in_total(&values.iter().map(|v| v.map(|(s, _)| s)).collect::<Vec<_>>())
+            .ok()
+            .flatten();
     let fee_sat = in_total.and_then(|i| i.checked_sub(out_total));
     for (n, inp) in tx.input.iter().enumerate() {
         // GATE ON THE PROVENANCE, not on `witness.is_empty()`. "Is this input
