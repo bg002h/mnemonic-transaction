@@ -8,7 +8,8 @@ Track: small (one Opus review round). Base: origin/main `1f6cc6b`. Branch
 `fix/mt-prefix-corrected`. No new holder-visible template: every printed template
 stays as it is; only the values printed into them change (section 4). Fold r1
 (2026-11-22) adds Brian's elided-plate ruling (section 2, rules E1-E2, spec delta
-in section 5) and review r1's I1 and M1.
+in section 5) and review r1's I1 and M1. Fold r1b (2026-11-22) adds Brian's
+`--json` ruling (E1 extended, rows 21-22) and measures Q2 (reachable; section 9).
 
 Not to be confused with the older `design/FIX_bughunt_mt_*.md` (a different hunt).
 
@@ -63,6 +64,11 @@ strings, prefix `mt1p9h8jqq9`) and `crates/mt-cli/tests/fixtures/p5_base.json`
   that plate (the 6th plate character prints `pos 6`, not 17). With no full plate,
   the v0.1 refusal naming the 8 characters after `mt1` stays; the 2^20
   chunk_set_id recovery search is a later feature (section 11), not built here.
+- **Brian 2026-11-22 (#23 Q1, `coordinator/memory/mt-json-plate-position-2026-11-22.md`),
+  binding.** The `--json` warning `pos N: you typed X, mt read it as Y` in
+  `mt decode --json` and `mt inspect --json` uses the plate position on an elided
+  line, matching the human CORRECTION/transliteration rows: "a holder must never
+  see two different positions for one character".
 
 I7 has no T-ruling of its own; grade-mt files it under FIX-F (`grade-mt.md:64, 95`)
 and the triage's direction (`triage-mt-t2.md:17`) is T19's rule applied to the
@@ -99,7 +105,7 @@ restore source. Rule P2 applies T19 there; section 9 O1 names the one extension.
   the step-3 resolution into one helper both call, so the two cannot drift.
   Effect: a repair or transliteration is reported once, on the plate that carries
   it; an elided plate spends its own budget only.
-- **E1 (Brian 2026-11-22, rows 17-19).** An elided line is a line of the input
+- **E1 (Brian 2026-11-22, rows 17-19, 21-22).** An elided line is a line of the input
   that does not begin `mt1` (§3b detection, unchanged). In every CORRECTION row
   (`main.rs:1128`, `              pos {:>3}   read X, corrected to Y`) and every
   transliteration row (`main.rs:1180`, `  pos {:>3}   you typed X, mt read it as
@@ -113,9 +119,15 @@ restore source. Rule P2 applies T19 there; section 9 O1 names the one extension.
   (`decode`, `verify`, `inspect`: the `transliteration_notices` and `margin_report`
   call sites `main.rs:1388-1390`, `:1438-1440`, `:1768-1770`). When a chunk is
   present twice, its rows describe the copy kept (`set_notices`' KEPT line), so
-  they count that copy's line. The `--json` warning string `pos N: you typed X, mt
-  read it as Y` (`main.rs:1331`, `:1712`) is NOT decided by this fold (section 9
-  Q1).
+  they count that copy's line. The same number is printed in the `--json`
+  transliteration warning string `pos N: you typed X, mt read it as Y` of
+  `decode --json` (`main.rs:1331`, document on stderr) and `inspect --json`
+  (`main.rs:1712`, document on stdout): on an elided line N is the plate
+  position, the same N the human row prints for that character (Brian
+  2026-11-22, #23 Q1; rows 21-22). Its template and the other warnings are
+  unchanged; `correction_warnings` (`main.rs:1060`) prints no position and is
+  untouched. A position inside the restored prefix (whole-string 4-11) is
+  reachable and NOT decided (section 9 Q2).
 - **E2 (Brian 2026-11-22, CONTROL row 20).** With no full line the §3b refusal is
   unchanged: exit 1, stdout empty, its remedy `Add the 8 characters following
   `mt1` on any intact string of the same set. (They are recoverable by search if
@@ -154,7 +166,11 @@ elided plate (E1, `even` with strings 2-6 elided):
                   pos   6   read w, corrected to d
       pos  15   you typed o, mt read it as 0
 
-(were `pos  17` and `pos  26`).
+and in the `--json` `warnings` array of `decode` and `inspect`:
+
+    "pos 15: you typed o, mt read it as 0"
+
+(were `pos  17`, `pos  26` and `"pos 26: ..."`).
 PROPOSED texts: none.
 
 ## 5. Spec, README, help, manual, CHANGELOG
@@ -177,14 +193,17 @@ PROPOSED texts: none.
      > coordinates.** Operator ruling 2026-11-22: the text that is not present on
      > an elided plate "is presumably available on a separate plate and could be
      > supplied when necessary". Where `mt` prints a position on an elided line
-     > (a CORRECTION row, `pos N   read X, corrected to Y`, or a transliteration
-     > row, `pos N   you typed X, mt read it as Y`), N counts from the first
-     > character engraved on that plate: the 6th character of an elided plate
-     > prints `pos   6`, not its place in the restored string (17). With no full
-     > string the refusal above stays; the search is a later feature.`
+     > (a CORRECTION row, `pos N   read X, corrected to Y`, a transliteration
+     > row, `pos N   you typed X, mt read it as Y`, or the `--json` warning
+     > `pos N: you typed X, mt read it as Y` of `mt decode` and `mt inspect`),
+     > N counts from the first character engraved on that plate: the 6th
+     > character of an elided plate prints `pos   6`, not its place in the
+     > restored string (17). With no full string the refusal above stays; the
+     > search is a later feature.`
   3. The positions rule (:1091-1095): after `Where the operator engraved with
      grouping, positions do **not** count the spaces.` add `**On an elided line
-     (§3b), CORRECTION and transliteration rows count the plate as engraved:**
+     (§3b), CORRECTION and transliteration rows, and the `--json` transliteration
+     warning, count the plate as engraved:**
      position 1 is the first character of the index, the restored prefix is not
      counted, and a BCH codeword index `k` is position `k − 7`.`
 - README, `--help`, `scripts/journeys.sh` (reads only the CUT string count, :134):
@@ -206,7 +225,10 @@ edition 2024 clean, clippy `-D warnings` clean when installed). Install as
     cargo nextest run --locked --build-jobs 6 -j 6 -p mt-cli --test prefix_corrected --no-fail-fast
 
 At 1f6cc6b (run on a `git archive` copy of 001f688, docs-only over it): `20 tests
-run: 5 passed, 15 failed` (the 5 are CONTROL rows 12, 14, 15, 19, 20). Each
+run: 5 passed, 15 failed` (the 5 are CONTROL rows 12, 14, 15, 19, 20). Fold r1b
+(rows 21-22 added; sidecar sha256
+`f9ea479976b80cd1e5e5826307df5c592b2248295bed236c59eecd7bb4033278`), run on a
+`git archive` copy of 59f021c: `22 tests run: 5 passed, 17 failed`. Each
 failure is at the row's first assertion, for the defect:
 
 | # | row (`bh1119_mt_f_` omitted) | input | base (RED) | after fix |
@@ -231,16 +253,20 @@ failure is at the row's first assertion, for the defect:
 | 18 | elided_transliteration_prints_plate_position (E1) | even, s2-6 elided, elided s2 offset 14 `0` typed `o`; decode | `  pos  26   you typed o, mt read it as 0` | `  pos  15   you typed o, mt read it as 0` |
 | 19 | full_plate_correction_keeps_string_position (E1, CONTROL) | even unelided, s2 offset 16 `d`->`w`; decode | `              pos  17   read w, corrected to d` | same |
 | 20 | all_elided_still_names_the_prefix (E2, CONTROL) | even, all six lines elided; decode | exit 1, stdout empty, remedy `Add the 8 characters following `mt1` on any intact string of the same set. (They are recoverable by search if that string is lost — mt v0.1 does not implement the search.)` (whitespace-flattened) | same |
+| 21 | decode_json_elided_transliteration_prints_plate_position (E1, Q1 ruling) | row 18's input; decode --json (document on stderr, parsed) | `warnings` = `["no bitcoind reachable: nothing here is confirmed against the chain", "pos 26: you typed o, mt read it as 0"]` | `warnings` = `["no bitcoind reachable: nothing here is confirmed against the chain", "pos 15: you typed o, mt read it as 0"]` (exactly) |
+| 22 | inspect_json_elided_transliteration_prints_plate_position (E1, Q1 ruling) | row 18's input; inspect --json (document on stdout, parsed) | same as row 21, `"pos 26: ..."` | same as row 21, `"pos 15: ..."` (exactly) |
 
 GREEN evidence (author's scratch fix, not committed; it is not the builder's
 code): with P0-P2 and C1 applied the 15 rows pass and the whole workspace runs
 `416 tests run: 416 passed` (402 on base + 14 at the time; row 8 was added after,
 and passes with the same scratch: `15 tests run: 15 passed`). Review r1 measured
 row 16 GREEN with that scratch plus the P2 candidates loop (`16/16`, workspace
-`418 tests run: 418 passed`). Rows 17-18 (E1) have no GREEN run yet; rows 19-20
+`418 tests run: 418 passed`). Rows 17-18 and 21-22 (E1) have no GREEN run yet; rows 19-20
 pass on base. No existing test asserts a position on an elided line (the two
 position tests, `decode_verify.rs:303, :565`, and `journeys.sh:211` use full
-plates). So **no existing test changes**; base plus this file is 422.
+plates), and none asserts a `--json` transliteration warning on an elided line
+(`grep -rn 'you typed' crates/mt-cli/tests` at 59f021c). So **no existing test
+changes**; base plus this file is 424.
 
 Also wanted (GREEN-only, cannot be RED because the field does not exist on base):
 a unit test in `pipeline.rs` `mod tests`,
@@ -251,23 +277,24 @@ clean string returns the same as `invariant_prefix(&clean)`.
 ## 7. Tests that change
 
 None (section 6 GREEN evidence). Added: `crates/mt-cli/tests/prefix_corrected.rs`
-(20 rows, verbatim from the sidecar) and the one codec unit test above.
+(22 rows, verbatim from the sidecar) and the one codec unit test above.
 `refusals.toml`: unchanged (no refusal added or removed; row 20 asserts the
 remedy text only, so `check-refusal-coverage.sh` still reports `42 refusal tests
 over 18 ruled refusals` with the sidecar installed on base).
 
 Coverage map (rule -> rows): P0 -> codec unit test; P1 -> 1-5; P2 -> 6-9, 12, 16;
-E1 -> 17, 18, 19; E2 -> 20; C1 -> 10, 11, 13, 15; C2 -> 14. Spec delta 1-3 ->
-17-20.
+E1 -> 17, 18, 19, 21, 22 (21-22: the `--json` sentence, Brian #23 Q1); E2 -> 20;
+C1 -> 10, 11, 13, 15; C2 -> 14. Spec delta 1-3 -> 17-22. Q2 (positions inside
+the restored prefix) -> no row until ruled.
 
 ## 8. Build order
 
-1. Install the sidecar; run the row command; see `20 tests run: 5 passed, 15 failed`.
+1. Install the sidecar; run the row command; see `22 tests run: 5 passed, 17 failed`.
 2. P0, then the codec unit test (GREEN).
 3. P1: rows 1-5 GREEN.
 4. P2 (with the shared step-3 helper): rows 6-9 and 16 GREEN, row 12 stays GREEN.
 5. C1: rows 10, 11, 13 GREEN; 14, 15 stay GREEN.
-6. E1: rows 17, 18 GREEN; 19, 20 stay GREEN. Re-sync the spec copy (section 5
+6. E1: rows 17, 18, 21, 22 GREEN; 19, 20 stay GREEN. Re-sync the spec copy (section 5
    spec delta) once mnemonic-engrave carries it.
 7. Gate (section 10) once to a file.
 
@@ -278,19 +305,31 @@ E1 -> 17, 18, 19; E2 -> 20; C1 -> 10, 11, 13, 15; C2 -> 14. Spec delta 1-3 ->
   and P2's autocorrect half if the architect wants only the triaged case.
 - **O2. Settled by Brian 2026-11-22** (section 2): plate positions, now rule E1
   with rows 17-19 and the section 5 spec delta.
-- **Q1 (OPEN, STOP for the architect/Brian).** The `--json` documents of `decode`
-  and `inspect` carry the transliteration note as a warning string `pos N: you
-  typed X, mt read it as Y` (`main.rs:1331`, `:1712`). The ruling names
-  CORRECTION and transliteration rows; whether this JSON string also prints the
-  plate position on an elided line (or keeps the whole-string position, or gains
-  a field naming which) is not decided. No row is written for it.
-- **Q2 (OPEN, STOP).** E1 subtracts 11; a correction at whole-string position
-  4-11 of an elided line (inside the restored prefix) has no plate position.
-  Within budget it cannot occur (the restored prefix is the corrected one, P2);
-  past budget, a BCH mis-correction that changes a prefix symbol changes the
-  chunk's version, set id or count, which the set checks (`header.rs:101`,
-  `pipeline.rs:292-304`) are expected to refuse (reasoned, not measured). Whether the
-  spec states it as unreachable, or decides a text for it, is not decided.
+- **Q1. Settled by Brian 2026-11-22** (section 2): the `--json` warning prints
+  the plate position; now part of rule E1 with rows 21-22 and spec delta edits 2-3.
+- **Q2 (OPEN, STOP: MEASURED REACHABLE, fold r1b).** E1 subtracts 11, so a
+  CORRECTION or transliteration at whole-string position 4-11 of an elided line
+  (inside the restored prefix) has no plate position. It is reachable when the
+  only line beginning `mt1` cannot be read and the set completes from elided
+  lines: P2 then falls back to that line's typed `full[..11]` (rule P2, last
+  sentence), and its typo is copied into every elided line. Measured at 59f021c
+  (`git archive` copy; the fallback is the code P2 keeps, and base step 3 reports
+  the full line unreadable, which is P2's resolution failing):
+  - Input A: `even` string 1 with the next charset symbol at 0-based offsets 7,
+    20, 25, 30, 35 (prefix typed `mt1p9h8nqq9`), then all six strings elided
+    (strings 1-6, each without its first 11 characters). `mt decode`, `mt verify`
+    and `mt inspect` exit 0; `UNREADABLE STRING. string 1 of the input could not
+    be read`; `CORRECTION APPLIED. 6 chunks needed repair:` and under each chunk
+    `              pos   8   read n, corrected to j`. Every one of those chunks
+    was read from an elided line; E1 gives 8 - 11 = -3.
+  - Input B: `even` string 1 with substitutions at offsets 20, 25, 30, 35, 40 and
+    its offset 6 `8` typed `b`, then all six strings elided. `mt decode` exits 0;
+    `  pos   7   you typed b, mt read it as 8` six times; `--json` warnings carry
+    `"pos 7: you typed b, mt read it as 8"` six times. E1 gives 7 - 11 = -4.
+  What these rows (human and `--json`) print for a position inside the restored
+  prefix on an elided line is not decided, and no text is invented here. The
+  builder must not compute `p + 1 + 3 - 11` in `usize` before this is ruled (it
+  underflows for data-part offset `p < 7`). No row is written for it.
 - **O3.** If the architect wants the restore source stated in the spec (§3b: "the
   prefix is taken from string 1 as BCH and transliteration resolve it"), that is an
   engrave spec edit and a re-sync, not part of this FIX.
@@ -303,8 +342,8 @@ The CI `test` job (`.github/workflows/ci.yml`) plus the rows:
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets --locked -- -D warnings`
 3. `cargo build --locked`
-4. `cargo nextest run --locked --no-fail-fast` (expect 423 run, 0 failed: 402 base
-   + 20 rows + 1 codec unit test; if another mt FIX lands first, base count moves
+4. `cargo nextest run --locked --no-fail-fast` (expect 425 run, 0 failed: 402 base
+   + 22 rows + 1 codec unit test; if another mt FIX lands first, base count moves
    by its own additions)
 5. `cargo test --locked --workspace --doc`
 6. `./scripts/check-refusal-coverage.sh` (expect `42 refusal tests over 18 ruled
@@ -313,7 +352,7 @@ The CI `test` job (`.github/workflows/ci.yml`) plus the rows:
 8. `./scripts/journeys.sh`
 9. `bash ci/docs-only.test.sh` and `bash ci/code-docs-check.sh`
 10. Rows by name: `cargo nextest run --locked -p mt-cli --test prefix_corrected`
-    -> `20 tests run: 20 passed`. Fewer than 20 is a FAIL.
+    -> `22 tests run: 22 passed`. Fewer than 22 is a FAIL.
 11. `grep -n 'r.set_prefix = pipeline::invariant_prefix' crates/mt-cli/src/main.rs` -> no output (P1; encode's PREFIX row at the `let prefix =` line keeps `pipeline::invariant_prefix(&strings[0])`, C2).
 
 ## 11. FOLLOWUPS (listed in the author's report, not appended here)

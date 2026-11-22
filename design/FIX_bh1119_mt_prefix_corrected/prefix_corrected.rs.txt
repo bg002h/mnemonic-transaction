@@ -462,3 +462,56 @@ fn bh1119_mt_f_all_elided_still_names_the_prefix() {
         s(&o.stderr)
     );
 }
+
+// ---- E1, `--json` (Brian 2026-11-22, #23 Q1): the warning string counts the plate --
+
+/// Even set, strings 2-6 elided, a typed `o` for the `0` at the 15th character of
+/// elided plate 2 (row 18's input).
+fn elided_plate2_typed_o() -> String {
+    let mut lines = even_elided();
+    assert_eq!(&lines[1][14..15], "0");
+    lines[1] = put(&lines[1], 14, 'o');
+    join(&lines)
+}
+
+/// The `warnings` array of a `--json` document, exactly.
+fn json_warnings(doc: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(doc).unwrap_or_else(|e| panic!("{e}:\n{doc}"));
+    v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no warnings array:\n{doc}"))
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// `mt decode --json` (document on stderr): the transliteration warning prints
+/// the plate position, as the human row does (row 18).
+#[test]
+fn bh1119_mt_f_decode_json_elided_transliteration_prints_plate_position() {
+    let o = run("decode", &["--json"], &elided_plate2_typed_o());
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(
+        json_warnings(&s(&o.stderr)),
+        [
+            "no bitcoind reachable: nothing here is confirmed against the chain",
+            "pos 15: you typed o, mt read it as 0",
+        ],
+        "the plate position, not the restored-string position (26)"
+    );
+}
+
+/// `mt inspect --json` (document on stdout): the same warning, the same position.
+#[test]
+fn bh1119_mt_f_inspect_json_elided_transliteration_prints_plate_position() {
+    let o = run("inspect", &["--json"], &elided_plate2_typed_o());
+    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(
+        json_warnings(&s(&o.stdout)),
+        [
+            "no bitcoind reachable: nothing here is confirmed against the chain",
+            "pos 15: you typed o, mt read it as 0",
+        ],
+        "the plate position, not the restored-string position (26)"
+    );
+}
