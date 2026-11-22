@@ -93,6 +93,10 @@ fn encode_offline(input: &str, extra: &[&str]) -> Run {
     run(&a, input)
 }
 
+fn encode_offline_with(input: &str, cli: &str) -> Run {
+    run(&["encode", "--bitcoin-cli", cli], input)
+}
+
 fn assert_refused_with(r: &Run, line: &str) {
     assert_ne!(r.code, Some(101), "mt panicked: {}", r.err);
     assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
@@ -584,6 +588,27 @@ fn bh1119_mt_e8_overflow_input_sum_gives_legacy_warning_no_fee() {
     assert!(
         !r.err.contains("mt therefore shows a fee of"),
         "wrapped fee in the legacy warning:\n{}",
+        r.err
+    );
+}
+
+/// E8 x node-tristate (merge of mt#17): a node whose `gettxout` reply carries no
+/// readable value leaves each input UNANSWERED, so the PSBT's own claimed values
+/// are summed -- and they overflow u64. No panic, no wrapped fee figure.
+#[test]
+fn bh1119_mt_e8_unanswered_input_sum_overflow_prints_no_fee_figure() {
+    let stub = common::node_stub(r#"{"bestblock": "00", "confirmations": 3}"#, &[]);
+    let r = encode_offline_with(E8_PSBT, stub.path().to_str().unwrap());
+    assert_ne!(r.code, Some(101), "mt panicked: {}", r.err);
+    assert!(!r.err.contains("panicked"), "stderr:\n{}", r.err);
+    assert!(
+        !r.err.lines().any(|l| l.starts_with("FEE       0.00050000")),
+        "a wrapped sum printed a fee; stderr:\n{}",
+        r.err
+    );
+    assert!(
+        r.err.lines().any(|l| l.starts_with("FEE       UNKNOWN")),
+        "no FEE UNKNOWN row; stderr:\n{}",
         r.err
     );
 }

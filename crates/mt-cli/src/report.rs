@@ -245,7 +245,7 @@ impl Report {
                             any_unanswered = true;
                             match claimed.iter().find(|(i, _, _)| *i == idx) {
                                 Some(&(_, sats, prov)) => {
-                                    total_in += sats;
+                                    total_in = total_in.and_then(|t| t.checked_add(sats));
                                     if !prov.is_verified() {
                                         operator_supplied = true;
                                     }
