@@ -1111,17 +1111,22 @@ fn a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound() {
     // Give it a witness_utxo so a value is still available at all.
     psbt.inputs[0].witness_utxo = Some(prev.output[0].clone());
 
-    let (_, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
-    if ok {
-        assert!(
-            !err.contains("TXID-BOUND"),
-            "a value read from witness_utxo was labelled TXID-BOUND:\n{err}"
-        );
-        assert!(
-            err.contains("PSBT-CLAIMED — unverified"),
-            "the fallback value must render as unverified:\n{err}"
-        );
-    }
+    // bughunt-1119 FIX-E (T16): the record proves the outpoint does not exist,
+    // so encode now refuses outright; no row is printed under any heading.
+    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
+    assert_refused(&out, &err, ok, "§8.2d");
+    assert!(
+        err.contains(&format!(
+            "REFUSED — §8.2d, input 0 spends output {high} of {}, which has {} output(s)",
+            prev.compute_txid(),
+            prev.output.len()
+        )),
+        "got:\n{err}"
+    );
+    assert!(
+        !err.contains("TXID-BOUND"),
+        "a value read from witness_utxo was labelled TXID-BOUND:\n{err}"
+    );
 }
 
 // ── the flags that quietly did nothing ──────────────────────────────────────
