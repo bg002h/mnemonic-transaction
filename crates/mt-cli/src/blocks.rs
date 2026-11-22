@@ -407,6 +407,45 @@ pub fn encode_no_node_warning() -> crate::refusal::Warning {
     )
 }
 
+/// W6: encode-time warning when an input is null, its parent confirmed, and the
+/// node has not reported a synced `-txindex` (architect mt-node-tristate-i1).
+pub fn encode_index_not_synced_warning() -> crate::refusal::Warning {
+    crate::refusal::Warning::new(
+        "the node has not reported its -txindex synced — mt cannot tell whether this transaction is already mined.",
+        "An input is not in the UTXO set and its parent is confirmed. Either \
+         this transaction is already in a block (it spent the input itself, \
+         and there is nothing left to engrave), or someone else spent the \
+         input (the plate would be scrap). Only a synced -txindex tells the \
+         two apart, and this node has not reported one.\n\
+         \n\
+         Do not build a replacement transaction on this answer: if this one \
+         is already mined, a replacement pays twice. Engraving takes about 21 \
+         minutes per plate and is permanent. Run mt again once getindexinfo \
+         shows the txindex synced. Bitcoin Core before 0.21 has no \
+         getindexinfo, so that never happens there: point mt at Bitcoin Core \
+         0.21 or newer with -txindex.",
+    )
+}
+
+/// W2: encode-time warning when a node was reachable but did not answer every
+/// question (architect mt-node-tristate-i1).
+pub fn encode_node_unanswered_warning() -> crate::refusal::Warning {
+    crate::refusal::Warning::new(
+        "the node did not answer every question — mt could not check every input before you cut.",
+        "A bitcoind was reachable, but at least one call failed or returned a \
+         reply mt could not read, so for at least one input mt has NOT \
+         answered:\n\
+         \n\
+         \x20 - is it still unspent, or did something else take it?\n\
+         \x20 - what is its value, and so what fee does this actually pay?\n\
+         \n\
+         Engraving takes about 21 minutes per plate and is permanent. Check \
+         the node (one that is still starting up refuses calls), then run mt \
+         again; that takes seconds. If an input turns out to be spent, the \
+         plate is scrap the moment it leaves the machine.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

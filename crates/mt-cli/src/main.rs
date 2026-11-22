@@ -560,11 +560,16 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     // by running against a real node — no offline or stubbed test could see it,
     // because all three §8.5 cases share `gettxout -> null` and differ only in
     // `getrawtransaction` on a txid the stub was never asked about.
-    let already_confirmed = node
-        .as_ref()
-        .is_some_and(|nd| nd.is_confirmed(&txid_of(&tx)) == node::ParentState::Confirmed);
+    // Index state read BEFORE the own question (architect I-1): Core answers
+    // getrawtransaction from a txindex still building, so an own "not found"
+    // proves nothing unless the index was synced when it was asked.
+    let txindex = node.as_ref().is_some_and(node::Node::has_txindex);
+    let mut index_not_synced = false;
+    let own = node.as_ref().map(|nd| nd.is_confirmed(&txid_of(&tx)));
+    let already_confirmed = own == Some(node::ParentState::Confirmed);
+    let mut node_unanswered = own == Some(node::ParentState::Unanswered);
 
-    if let (Some(nd), false) = (&node, already_confirmed) {
+    if let (Some(nd), false, false) = (&node, already_confirmed, node_unanswered) {
         for (n, inp) in tx.input.iter().enumerate() {
             let op = inp.previous_output;
             match nd.txout(&op.txid.to_string(), op.vout) {
@@ -582,13 +587,20 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
                     // it is the only one anything checked.
                     values[n] = Some((chain_sat, report::Provenance::ChainFetched));
                 }
+                node::Utxo::Unanswered => node_unanswered = true,
                 node::Utxo::Null => {
                     // §8.5 needs BOTH facts. `include_mempool` is false by
                     // ruling, so null is the EXPECTED answer for an unconfirmed
                     // parent — refusing on it alone states something untrue
                     // inside a refusal.
-                    let confirmed =
-                        nd.is_confirmed(&op.txid.to_string()) == node::ParentState::Confirmed;
+                    let parent = nd.is_confirmed(&op.txid.to_string());
+                    if parent == node::ParentState::Unanswered {
+                        node_unanswered = true;
+                    }
+                    if parent == node::ParentState::Confirmed && !txindex {
+                        index_not_synced = true;
+                    }
+                    let confirmed = parent == node::ParentState::Confirmed && txindex;
                     validate::spent_input_guard(n, &op.to_string(), confirmed)?;
                 }
             }
@@ -674,6 +686,11 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     // cut-now-or-check-first, and it is still open.
     if node.is_none() {
         let _ = writeln!(stderr, "{}", blocks::encode_no_node_warning());
+    } else if node_unanswered {
+        let _ = writeln!(stderr, "{}", blocks::encode_node_unanswered_warning());
+    }
+    if index_not_synced {
+        let _ = writeln!(stderr, "{}", blocks::encode_index_not_synced_warning());
     }
 
     if from_raw_hex {

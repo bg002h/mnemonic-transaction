@@ -1,0 +1,66 @@
+diff --git i/crates/mt-cli/tests/bughunt.rs w/crates/mt-cli/tests/bughunt.rs
+index 37ae9cd..0e1e766 100644
+--- i/crates/mt-cli/tests/bughunt.rs
++++ w/crates/mt-cli/tests/bughunt.rs
+@@ -559,6 +559,8 @@ done
+ case "$verb" in
+   getblockcount) echo 963832 ;;
+   getindexinfo)  echo '{"txindex": {"synced": false, "best_block_height": 10}, "basic block filter index": {"synced": true, "best_block_height": 963832}}' ;;
++  gettxout)      exit 0 ;;
++  getrawtransaction) exit 5 ;;
+   *) exit 1 ;;
+ esac
+ "#;
+@@ -594,7 +596,8 @@ esac
+ // own member `synced` is the boolean `true`. Anything else, including a parse
+ // failure, is false, which reads UNKNOWN (§6a's fail-safe direction). Each row
+ // drives `mt inspect` against a stub `bitcoin-cli` whose `getindexinfo` prints
+-// `reply`; `gettxout` and `getrawtransaction` fail, so every parent is NOT
++// `reply`; `gettxout` answers Core's null (no output, exit 0) and
++// `getrawtransaction` exits 5 (Core's not-found code), so every parent is NOT
+ // FOUND and the STATUS row depends on `has_txindex` alone.
+ 
+ /// Runs `mt inspect` on the `even` vector against a stub node; returns
+@@ -612,6 +615,8 @@ done
+ case "$verb" in
+   getblockcount) echo 963832 ;;
+   getindexinfo)  echo '@REPLY@' ;;
++  gettxout)      exit 0 ;;
++  getrawtransaction) exit 5 ;;
+   *) exit 1 ;;
+ esac
+ "#
+diff --git i/crates/mt-cli/tests/common/mod.rs w/crates/mt-cli/tests/common/mod.rs
+index bcf8af8..5ffbbd1 100644
+--- i/crates/mt-cli/tests/common/mod.rs
++++ w/crates/mt-cli/tests/common/mod.rs
+@@ -35,9 +35,10 @@ pub struct Stub {
+     path: std::path::PathBuf,
+ }
+ 
+-/// Build a stub. `gettxout` is the raw JSON to return (empty = null), and
+-/// `confirmations` maps a txid PREFIX to a confirmation count; any txid not
+-/// listed is reported as NOT FOUND.
++/// Build a stub. `gettxout` is the raw JSON to return (empty = Core's null:
++/// no output, exit 0), and `confirmations` maps a txid PREFIX to a
++/// confirmation count; any txid not listed exits 5, Core's not-found code
++/// (RPC_INVALID_ADDRESS_OR_KEY), which mt reads as NOT FOUND.
+ pub fn node_stub(gettxout: &str, confirmations: &[(&str, u32)]) -> Stub {
+     // A `case` arm per known txid, matched by prefix so a test can name a txid
+     // without pasting all 64 characters.
+@@ -61,13 +62,13 @@ case "$verb" in
+   gettxout)          {gettxout} ;;
+   getrawtransaction)
+     case "$arg1" in
+-{arms}      *) exit 1 ;;
++{arms}      *) exit 5 ;;
+     esac ;;
+   *) exit 1 ;;
+ esac
+ "#,
+         gettxout = if gettxout.is_empty() {
+-            "exit 1".to_string()
++            "exit 0".to_string()
+         } else {
+             format!("echo '{gettxout}'")
+         },

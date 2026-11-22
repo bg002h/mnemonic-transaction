@@ -575,16 +575,20 @@ overturned an earlier assumption and are marked.
    | state | how `mt` knows | what the recoverer does |
    | --- | --- | --- |
    | **LIVE** | `gettxout` returns a value | the input is unspent **in the UTXO set**. A conflicting spend may already sit in a mempool this node did not consult — see below |
-   | **DEAD** | `null`, **and** the parent is **CONFIRMED** (`getrawtransaction <parent> true` returns `confirmations ≥ 1`) | the input was spent by someone else. **The plate is scrap** |
+   | **DEAD** | `null`, **and** the parent is **CONFIRMED** (`getrawtransaction <parent> true` returns `confirmations ≥ 1`), **and** the node reported a synced `-txindex` (`getindexinfo`) before `mt` asked about this transaction | the input was spent by someone else. **The plate is scrap** |
    | **PENDING** | `null`, and the parent is **not found — or is found only in the mempool** | the parent has not confirmed. **The plate may still become live** — find out what happened to the parent |
    | **UNKNOWN** | `null`, and no `-txindex` | `mt` cannot distinguish DEAD from PENDING and says so |
+   | **UNKNOWN** | the node gave **no usable answer**: a `gettxout` call failed or its reply was neither null nor an object whose `value` is an amount; or a `getrawtransaction` call failed with anything but Core's not-found (exit 5), or its reply is not an object whose `confirmations`, if present, is a non-negative integer — for an input's parent, or for the transaction itself, which is asked first | `mt` has no answer and says so, and never prints DEAD on it. A DEAD proved by another input still stands. `encode` warns and proceeds, as with no node |
+   | **UNKNOWN** | `null`, the parent is **CONFIRMED**, and the node has **not reported a synced `-txindex`** (building, absent, or `getindexinfo` gave no answer; Bitcoin Core before 0.21 has no `getindexinfo`, so on such a node this row is final until the node is upgraded) | `mt` cannot tell "already mined" (a building index answers "not found" for a transaction above its frontier) from DEAD, and says so; never DEAD, never §8.5's "build a new transaction". `encode` warns and proceeds |
 
    **The parent lookup needs `-txindex`**, which most nodes do not run:
    `getrawtransaction` *"only returns a transaction if it is in the mempool. If
    `-txindex` is enabled"* it resolves any confirmed transaction. So `mt` uses
    the index when it is there and **reports UNKNOWN rather than guessing** when
    it is not — never printing DEAD on evidence that cannot distinguish it from
-   PENDING.
+   PENDING. `mt` supports Bitcoin Core 0.21 or newer, with -txindex for full node checks.
+
+   **A failed call is not a null (bughunt-1119 C1).** `bitcoin-cli` prints nothing and exits 0 for a null result, and exits with the error code's absolute value for an RPC error, so "empty, exit 0" is `gettxout`'s "not in the UTXO set" and a non-zero exit is no answer at all. Replies are parsed as JSON, never by substring; a value is an amount only when it is non-negative, has at most 8 decimals and is at most 21,000,000 BTC. `getindexinfo` is asked before this transaction's own lookup; a `mediantime` is read only as a JSON integer.
 
    > **LIVE MEANS "UNSPENT IN THE UTXO SET", NOT "UNSPENT" — R6 adversarial
    > I-3.** `include_mempool` is `false` by ruling (§6a), so `gettxout` answers
@@ -2980,8 +2984,10 @@ exactly as permanent, as a machine-engraved one.
    > false. A `stderr` warning is disposable; a legend line is forever. The
    > legend now reads **`NO TIMELOCK`**: precisely true about the fields
    > `mt` read, and silent about scripts it did not.
-5. **`gettxout` returns `null` for any input, AND the parent is confirmed** →
-   refuse, when a node is reachable. The output was spent or never existed. See
+5. **`gettxout` returns `null` for any input, AND the parent is confirmed, AND
+   the node reported a synced `-txindex` before `mt` asked about this
+   transaction (§6a)** → refuse, when a node is reachable; otherwise `mt` warns
+   and proceeds. The output was spent or never existed. See
    §6a's limitation and §10.5 for the IBD case.
 
    > **The `and the parent is confirmed` clause is not a refinement, it is the
@@ -3952,7 +3958,8 @@ The BCH corrector's existence was read from `crates/md-codec/src/bch_decode.rs` 
 5. ~~Should `mt` require the node to be out of IBD before trusting
    `gettxout`?~~ **CLOSED — OUT OF SCOPE**, operator ruling 2026-08-23. `mt`
    asks the node it is given and reports what it is told; vouching for the
-   node's sync state is not `mt`'s job. §8.5's refusal stands as written, and
+   node's sync state is not `mt`'s job. §8.5's refusal stands as written (rule 5 now also needs §6a's synced-`-txindex`
+   condition, bughunt-1119 C1), and
    §6a already records that a `null` cannot distinguish "spent" from "this node
    does not know yet".
 
