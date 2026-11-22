@@ -73,10 +73,11 @@ impl Provenance {
     }
 }
 
-/// Plate liveness. **SIX variants over §6a's five ruled states** — `Unknown` and
-/// `Indeterminate` are two renderings of the same fifth state, *"mt cannot
-/// tell"*, kept apart because their REASONS differ and the operator's next move
-/// differs with them: no node at all versus a node that lacks `-txindex`.
+/// Plate liveness. **EIGHT variants over §6a's five ruled states** — `Unknown`,
+/// `Indeterminate`, `Unanswered` and `IndexNotSynced` are four renderings of the
+/// same fifth state, *"mt cannot tell"*, kept apart because their REASONS differ
+/// and the operator's next move differs with them: no node at all, a node that
+/// lacks `-txindex`, a node whose call failed, or an index not reported synced.
 ///
 /// The doc said *"five states, not four"* until an independent claim check
 /// counted the variants: `Indeterminate` was added in P4 and the comment was
@@ -105,9 +106,29 @@ pub enum Status {
     /// **printing DEAD on evidence that cannot distinguish it from PENDING is
     /// the one error that gets a live engraving thrown away.**
     Indeterminate,
+    /// A node was reachable but a call failed or its reply could not be read
+    /// (N6 item 3 and 5). Never DEAD. JSON-renders as `Indeterminate`.
+    Unanswered,
+    /// An input is null and its parent confirmed, but the node has not reported
+    /// a synced `-txindex` (N6 item 5a): this transaction may already be mined.
+    /// JSON-renders as `Indeterminate`.
+    IndexNotSynced,
 }
 
 impl Status {
+    /// The status string `--json` prints. Not `{:?}`: the two new variants render
+    /// as `Indeterminate` (N7) and their Rust names must not leak.
+    pub fn json_name(self) -> &'static str {
+        match self {
+            Self::AlreadyConfirmed => "AlreadyConfirmed",
+            Self::Live => "Live",
+            Self::Dead => "Dead",
+            Self::Pending => "Pending",
+            Self::Unknown => "Unknown",
+            Self::Indeterminate | Self::Unanswered | Self::IndexNotSynced => "Indeterminate",
+        }
+    }
+
     fn render(self) -> &'static str {
         match self {
             Self::AlreadyConfirmed => "SPENT — ALREADY CONFIRMED (this transaction is in a block)",
@@ -120,6 +141,12 @@ impl Status {
             Self::Unknown => "UNKNOWN — no node reachable",
             Self::Indeterminate => {
                 "UNKNOWN — an input is not in the UTXO set, and without -txindex\n                           this node cannot tell whether its parent confirmed. mt will not\n                           guess DEAD on evidence that cannot distinguish it from PENDING"
+            }
+            Self::Unanswered => {
+                "UNKNOWN — the node did not answer every question: a call failed or\n                           its reply could not be read. mt will not guess DEAD from a missing\n                           answer. Check the node, then run mt again"
+            }
+            Self::IndexNotSynced => {
+                "UNKNOWN — an input is not in the UTXO set, its parent confirmed, and this\n                           node has not reported its -txindex synced: mt cannot tell whether this\n                           transaction is already mined or someone else spent the input. mt will\n                           not guess DEAD. Run mt again once getindexinfo shows the txindex synced"
             }
         }
     }
@@ -153,6 +180,9 @@ pub struct Report {
     /// `OUT` row states, because an address under the wrong HRP is not an
     /// address on any network.
     pub network: Option<bitcoin::Network>,
+    /// What the node said about its chain, when one was reachable. Tells the
+    /// `OUT` row why `network` is `None` with a node (N8).
+    pub chain_reply: Option<crate::node::ChainReply>,
     /// Fee in satoshis, and the weakest provenance of any input.
     pub fee: Option<(u64, Provenance)>,
     /// `nLockTime`, and the chain height if a node answered.
@@ -175,13 +205,22 @@ impl Report {
         // back to mainnet and SAYS SO in the row — an address rendered under the
         // wrong HRP is not an address anywhere, and silently showing one is
         // worse than admitting the assumption.
-        let chain = node.and_then(Node::chain);
+        let chain_reply = node.map(Node::chain);
+        let chain = match chain_reply {
+            Some(crate::node::ChainReply::Known(n)) => Some(n),
+            _ => None,
+        };
         let network = chain.unwrap_or(bitcoin::Network::Bitcoin);
         // ASKED FIRST: did THIS transaction already confirm? Every other row is
         // a guess about *why* the inputs are gone; this answers it exactly.
-        let already = node.is_some_and(|n| n.is_confirmed(txid) == ParentState::Confirmed);
         // Whether "not found" is informative at all depends on the index.
+        // Read BEFORE the own question (architect I-1).
         let txindex = node.is_some_and(Node::has_txindex);
+        let own = node.map(|n| n.is_confirmed(txid));
+        let already = own == Some(ParentState::Confirmed);
+        let own_unanswered = own == Some(ParentState::Unanswered);
+        let mut any_unanswered = false;
+        let mut any_index_not_synced = false;
 
         let mut inputs = Vec::new();
         let mut total_in = 0u64;
@@ -200,6 +239,22 @@ impl Report {
                         Utxo::Unspent(sats) => {
                             total_in += sats;
                             inputs.push((op, Some(sats), Provenance::ChainFetched));
+                        }
+                        Utxo::Unanswered => {
+                            any_unanswered = true;
+                            match claimed.iter().find(|(i, _, _)| *i == idx) {
+                                Some(&(_, sats, prov)) => {
+                                    total_in += sats;
+                                    if !prov.is_verified() {
+                                        operator_supplied = true;
+                                    }
+                                    inputs.push((op.clone(), Some(sats), prov));
+                                }
+                                None => {
+                                    all_known = false;
+                                    inputs.push((op.clone(), None, Provenance::Unknown));
+                                }
+                            }
                         }
                         Utxo::Null => {
                             // FALL BACK, do not terminate. `include_mempool` is
@@ -232,13 +287,15 @@ impl Report {
                             // found: getrawtransaction finds a mempool transaction
                             // too, and only confirmation means someone else took it.
                             match n.is_confirmed(&i.previous_output.txid.to_string()) {
-                                ParentState::Confirmed => any_dead = true,
+                                ParentState::Confirmed if txindex => any_dead = true,
+                                ParentState::Confirmed => any_index_not_synced = true,
                                 ParentState::InMempool => any_pending = true,
                                 // Not found WITH an index means genuinely not on
                                 // chain — PENDING. Without one it is unanswerable,
                                 // and mt says UNKNOWN rather than guessing DEAD.
                                 ParentState::NotFound if txindex => any_pending = true,
                                 ParentState::NotFound => any_unknown = true,
+                                ParentState::Unanswered => any_unanswered = true,
                             }
                         }
                     }
@@ -291,8 +348,14 @@ impl Report {
             Status::AlreadyConfirmed
         } else if node.is_none() {
             Status::Unknown
+        } else if own_unanswered {
+            Status::Unanswered
         } else if any_dead {
             Status::Dead
+        } else if any_unanswered {
+            Status::Unanswered
+        } else if any_index_not_synced {
+            Status::IndexNotSynced
         } else if any_unknown {
             Status::Indeterminate
         } else if any_pending {
@@ -308,6 +371,7 @@ impl Report {
             set: None,
             set_prefix: None,
             network: chain,
+            chain_reply,
             outputs: tx
                 .output
                 .iter()
@@ -355,6 +419,16 @@ impl Report {
         let _ = writeln!(s, "TX        {}", self.txid);
 
         let _ = match self.network {
+            None if self.chain_reply == Some(crate::node::ChainReply::Unrecognised) => writeln!(
+                s,
+                "OUT       {} output(s)   (addresses shown as MAINNET — the node named a chain mt does not know)",
+                self.outputs.len()
+            ),
+            None if self.chain_reply == Some(crate::node::ChainReply::NotSaid) => writeln!(
+                s,
+                "OUT       {} output(s)   (addresses shown as MAINNET — the node did not say which chain it is on)",
+                self.outputs.len()
+            ),
             Some(bitcoin::Network::Bitcoin) | None if self.network.is_none() => writeln!(
                 s,
                 "OUT       {} output(s)   (addresses shown as MAINNET — no node to ask)",
@@ -510,7 +584,7 @@ pub fn render_json(r: &Report, warnings: &[String]) -> String {
     let _ = writeln!(s, "  ],");
     // The STATUS string, not a boolean. §6a rules five states and collapsing
     // them is how "pending" becomes "dead".
-    let _ = writeln!(s, "  \"status\": \"{:?}\",", r.status);
+    let _ = writeln!(s, "  \"status\": \"{}\",", r.status.json_name());
     // WARNINGS GO INSIDE THE DOCUMENT. `decode --json` wrote valid JSON and then
     // plain prose to the SAME stream, so the thing a caller actually receives
     // does not parse -- in the tool's core offline scenario. A machine-readable
@@ -663,6 +737,7 @@ mod tests {
                 set_prefix: None,
                 outputs: vec![],
                 network: None,
+                chain_reply: None,
                 fee: None,
                 locktime: (lt, Chain { height: h, mtp: h }),
                 inputs: vec![],
@@ -690,6 +765,7 @@ mod tests {
             set_prefix: None,
             outputs: vec![],
             network: None,
+            chain_reply: None,
             fee: None,
             locktime: (Lock::Height(900_000), Chain::default()),
             inputs: vec![("x:0".into(), None, Provenance::Unknown)],
@@ -752,6 +828,7 @@ mod tests {
             set_prefix: None,
             outputs: vec![],
             network: None,
+            chain_reply: None,
             fee: None,
             locktime: (Lock::None, Chain::default()),
             inputs: vec![],

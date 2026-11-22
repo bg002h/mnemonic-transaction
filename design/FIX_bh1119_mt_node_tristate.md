@@ -363,12 +363,12 @@ historical document and is not edited.
 1. **RED commit:** this document and its sidecars (already on this branch), plus
    `crates/mt-cli/tests/node_tristate.rs` copied from the sidecar and
    `test-changes.diff` applied. Expect §6's `348 passed, 26 failed`.
-2. **GREEN commit:** `crates/mt-cli/src/node.rs` (N1-N4: a call outcome that keeps
+2. **GREEN commit:** `crates/mt-cli/src/node.rs` (N1-N4 and N5b `median_time`: a call outcome that keeps
    the exit code; `Utxo` and `ParentState` gain the unanswered variant; a chain
    reply with known / unrecognised / not said; JSON parsing per N1-N4; doc comments
    updated, including `Status`'s "SIX variants" count comment in `report.rs`, which
-   becomes seven), `report.rs` (N6-N8, W1, W3, W4), `main.rs` (N9),
-   `blocks.rs` (W2), and §5's spec text. No `Cargo.toml` change (serde_json is
+   becomes eight), `report.rs` (N6-N8, W1, W3, W4, W5), `main.rs` (N9,
+   `has_txindex` once before the own question), `blocks.rs` (W2, W6), and §5's spec text. No `Cargo.toml` change (serde_json is
    already a dependency; bitcoin 0.32.102 has `Testnet4`). Expect 0 failures.
 3. The builder lists the §12 lines in its report; nothing is appended to
    `design/FOLLOWUPS.md` in the PR.
