@@ -114,6 +114,15 @@ pub struct DecodedChunk {
     /// so the pair is atomic: a re-derivation is a second implementation of the
     /// symbol layout, free to disagree with the first.
     pub corrected_to: Vec<u8>,
+    /// The first `INVARIANT_PREFIX_SYMBOLS` (8) symbols of the data part
+    /// **after** BCH correction, as lowercase charset characters, without
+    /// `mt1`. Read from the same symbol array the header is built from, so it
+    /// agrees with `header` by construction.
+    pub invariant_prefix: String,
+    /// 1-based place in the input of the string this chunk was read from (the
+    /// number `Unreadable.input_position` prints). `decode_chunk` leaves it 0;
+    /// `decode` sets it, and a duplicate keeps the position of the copy kept.
+    pub input_position: usize,
 }
 
 /// A chunk the set carried **twice**, and what `mt` did about it.
@@ -216,6 +225,10 @@ pub fn decode_chunk(s: &str, plan: Option<Chunking>) -> Result<DecodedChunk> {
         }
     }
     payload.truncate(want);
+    let invariant_prefix: String = symbols[..INVARIANT_PREFIX_SYMBOLS]
+        .iter()
+        .map(|&v| ALPHABET[usize::from(v)] as char)
+        .collect();
     Ok(DecodedChunk {
         header,
         payload,
@@ -223,6 +236,8 @@ pub fn decode_chunk(s: &str, plan: Option<Chunking>) -> Result<DecodedChunk> {
         corrected_positions,
         corrected_from,
         corrected_to,
+        invariant_prefix,
+        input_position: 0,
     })
 }
 
@@ -245,7 +260,10 @@ pub fn decode(strings: &[String]) -> Result<DecodedSet> {
     let mut first_error: Option<Error> = None;
     for (n, s) in strings.iter().enumerate() {
         match decode_chunk(s, None) {
-            Ok(c) => read.push(c),
+            Ok(mut c) => {
+                c.input_position = n + 1;
+                read.push(c);
+            }
             Err(e) => {
                 if first_error.is_none() {
                     first_error = Some(e.clone());
@@ -390,4 +408,39 @@ pub fn invariant_prefix(s: &str) -> Result<String> {
 /// assert it is `mt1`'s and not a sibling's.
 pub const fn target_const() -> u128 {
     MT_REGULAR_CONST
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// String 1 of the `even` corpus vector.
+    fn even_string_1() -> String {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../test_vectors/mt1_v1.json")).unwrap();
+        v["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["label"] == "even")
+            .unwrap()["strings"][0]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// bughunt-1119 row 23 (P0): the chunk's prefix is the one AFTER BCH.
+    #[test]
+    fn decoded_chunk_invariant_prefix_is_the_corrected_one() {
+        let clean = even_string_1();
+        // Offset 7 of the whole string is the `j` of `mt1p9h8jqq9`; read it as `x`.
+        let at = 7;
+        assert_eq!(&clean[at..=at], "j");
+        let mut damaged = clean.clone();
+        damaged.replace_range(at..=at, "x");
+        let c = decode_chunk(&damaged, None).unwrap();
+        assert_eq!(c.invariant_prefix, "p9h8jqq9");
+        let c = decode_chunk(&clean, None).unwrap();
+        assert_eq!(c.invariant_prefix, invariant_prefix(&clean).unwrap());
+    }
 }

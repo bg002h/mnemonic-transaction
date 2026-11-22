@@ -744,7 +744,20 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
 
     // stderr: everything the operator must see, before the artifact.
     let _ = writeln!(stderr, "{}", blocks::bearer_warning());
-    let lengths: Vec<usize> = strings.iter().map(|s| s.chars().count()).collect();
+    // What is PRINTED, plate by plate: `--elide-prefix` drops `ELIDED_DROP`
+    // characters from strings 2..n (the same constant `render` uses).
+    let lengths: Vec<usize> = strings
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let n = s.chars().count();
+            if args.elide_prefix && i > 0 {
+                n.saturating_sub(ELIDED_DROP)
+            } else {
+                n
+            }
+        })
+        .collect();
     // BCH corrects CHARACTERS IN AN mt1 STRING. A raw record is engraved as a
     // QR symbol, which carries its own Reed-Solomon and none of this budget, so
     // "mt corrects up to 4 wrong characters per string" is a promise about an
@@ -938,9 +951,13 @@ fn encode_tx_record(tx_bytes: &[u8]) -> String {
     s
 }
 
+/// Characters `--elide-prefix` drops from strings 2..n: `mt1` plus the 8-symbol
+/// invariant prefix. One definition, shared by `render` and the printed counts.
+const ELIDED_DROP: usize = "mt1".len() + mt_codec::consts::INVARIANT_PREFIX_SYMBOLS;
+
 /// Apply `--elide-prefix` and `--group-size` to what goes on stdout.
 fn render(strings: &[String], args: &EncodeArgs) -> Vec<String> {
-    let drop = "mt1".len() + mt_codec::consts::INVARIANT_PREFIX_SYMBOLS;
+    let drop = ELIDED_DROP;
     strings
         .iter()
         .enumerate()
@@ -1084,7 +1101,11 @@ fn correction_warnings(chunks: &[mt_codec::DecodedChunk]) -> Vec<String> {
 /// A chunk repaired four times passes while sitting **one scratch from
 /// unrecoverable**, with zero redundancy behind it. A verdict that hides that
 /// tells the operator the opposite of what they need.
-fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
+fn margin_report(
+    chunks: &[mt_codec::DecodedChunk],
+    read: &read_strings::ReadStrings,
+    out: &mut impl Write,
+) {
     const T: usize = 4;
     let mut repaired: Vec<&mt_codec::DecodedChunk> =
         chunks.iter().filter(|c| c.corrected > 0).collect();
@@ -1119,15 +1140,52 @@ fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
         // for — and it is the only way to distinguish a MIS-CUT plate from a
         // MIS-READ one. If the steel really says the corrected character, the
         // plate is fine and the typist slipped.
+        let elided = chunk_is_elided(c, read);
         for (n, &p) in c.corrected_positions.iter().enumerate() {
             let was = c.corrected_from.get(n).copied().map_or('?', symbol_char);
             let now = c.corrected_to.get(n).copied().map_or('?', symbol_char);
-            // data-part offset -> 1-based whole-string position
+            // data-part offset -> 1-based whole-string position; on an elided
+            // plate, the plate position. A symbol inside the restored prefix is
+            // inherited from the full plate: it prints no row here (E1).
+            let pos = if !elided {
+                p + 1 + 3
+            } else if p < mt_codec::consts::INVARIANT_PREFIX_SYMBOLS {
+                continue;
+            } else {
+                p + 1 + 3 - ELIDED_DROP
+            };
             let _ = writeln!(
                 out,
-                "              pos {:>3}   read {was}, corrected to {now}",
-                p + 1 + 3
+                "              pos {pos:>3}   read {was}, corrected to {now}"
             );
+        }
+    }
+    // The inherited prefix symbol(s) of an unreadable full plate: named once,
+    // under the string they were restored from (E1 (c), Brian #23 Q3).
+    if let Some(place) = read.prefix_fallback {
+        let inherited = repaired.iter().find(|c| {
+            chunk_is_elided(c, read)
+                && c.corrected_positions
+                    .iter()
+                    .any(|&p| p < mt_codec::consts::INVARIANT_PREFIX_SYMBOLS)
+        });
+        if let Some(c) = inherited {
+            let _ = writeln!(
+                out,
+                "  string {place} of the input   its prefix was restored onto the elided strings"
+            );
+            for (n, &p) in c.corrected_positions.iter().enumerate() {
+                if p >= mt_codec::consts::INVARIANT_PREFIX_SYMBOLS {
+                    continue;
+                }
+                let was = c.corrected_from.get(n).copied().map_or('?', symbol_char);
+                let now = c.corrected_to.get(n).copied().map_or('?', symbol_char);
+                let _ = writeln!(
+                    out,
+                    "              pos {:>3}   read {was}, corrected to {now}",
+                    p + 1 + 3
+                );
+            }
         }
     }
     if let Some(worst) = repaired.first() {
@@ -1141,6 +1199,14 @@ fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
         }
     }
     let _ = writeln!(out);
+}
+
+/// Was this chunk read from an elided line (one that did not begin `mt1`)?
+fn chunk_is_elided(c: &mt_codec::DecodedChunk, read: &read_strings::ReadStrings) -> bool {
+    read.elided
+        .get(c.input_position.wrapping_sub(1))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// A bech32 symbol value as the character an operator sees on steel.
@@ -1157,6 +1223,37 @@ fn symbol_char(v: u8) -> char {
 /// still means one of the two plates is closer to unrecoverable than the other,
 /// and an unreadable string means a plate is already scrap while the set as a
 /// whole is fine.
+/// The `(position, typed, read-as)` rows to print, in input order (rule E1).
+///
+/// A note on an elided line prints the plate position (whole-string position
+/// minus `ELIDED_DROP`); inside the restored prefix (whole-string position
+/// `<= ELIDED_DROP`) no plate position is ever computed: the note is inherited
+/// from the full plate and prints once, at its whole-string position.
+fn printed_notes(read: &read_strings::ReadStrings) -> Vec<(usize, char, char)> {
+    let mut out: Vec<(usize, char, char)> = Vec::new();
+    for n in &read.notes {
+        if !read
+            .elided
+            .get(n.line.wrapping_sub(1))
+            .copied()
+            .unwrap_or(false)
+        {
+            // A full line keeps its whole-string position.
+            out.push((n.position, n.from, n.to));
+        } else if n.position <= ELIDED_DROP {
+            // Inside the restored prefix: inherited from the one full plate, so
+            // it prints once, at its whole-string position there.
+            let row = (n.position, n.from, n.to);
+            if !out.contains(&row) {
+                out.push(row);
+            }
+        } else {
+            out.push((n.position - ELIDED_DROP, n.from, n.to));
+        }
+    }
+    out
+}
+
 /// What `mt` replaced before the codec ever saw the strings.
 ///
 /// **Separate from the margin report, deliberately.** BCH repairs DAMAGE and
@@ -1164,7 +1261,7 @@ fn symbol_char(v: u8) -> char {
 /// OCCUR in a valid string, and costs nothing. Folding them together made the
 /// margin report say `read 6` about a plate where the operator typed `b`.
 fn transliteration_notices(read: &read_strings::ReadStrings, out: &mut impl Write) {
-    let notes = &read.notes;
+    let notes = printed_notes(read);
     if notes.is_empty() {
         return;
     }
@@ -1174,12 +1271,8 @@ fn transliteration_notices(read: &read_strings::ReadStrings, out: &mut impl Writ
          all, so\nthey cannot be what was engraved — mt tried every alternative \
          and kept the one\nthat cost the checksum least:"
     );
-    for n in notes {
-        let _ = writeln!(
-            out,
-            "  pos {:>3}   you typed {}, mt read it as {}",
-            n.position, n.from, n.to
-        );
+    for (pos, from, to) in notes {
+        let _ = writeln!(out, "  pos {pos:>3}   you typed {from}, mt read it as {to}");
     }
     if read.free {
         let _ = writeln!(
@@ -1309,7 +1402,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         let node = node::Node::find(&args.bitcoin_cli);
         let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
         r.set = Some((set.chunks.len(), set.chunks.len()));
-        r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
+        r.set_prefix = Some(set.chunks[0].invariant_prefix.clone());
         // `--json` is honoured HERE too, and is decided BEFORE anything is
         // written. It was wired into `inspect` alone, so on this verb it parsed
         // and did nothing -- the precise defect render_json's own doc comment
@@ -1326,11 +1419,8 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                         .to_string(),
                 );
             }
-            for n in &read.notes {
-                warnings.push(format!(
-                    "pos {}: you typed {}, mt read it as {}",
-                    n.position, n.from, n.to
-                ));
+            for (pos, from, to) in printed_notes(&read) {
+                warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
             }
             for u in &set.unreadable {
                 warnings.push(format!(
@@ -1387,7 +1477,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         }
         transliteration_notices(&read, &mut stderr);
         set_notices(&set, &mut stderr);
-        margin_report(&set.chunks, &mut stderr);
+        margin_report(&set.chunks, &read, &mut stderr);
     }
     let bytes = set.bytes;
 
@@ -1437,7 +1527,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     );
     transliteration_notices(&read, &mut stderr);
     set_notices(&set, &mut stderr);
-    margin_report(&set.chunks, &mut stderr);
+    margin_report(&set.chunks, &read, &mut stderr);
     let bytes = &set.bytes;
 
     // §1.1: verify NEVER asks a node. A predicate whose answer changes between
@@ -1695,7 +1785,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
 
     let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
     r.set = Some((set.chunks.len(), set.chunks.len()));
-    r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
+    r.set_prefix = Some(set.chunks[0].invariant_prefix.clone());
 
     let mut warnings: Vec<String> = Vec::new();
     // E4: the output-range warning is element 0 (JSON) and first on stderr (text).
@@ -1707,11 +1797,8 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         warnings
             .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
     }
-    for n in &read.notes {
-        warnings.push(format!(
-            "pos {}: you typed {}, mt read it as {}",
-            n.position, n.from, n.to
-        ));
+    for (pos, from, to) in printed_notes(&read) {
+        warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
     }
     for u in &set.unreadable {
         warnings.push(format!(
@@ -1767,7 +1854,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
     }
     transliteration_notices(&read, &mut std::io::stderr());
     set_notices(&set, &mut std::io::stderr());
-    margin_report(&set.chunks, &mut std::io::stderr());
+    margin_report(&set.chunks, &read, &mut std::io::stderr());
     Ok(())
 }
 
