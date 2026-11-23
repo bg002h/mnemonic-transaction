@@ -3,13 +3,13 @@
 Author: Claude Opus 5.5 (claude-opus-5-5), 2026-11-22. Keys: bh-mt-I1 (I), bh-mt-I2 (I),
 bh-mt-I20 (M). Ruling: architect T23 (`coordinator/agent-reports/architect-bughunt-1119-questions.md:61`),
 binding. Track: small (one Opus review round). Not a funds-path (class B) row.
-Base: origin/main `a885e62`. Branch `fix/mt-input-parsing`. Every new or changed
+Base: origin/main `14ba6f7` (row 23 merged). Branch `fix/mt-input-parsing`. Every new or changed
 holder-visible text is marked **PROPOSED (architect confirms)**; everything else below is
 decided. No new flag, type visible to a holder, or command.
 
 Not to be confused with the older `design/FIX_bughunt_mt_c.md` (a different hunt).
 
-## 1. Findings (at a885e62, each run by the author)
+## 1. Findings (run by the author at a885e62; every `main.rs` line anchor below is re-cited at 14ba6f7)
 
 Run offline (`--bitcoin-cli /nonexistent`), umask 077, on the consultant's fixtures
 (`p5_base.json` `raw_hex` = 339 bytes, `finalized_psbt_b64` = 927 bytes; corpus `even` =
@@ -17,19 +17,19 @@ Run offline (`--bitcoin-cli /nonexistent`), umask 077, on the consultant's fixtu
 
 - **I1, creation.** `cat raw.hex even.hex | mt encode --qr` exits 0 and prints the
   682-byte record of `raw.hex` alone; reversed, it prints the 448-byte record of
-  `even` alone. `decode_tx` (`crates/mt-cli/src/main.rs:2144-2158`) and `txid_display`
-  (`main.rs:972-994`) read one transaction from a cursor with
+  `even` alone. `decode_tx` (`crates/mt-cli/src/main.rs:2231-2245`) and `txid_display`
+  (`main.rs:989-1011`) read one transaction from a cursor with
   `Transaction::consensus_decode` and never check that the cursor is empty.
 - **I1, recovery.** `mt_codec::string_layer::pipeline::encode(even ‖ 0xab, even's txid)`
   gives a set that `mt decode` prints (with the `ab` tail) at exit 0, and that `mt verify
   --transaction even.hex` reports OK with a full-txid match. `content_id_guard`
-  (`main.rs:1942-1951`) reads the txid through `txid_display`, which ignores the tail.
+  (`main.rs:2029-2038`) reads the txid through `txid_display`, which ignores the tail.
   `mt encode` engraves `serialize(&tx)` (`main.rs:615`), so it never writes such a set.
 - **I2, PSBT framing.** `cat final.psbt final.psbt | mt encode --qr` and the same with
   `final.b64` twice exit 0 with the one-PSBT record. bitcoin 0.32.102's
   `Psbt::deserialize` is `deserialize_from_reader` with no end check
-  (`psbt/serialize.rs:79-127`); mt calls it at `main.rs:428` (encode), `:1470` (verify
-  `--transaction`) and `:1563` (inspect).
+  (`psbt/serialize.rs:79-127`); mt calls it at `main.rs:428` (encode), `:1560` (verify
+  `--transaction`) and `:1653` (inspect).
 - **I2, base64.** `base64_decode` (`crates/mt-cli/src/input.rs:254-272`) stops at the
   first `=`: `final.b64` + `=oops` exits 0 with the same record. It also drops a dangling
   last character and ignores the spare bits of the last character.
@@ -57,7 +57,7 @@ Refusals use the existing `Refusal` type (`refusal.rs`; first line `mt <verb>: R
 <section>, <verdict>`, then mechanism and remedy wrapped at 68 columns), exit 1, and
 nothing on stdout. Texts are in section 4.
 
-- **R1 One input is one PSBT (I2).** Every PSBT parse (`main.rs:428`, `:1470`, `:1563`)
+- **R1 One input is one PSBT (I2).** Every PSBT parse (`main.rs:428`, `:1560`, `:1653`)
   parses from a cursor with `bitcoin::Psbt::deserialize_from_reader` and records how
   many bytes it used. A parse error keeps today's refusal at that site, unchanged. On
   success, a new guard `pub fn psbt_end_guard(total: usize, used: usize, verb: &str) ->
@@ -74,16 +74,20 @@ nothing on stdout. Texts are in section 4.
   tx_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal>` in
   `input.rs` refuses with **E-TX** when `used != total`. Input call sites:
   `decode_tx(&b, "encode", Input)` (`main.rs:523`), `decode_tx(&bytes, "inspect",
-  Input)` (`:1579`), `txid_display(&supplied, "verify", Input)` (`:1502`).
+  Input)` (`:1669`), `txid_display(&supplied, "verify", Input)` (`:1592`).
 - **R3 A set's bytes are one transaction (I1, recovery).** For `Subject::Set` a new
   guard `fn set_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal>`
   in `main.rs` refuses with **E-SET** when `used != total`. Set call sites:
-  `txid_display(bytes, verb, Set)` in `content_id_guard` (`main.rs:1948`, reached first
-  by `decode`, `verify` and `inspect` on mt1 strings), `txid_display(bytes, "verify",
-  Set)` (`:1501`), `decode_tx(&set.bytes, "decode", Set)` (`:1307`),
-  `decode_tx(&set.bytes, "inspect", Set)` (`:1688`). The last three are reached only
-  after `content_id_guard` has passed, so in practice E-SET is printed from
-  `content_id_guard`; `verify` therefore refuses before its `mt verify: OK` line.
+  `content_id_guard` (`main.rs:2029`, reached first by `decode`, `verify` and `inspect`
+  on mt1 strings) checks the content id FIRST: it parses with `deserialize_partial` (a
+  parse error gives today's refusal, unchanged), derives the content id from the parsed
+  transaction's txid and refuses with today's mismatch refusal on a mismatch; only on a
+  match does it call `set_end_guard(bytes.len(), used, verb)`. `txid_display(.., Set)`
+  at verify's full-txid compare (`txid_display(bytes, "verify", Set)`, `:1591`) and
+  `decode_tx(.., Set)` at decode/inspect (`decode_tx(&set.bytes, "decode", Set)`,
+  `:1400`; `decode_tx(&set.bytes, "inspect", Set)`, `:1778`) keep the end check (they
+  run after the match). So in practice E-SET is printed from `content_id_guard`, after
+  the content id matched; `verify` therefore refuses before its `mt verify: OK` line.
 - **R4 Base64 is decoded whole (I2).** `base64_decode` returns `Some(bytes)` iff the
   text (interior whitespace already removed by step 3) is exactly the RFC 4648 §4
   encoding of `bytes`: alphabet `A-Z a-z 0-9 + /`; when the text holds any `=`, it is
@@ -110,7 +114,7 @@ nothing on stdout. Texts are in section 4.
   `--allow-argv-secret`, never echoed by clap. The §8.2f refusal text is unchanged.
 - **Unchanged.** Hex sniffing (`input.rs:68-80`) and `hex_psbt_guard`; outer whitespace
   trim; the line-wrapped base64 path; every existing parse-error text; `verify`'s
-  full-txid comparison of two well-formed transactions (`main.rs:1501-1514`).
+  full-txid comparison of two well-formed transactions (`main.rs:1591-1604`).
 
 ## 4. Holder-visible texts (all PROPOSED, architect confirms)
 
@@ -151,7 +155,7 @@ mechanism is new:
 
 ```text
 verdict:   input looks like a base64 PSBT but does not decode
-mechanism: The text begins `cHNidP`, as every base64-encoded PSBT does, but it is not one clean base64 text that decodes to the `psbt\xff` magic: it holds a character outside the base64 alphabet, a `=` before its end, text after its padding, or a last character whose spare bits are not zero. It is probably truncated, joined to something else, or has had characters altered in transit.
+mechanism: The text begins `cHNidP`, as every base64-encoded PSBT does, but it is not one clean base64 text that decodes to the `psbt\xff` magic: it holds a character outside the base64 alphabet, a `=` before its end, text after its padding, the wrong amount of padding, one character left over at its end, or a last character whose spare bits are not zero; or it decodes cleanly to bytes that do not begin with the magic. It is probably truncated, joined to something else, or has had characters altered in transit.
 remedy:    Re-export the PSBT and pass the file with --in.
 ```
 
@@ -159,9 +163,9 @@ remedy:    Re-export the PSBT and pass the file with --in.
 `a base64 PSBT (beginning `cHNidP8`)` becomes `a base64 PSBT (beginning `cHNidP`)`.
 Verdict and remedy unchanged.
 
-Help text: none changes (no `--help` string names `cHNidP8`; `git grep` at a885e62
-finds it only in `input.rs`, `validate.rs`, two comments in `main.rs:1541, 1674`
-(update them to `cHNidP`), a `main.rs:2363` unit-test literal (unchanged, still not an
+Help text: none changes (no `--help` string names `cHNidP8`; `git grep` at 14ba6f7
+finds it in `src` only in `input.rs`, `validate.rs`, two comments in `main.rs:1631, 1764`
+(update them to `cHNidP`), a `main.rs:2450` unit-test literal (unchanged, still not an
 mt1 set) and test fixtures).
 
 ## 5. Spec, README, help, manual, CHANGELOG
@@ -181,9 +185,9 @@ mt1 set) and test fixtures).
      optional, `=` only at the end, spare bits zero) and decodes to bytes beginning
      70 73 62 74 ff. Text beginning cHNidP that fails this is refused as a damaged
      base64 PSBT.`
-  3. After step 4, a new step: `5. Whatever matched, the input is exactly ONE PSBT or
-     ONE transaction: bytes left after its end are refused, naming their count, never
-     dropped.`
+  3. A closing sentence under step 3: `Whichever of a or b matched, the input is exactly
+     ONE PSBT or ONE transaction: bytes left after its end are refused, naming their
+     count, never dropped.`
 - **README:** none (no `cHNidP` text; `README.md` describes forms, not prefixes).
 - **Toolkit manual:** none. `mnemonic-toolkit` master `docs/manual/src/40-cli-reference/`
   has no `mt` page (41-mnemonic, 42-md, 43-ms, 44-mk-cli, 45-mr, 46-mr-sitting).
@@ -193,7 +197,7 @@ mt1 set) and test fixtures).
 
 All 26 rows are one new test binary `crates/mt-cli/tests/bh1119_mt_input_parsing.rs`
 (`mt-cli::bh1119_mt_input_parsing`). Its exact text is the sidecar
-`design/FIX_bh1119_mt_input_parsing/input_parsing.rs.txt` (sha256 `4d80254c7aa39e0891902fc3b5ee93c04c53dbfad9efc472eea6a2948b8d2041`); the
+`design/FIX_bh1119_mt_input_parsing/input_parsing.rs.txt` (sha256 `dd64670cd1b8a8f4cd9082e90106f193801fb9980d457bc9e73c77380bf4dc05`); the
 builder's RED commit copies it to that path unchanged. The 19 refusal rows get
 `tests/refusals.toml` entries, exact text in the sidecar
 `design/FIX_bh1119_mt_input_parsing/refusals-toml-append.txt` (sha256
@@ -227,7 +231,7 @@ from the log; the reason is the last column.
 | 13 | `i2_encode_refuses_text_after_padding` | padded base64 + `oops` | same as 12 | FAIL: rc 0 |
 | 14 | `i2_encode_refuses_equals_then_junk` | final.b64 + `=oops` | same as 12 | FAIL: rc 0 |
 | 15 | `i2_encode_refuses_nonzero_padding_bits` | padded base64 with the last data character `A` → `B` | same as 12 | FAIL: rc 0 |
-| 16 | `i2_encode_refuses_dangling_base64_character` | final.b64 + `A` (length ≡ 1 mod 4) | same as 12 | FAIL: rc 0 |
+| 16 | `i2_encode_refuses_dangling_base64_character` | final.b64 + `A` (length ≡ 1 mod 4) | same as 12; and, whitespace-flattened, stderr contains `one character left over` | FAIL: rc 0 |
 | 17 | `i2_inspect_refuses_two_base64_psbts` | `inspect`, final.b64 twice | `mt inspect: REFUSED — §8.2e, the input continues for 927 bytes after the end of the PSBT` | FAIL: rc 0 |
 | 18 | `i2_verify_refuses_two_psbts_as_transaction_file` | `verify --transaction (final.psbt twice)` on p5's strings | `mt verify: REFUSED — §8.2e, the input continues for 927 bytes after the end of the PSBT` | FAIL: rc 0 |
 | 19 | `i2_encode_reads_line_wrapped_base64` | final.b64 wrapped at 64 | control: accept, stdout `tx:<raw_hex>\n` | PASS |
@@ -240,8 +244,8 @@ from the log; the reason is the last column.
 | 26 | `i20_unrecognised_names_the_stem` | `encode`, `hello` | rc 1; stderr holds `` `cHNidP`), `` and not `` `cHNidP8` `` | FAIL: `` `cHNidP8` `` |
 
 GREEN measured by the author on a throwaway prototype of section 3 (not committed; its diff is kept outside the repo at `/scratch/cache/mtip-prototype.diff` for reference only):
-rows `26 tests run: 26 passed`; full workspace `428 tests run: 428 passed`
-(`/scratch/cache/mtip-green-full.log`); `cargo fmt --check` and
+rows `26 tests run: 26 passed`; full workspace `458 tests run: 458 passed`
+(`/scratch/cache/mtip-green-full.log` at a885e62: 428; re-measured on 14ba6f7: 458, `/scratch/cache/mtip-r1-gateB.log`); `cargo fmt --check` and
 `cargo clippy --all-targets --locked -- -D warnings` clean;
 `check-refusal-coverage: 61 refusal tests over 18 ruled refusals`; `mutate-refusals: all 61 refusal tests go red when their check is removed`
 (`/scratch/cache/mtip-mutate.log`); journeys, `docs-only.test.sh` (73 passed),
@@ -249,7 +253,7 @@ rows `26 tests run: 26 passed`; full workspace `428 tests run: 428 passed`
 
 ## 7. Tests that change
 
-None. With the prototype, all 402 existing tests passed (428 run = 402 + 26 rows).
+None. With the prototype on 14ba6f7, all 432 existing tests passed (458 run = 432 + 26 rows).
 Added: the row binary (section 6) and 19 `tests/refusals.toml` entries (42 → 61; the
 19 rows whose first line is a §-refusal of a new or changed guard). Row 6 is a control
 of an existing refusal and asserts its verdict only; row 26 asserts one word of the
@@ -267,7 +271,7 @@ lands, binary inspect rows may be added there, not here.
 4. R2 and R3 (`Subject`, `tx_end_guard`, `set_end_guard`): rows 1-5, 7-9 GREEN; rows
    6 and 25 stay GREEN.
 5. R6 (classifier): row 24 GREEN.
-6. Comments `main.rs:1541, 1674`; spec re-sync and PROVENANCE row once
+6. Comments `main.rs:1631, 1764`; spec re-sync and PROVENANCE row once
    mnemonic-engrave carries the section 5 delta.
 7. Gate (section 10) once to a file.
 
@@ -290,9 +294,8 @@ lands, binary inspect rows may be added there, not here.
 The script runs every step of the CI `test` job once, checks the sidecars are
 installed unchanged, and pins the counts. WHAT IT DOES NOT COVER is in its header (the
 PROPOSED wording, the `docs-only` short-circuit job, the release workflow, the spec
-re-sync in mnemonic-engrave). Its totals are measured on a885e62 + this FIX alone; a
-builder landing after row 21 (`fix/mt-arg-intake`) or row 23
-(`fix/mt-prefix-corrected`) adds their counts (section 13).
+re-sync in mnemonic-engrave). Its totals are measured on 14ba6f7 (row 23 merged) + this FIX; a
+head that also carries row 21 (`fix/mt-arg-intake`) must add its counts.
 
 ## 11. Open points for the architect (no STOP)
 
@@ -306,9 +309,9 @@ builder landing after row 21 (`fix/mt-arg-intake`) or row 23
 - O3 (decided here) E-SET's remedy points at the producer, not at mixed plates: a
   trailing-byte set passes every checksum and the content id, so mixing plates is not
   the cause.
-- O4 (adjacent, not fixed) `decode_tx`'s parse-error text (`main.rs:2148-2156`) says
+- O4 (adjacent, not fixed) `decode_tx`'s parse-error text (`main.rs:2235-2243`) says
   "the reassembled bytes … The strings reassembled cleanly" also on the input sites
-  (`encode` and `inspect` raw hex, `:523`, `:1579`), where no strings exist. Filed as
+  (`encode` and `inspect` raw hex, `:523`, `:1669`), where no strings exist. Filed as
   a FOLLOWUPS line (report), not fixed here: it changes a text outside I1/I2/I20.
 
 ## 12. FOLLOWUPS (listed in the author's report, not appended here)
@@ -328,5 +331,5 @@ report.
 - `design/SPEC_mt_v0_1.md`, `design/PROVENANCE.md` (re-sync, step 6)
 
 Row 21 (`fix/mt-arg-intake`) also changes `main.rs`, `validate.rs` and
-`refusals.toml`; row 23 (`fix/mt-prefix-corrected`) changes the spec copy. Text
-conflicts only; no rule overlaps.
+`refusals.toml`. Row 23 (`fix/mt-prefix-corrected`) is merged in the base 14ba6f7 and
+the anchors above are cited at it. Text conflicts only; no rule overlaps.

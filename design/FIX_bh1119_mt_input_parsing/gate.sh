@@ -13,8 +13,8 @@
 # does not check the spec delta in mnemonic-engrave or run
 # scripts/check-provenance.sh (needs a sibling checkout; run it by hand after
 # the re-sync); does not check the toolkit manual (mt has no page in it). The
-# totals are a885e62 + this FIX alone: a head that also carries rows 21 or 23
-# must add their counts (FIX doc section 10).
+# totals are 14ba6f7 (row 23 merged) + this FIX; a head that also carries row 21
+# must add its counts (FIX doc section 10).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -36,7 +36,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 
 out=$(cargo nextest run --locked --build-jobs 4 -j 4 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
-echo "$out" | grep -E 'Summary .* 428 tests run: 428 passed' || fail "expected 428 tests run, 428 passed"
+echo "$out" | grep -E 'Summary .* 458 tests run: 458 passed' || fail "expected 458 tests run, 458 passed"
 
 rows=$(cargo nextest run --locked --build-jobs 4 -j 4 -p mt-cli --test bh1119_mt_input_parsing 2>&1) || fail "input_parsing rows"
 echo "$rows" | grep -E '26 tests run: 26 passed' || fail "expected 26 input_parsing rows"

@@ -390,6 +390,8 @@ fn bh1119_mt_i2_encode_refuses_nonzero_padding_bits() {
 fn bh1119_mt_i2_encode_refuses_dangling_base64_character() {
     let r = qr(format!("{}A\n", p5("finalized_psbt_b64")).as_bytes());
     refused(&r, &format!("mt encode: {B64_DAMAGED}"));
+    let flat = r.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("one character left over"), "{}", r.stderr);
 }
 
 /// Text input: `inspect` reads a binary PSBT as text first (bh-mt-I5, FIX-D),
