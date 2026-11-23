@@ -773,7 +773,7 @@ fn looks_like_a_transaction(a: &str) -> bool {
     // forgets it fails loudly in every test and dev build rather than silently
     // re-opening the leak.
     debug_assert_eq!(a, a.trim(), "the candidate must be normalised first");
-    if a.starts_with("cHNidP8") {
+    if a.starts_with(crate::input::PSBT_BASE64_STEM) {
         return true;
     }
     // An mt1 string: the bearer artifact in the form an operator has typed off
