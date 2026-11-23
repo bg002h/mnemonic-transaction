@@ -1,0 +1,136 @@
+//! Security sweep 2026-11-23, unit `read-args-transaction-verify-only`
+//! (design/FIX_sec_read_args_transaction_verify_only.md).
+//!
+//! Key: mt-decode-inspect-ignore-transaction (codecs slice, rows 54 and 63).
+//! `--transaction` sat in the shared `ReadArgs`, so `mt decode` and
+//! `mt inspect` accepted it, never read it, and exited 0. SPEC §1.1's flag
+//! table rules it "on `verify`"; after the fix clap rejects it on the other
+//! two reading verbs, as it already rejects `--out` on `decode`.
+//!
+//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
+//! the corpus vectors in `mt-codec/src/test_vectors/mt1_v1.json`.
+
+use assert_cmd::Command;
+use std::io::Write;
+
+const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+
+fn mt() -> Command {
+    Command::cargo_bin("mt").unwrap()
+}
+
+fn vector(label: &str) -> serde_json::Value {
+    let p = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../mt-codec/src/test_vectors/mt1_v1.json"
+    );
+    let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+    c["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["label"] == label)
+        .unwrap()
+        .clone()
+}
+
+fn file(bytes: &[u8]) -> tempfile::NamedTempFile {
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(bytes).unwrap();
+    f.flush().unwrap();
+    f
+}
+
+fn even_strings_file() -> tempfile::NamedTempFile {
+    let s: Vec<String> = vector("even")["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    file(s.join("\n").as_bytes())
+}
+
+fn raw_file(label: &str) -> tempfile::NamedTempFile {
+    file(vector(label)["raw_hex"].as_str().unwrap().as_bytes())
+}
+
+/// The full stderr clap prints for `mt <verb> --bitcoin-cli X --in Y
+/// --transaction Z` once the flag is verify-only.
+fn usage_error(verb: &str) -> String {
+    format!(
+        "error: unexpected argument '--transaction' found\n\
+         \n  tip: to pass '--transaction' as a value, use '-- --transaction'\n\
+         \nUsage: mt {verb} --bitcoin-cli <PATH> --in <PATH>\n\
+         \nFor more information, try '--help'.\n"
+    )
+}
+
+fn assert_usage_error(verb: &str) {
+    let strings = even_strings_file();
+    let other = raw_file("uneven");
+    let out = mt()
+        .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(strings.path())
+        .arg("--transaction")
+        .arg(other.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "mt {verb}: {stderr}");
+    assert!(
+        out.stdout.is_empty(),
+        "mt {verb} wrote {} bytes to stdout",
+        out.stdout.len()
+    );
+    assert_eq!(stderr, usage_error(verb));
+}
+
+#[test]
+fn sec_rat_decode_with_transaction_is_a_usage_error() {
+    assert_usage_error("decode");
+}
+
+#[test]
+fn sec_rat_inspect_with_transaction_is_a_usage_error() {
+    assert_usage_error("inspect");
+}
+
+#[test]
+fn sec_rat_decode_and_inspect_help_omit_transaction() {
+    for verb in ["decode", "inspect"] {
+        let out = mt().args([verb, "--help"]).output().unwrap();
+        assert!(out.status.success());
+        let help = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            !help.contains("--transaction"),
+            "mt {verb} --help still lists --transaction:\n{help}"
+        );
+    }
+}
+
+/// Control (passes before and after): `verify` keeps the flag, its help and
+/// its full-txid match line.
+#[test]
+fn sec_rat_verify_keeps_transaction() {
+    let out = mt().args(["verify", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let help = String::from_utf8(out.stdout).unwrap();
+    assert!(help.contains("      --transaction <PATH>\n"), "{help}");
+
+    let strings = even_strings_file();
+    let same = raw_file("even");
+    let out = mt()
+        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(strings.path())
+        .arg("--transaction")
+        .arg(same.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("  --transaction matches, on the full txid.\n"),
+        "{stderr}"
+    );
+}
