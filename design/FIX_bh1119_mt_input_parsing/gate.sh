@@ -36,7 +36,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 
 out=$(cargo nextest run --locked --build-jobs 4 -j 4 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
-echo "$out" | grep -E 'Summary .* 458 tests run: 458 passed' || fail "expected 458 tests run, 458 passed"
+echo "$out" | grep -E 'Summary .* 459 tests run: 459 passed' || fail "expected 459 tests run, 459 passed"
 
 rows=$(cargo nextest run --locked --build-jobs 4 -j 4 -p mt-cli --test bh1119_mt_input_parsing 2>&1) || fail "input_parsing rows"
 echo "$rows" | grep -E '26 tests run: 26 passed' || fail "expected 26 input_parsing rows"
