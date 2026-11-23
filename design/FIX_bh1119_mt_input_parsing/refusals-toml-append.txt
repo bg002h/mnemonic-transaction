@@ -1,0 +1,99 @@
+
+# bughunt-1119 FIX-C (design/FIX_bh1119_mt_input_parsing.md): bh-mt-I1, I2, I20.
+# One input is exactly one PSBT or one transaction, base64 is decoded whole,
+# and a base64 PSBT is recognised by decoding (T23).
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i1_encode_refuses_raw_then_even_hex"
+check = "src/input.rs::tx_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i1_encode_refuses_even_then_raw_hex"
+check = "src/input.rs::tx_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i1_encode_refuses_one_trailing_byte_on_hex"
+check = "src/input.rs::tx_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i1_inspect_refuses_one_trailing_byte_on_hex"
+check = "src/input.rs::tx_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i1_verify_refuses_trailing_byte_on_transaction_file"
+check = "src/input.rs::tx_end_guard"
+
+[[refusal]]
+spec  = "§1.1"
+test  = "bh1119_mt_i1_decode_refuses_set_with_trailing_byte"
+check = "src/main.rs::set_end_guard"
+
+[[refusal]]
+spec  = "§1.1"
+test  = "bh1119_mt_i1_verify_refuses_set_with_trailing_byte"
+check = "src/main.rs::set_end_guard"
+
+[[refusal]]
+spec  = "§1.1"
+test  = "bh1119_mt_i1_inspect_refuses_set_with_trailing_byte"
+check = "src/main.rs::set_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_two_binary_psbts"
+check = "src/input.rs::psbt_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_two_unpadded_base64_psbts"
+check = "src/input.rs::psbt_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_inspect_refuses_two_base64_psbts"
+check = "src/input.rs::psbt_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_verify_refuses_two_psbts_as_transaction_file"
+check = "src/input.rs::psbt_end_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_padded_base64_then_second_record"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_text_after_padding"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_equals_then_junk"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_nonzero_padding_bits"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i2_encode_refuses_dangling_base64_character"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i20_encode_names_a_damaged_long_key_base64_psbt"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2f"
+test  = "bh1119_mt_i20_argv_classifier_refuses_long_key_base64"
+check = "src/validate.rs::command_line_guard"
