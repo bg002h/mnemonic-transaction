@@ -8,14 +8,21 @@ unfinalized PSBT, its TX labelled PROVISIONAL when signing changes the txid; a
 `non_witness_utxo` that does not hash to the input's txid is REPORTED with that input's
 amount and the fee UNVERIFIED (never TXID-BOUND), a loud fee-loss warning and
 instructions to verify the input; `encode` keeps refusing both. T17 ("inspect warns,
-encode refuses", I16) is cited where section 11 weighs Q3.
+encode refuses", I16) is cited where section 11 records Q3.
+Brian 2026-11-24 (#37 Q3, Q4; `coordinator/status/brian-rulings-2026-11-24.md`): Q3, a
+`non_witness_utxo` that hashes to the input's txid but has no output at its vout: "If
+it's an invalid transaction there is no reason to encode it or engrave it, if we can
+display/decode it with a warning." So `inspect` REPORTS it with a warning (option B) and
+EVERY encode/engrave path REFUSES it (R6). Q4: `"txid_provisional": <bool>` on every
+report JSON (option A).
 Base: origin/main `88ac6d9` (rows 22 and 23 merged; FIX-C's sniff-by-decoding is in).
 Branch `fix/mt-inspect-routing`. Every new or changed holder-visible text is marked
 **PROPOSED (architect confirms)** and is listed for `design/WORDING_REVIEW.md`.
 Re-folded 2026-11-23 by Claude Opus 5.5 (claude-opus-5-5): Q1/Q2 per the ruling, review
-r1 I1 (line-start routing rule, control row 24) and M1 (guard order, row 26). **Two STOPs
-are open (section 11, Q3 and Q4)**; the rules, rows and gate below follow the recommended
-option of each, and section 11 gives what changes if the architect picks another.
+r1 I1 (line-start routing rule, control row 24) and M1 (guard order, row 26). Folded
+2026-11-24 by Claude Sonnet 5.5 (claude-sonnet-5-5): Q3 and Q4 per Brian's rulings (no
+STOP is open): R6, rows 28-33, spec delta sentence, gate counts. The texts new in this
+fold are marked **PROPOSED (architect confirms)** and listed in section 11, O6.
 
 Not to be confused with the older `design/FIX_bughunt_mt_d.md` (a different hunt).
 
@@ -82,6 +89,11 @@ EXTRACTED transaction, per §10.13(c) … a PSBT holds two transactions whose tx
 for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 row table
 `FEE` "a node is reachable, **or** the input was a PSBT carrying values" (`:687`).
 
+- Q3 (2026-11-24): "If it's an invalid transaction there is no reason to encode it or
+  engrave it, if we can display/decode it with a warning." Applied: `inspect` reports
+  with a warning; every encode/engrave path refuses (R6).
+- Q4 (2026-11-24): a `"txid_provisional": <bool>` key on every report JSON.
+
 ## 3. Behaviour after the fix (rules)
 
 - **R1 inspect reads bytes (I5).** `read_input` is split: a byte reader
@@ -115,7 +127,7 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
   is not a PSBT gets sniff's step-4 refusal (`§8.2e, input is not a PSBT or a raw
   transaction (N bytes)`) instead of `§1.1e, input is not text` (row 14).
 - **R3 a PSBT subject is its extracted transaction, with its records' values (I3), and
-  is REPORTED whatever its finalization or records (Q1, Q2 ruled; Q3 open).**
+  is REPORTED whatever its finalization or records (Q1, Q2, Q3 ruled).**
   In `inspect_transaction`'s PSBT arm, after the unchanged parse and `psbt_end_guard`:
   1. Neither `finalized_guard_psbt` nor `non_witness_utxo_guard` is called (ruling: never
      refuse with §8.1's text in inspect; report a mismatched record). `encode` keeps
@@ -162,7 +174,32 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
      the Q2 warning is still printed (the fault is in the PSBT, which a signer still
      reads).
   The raw-hex arm is unchanged (no values, `"txid_provisional": false`). The strings
-  route is unchanged (`"txid_provisional": false`).
+  route is unchanged (`"txid_provisional": false`). `decode --json` (its document goes to
+  stderr, as today) carries `"txid_provisional": false` too: every report JSON has the
+  key, and no route other than R3.5's sets it true (Q4, rows 31-33).
+- **R6 encode/engrave paths refuse a vout-less record (Q3 ruled).** Exit codes: `inspect`
+  exits 0 with the Q3 warning (section 4); every encode/engrave path exits 1 with
+  §8.2d's refusal. The mt CLI has four verbs (`main.rs:44-57`): `encode`, `decode`,
+  `verify`, `inspect`. The encode/engrave paths are exactly these two, and both refuse:
+  1. `mt encode` (default: `mt1` strings to engrave by hand or pipe into `me sysw pack`),
+     with any of `--group-size`, `--separator`, `--input-value`, `--quiet`, `--json`
+     (itself refused, `json_unsupported_guard`) and any input form (base64, binary,
+     file, stdin).
+  2. `mt encode --qr` (a `tx:` record for QR plates).
+  Both call `validate::non_witness_utxo_guard` at `main.rs:443`, before the format
+  split (`args.qr`, `main.rs:740`) and before any value is read (`require_psbt_input_values`
+  `:444`), so no flag supplies a value that gets past it. **No code changes for R6**:
+  `non_witness_utxo_guard` already refuses the matching-hash, vout-less record (E6, T16;
+  `validate.rs:362-378`), with `mt encode: REFUSED — §8.2d, input <n> spends output
+  <vout> of <want>, which has <k> output(s)`, the reason and remedy (`Re-export the PSBT
+  from the wallet that built it.`) unchanged, exit 1, nothing on stdout. Rows 28 and 29
+  pin it on both paths, and the guard keeps its existing `refusals.toml` entry
+  (`a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound`). Not encode/engrave
+  paths, so unchanged: `decode` (turns `mt1` strings into hex; it takes no PSBT),
+  `verify` (compares a set against a supplied transaction, `--transaction` taking a PSBT
+  through `finalized_guard_psbt` only, and writes no encoding), and `inspect`. The
+  engraving tool `me` is another repo and consumes `mt encode`'s output, which a refused
+  PSBT never produces.
 - **R4 the no-node warning tells the truth about a known fee (I3).**
   `report::no_node_warning` gains a parameter `fee_known: bool`. When true, its two fee
   lines (`report.rs:684-691`) are replaced by the PROPOSED pair in section 4; when
@@ -253,7 +290,7 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
   fee are UNVERIFIED. Check it before you sign or broadcast: bitcoin-cli gettxout <want>
   <vout>` (one space between each word; row 11 pins it exactly).
 
-- **Q3 warning (R3.6; open, recommended option B), PROPOSED (architect confirms).** A
+- **Q3 warning (R3.6; ruled, option B), PROPOSED (architect confirms).** A
   `Warning`:
 
       headline: "input <n> spends output <vout> of <want>, which has <k> output(s): that output does not exist."
@@ -262,9 +299,13 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
                  transaction can never be valid. mt encode refuses this PSBT: re-export
                  it from the wallet that built it."
 
-- **Q4 JSON key (open, recommended option A).** Every report JSON (`inspect` both
+  JSON `warnings` entry: the headline alone (row 30 pins it exactly). `inspect` exits 0.
+  The refusal at `encode`, `--qr` included, is §8.2d's existing text (R6); nothing new.
+
+- **Q4 JSON key (ruled, option A).** Every report JSON (`inspect` both
   routes, `decode`) gains `"txid_provisional": <bool>` as the line after `"txid"`; true
-  only under R3.5.
+  only under R3.5. The `decode --json` document (on stderr), `inspect --json` for a
+  raw transaction, for an `mt1` set and for a PSBT all carry it (rows 1, 10, 25, 31-33).
 
 - **Holder-visible change, all four:** `inspect` reports these PSBTs at exit 0 (base:
   exit 0 too, but with the template txid unlabelled, no values and no warning).
@@ -299,7 +340,10 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
      leaves that input's value and the fee UNVERIFIED, with a warning naming the
      `bitcoin-cli gettxout` check. ``
      (Follows the Q1/Q2 ruling; the Q3 clause, "fails §8.2d" covering a matching record
-     without the vout, follows Q3's recommended option.)
+     without the vout, follows the Q3 ruling.) Append to that paragraph, PROPOSED: `` The
+     same holds for a `non_witness_utxo` that hashes to the input's txid but has no
+     output at its vout: `inspect` reports it with a warning that the output does not
+     exist, and `encode`, with or without `--qr`, refuses it (§8.2d). ``
 - **README:** none (it does not describe inspect's routing).
 - **Toolkit manual:** none; `mnemonic-toolkit` `docs/manual/src/40-cli-reference/` has
   no `mt` page (41-mnemonic, 42-md, 43-ms, 44-mk-cli, 45-mr, 46-mr-sitting).
@@ -307,15 +351,15 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
 
 ## 6. RED rows
 
-All 27 rows are one new test binary `crates/mt-cli/tests/bh1119_mt_inspect_routing.rs`
+All 33 rows are one new test binary `crates/mt-cli/tests/bh1119_mt_inspect_routing.rs`
 (`mt-cli::bh1119_mt_inspect_routing`), exact text in the sidecar
-`design/FIX_bh1119_mt_inspect_routing/inspect_routing.rs.txt` (sha256 `2db154d72ad48eeaa8037a241e4644ffb5c9f5e5d2d17a8ef5806eb51d601e0e`;
+`design/FIX_bh1119_mt_inspect_routing/inspect_routing.rs.txt` (sha256 `0d1ac869906bc13ab978d5921bec12f9b679d3040c756313263655bd8dbaf1bd`;
 rustfmt edition 2024 clean, `cargo clippy -p mt-cli --test bh1119_mt_inspect_routing -- -D
 warnings` clean). Command:
 
     cargo nextest run --locked --build-jobs 2 -j 2 -p mt-cli --test bh1119_mt_inspect_routing
 
-Expected on base `88ac6d9`: `27 tests run: 7 passed, 20 failed` (section 6a gives the
+Expected on base `88ac6d9`: `33 tests run: 9 passed, 24 failed` (section 6a gives the
 measured result). Each row, expected base behaviour -> after:
 
 | # | row (`bh1119_mt_` omitted) | base | after |
@@ -347,19 +391,30 @@ measured result). Each row, expected base behaviour -> after:
 | 25 | `i3_inspect_reports_an_unfinalized_segwit_psbt_with_its_real_txid` (Q1) | FAIL: no Q1 warning | exit 0; `TX        4665e0aa…` (p5's, unlabelled); stderr `WARNING: this PSBT is not finalized (2 of 2 inputs: input 0, 1).`; no `PROVISIONAL`, no caveat; JSON `"txid_provisional": false` |
 | 26 | `i3_inspect_warns_in_encodes_guard_order` (r1 M1) | FAIL: `no Q1 warning` | exit 0; the Q1 warning precedes the Q2 warning on stderr and in JSON `warnings` |
 | 27 | `i3_inspect_warns_on_a_non_witness_utxo_without_the_spent_output` (Q3 B) | FAIL: warning absent | exit 0; stderr `WARNING: input 0 spends output 99 of <parent txid>, which has <k> output(s): that output does not exist.` |
+| 28 | `i3_encode_refuses_a_non_witness_utxo_without_the_spent_output` (Q3, R6) | pass (control: encode already refuses) | pass: exit 1, stdout empty, first stderr line `mt encode: REFUSED — §8.2d, input 0 spends output 99 of <parent txid>, which has <k> output(s)` |
+| 29 | `i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output` (Q3, R6) | pass (control) | pass: the same exit and first line with `--qr` |
+| 30 | `i3_inspect_json_carries_the_q3_warning_headline` (Q3) | FAIL: no such `warnings` entry | exit 0; JSON `warnings` holds exactly `input 0 spends output 99 of <parent txid>, which has <k> output(s): that output does not exist.`; `txid` = the extracted txid |
+| 31 | `q4_inspect_json_of_a_raw_transaction_carries_txid_provisional_false` (Q4) | FAIL: key absent (`Null`) | `"txid_provisional": false` |
+| 32 | `q4_inspect_json_of_an_mt1_set_carries_txid_provisional_false` (Q4) | FAIL: key absent | `"txid_provisional": false` |
+| 33 | `q4_decode_json_carries_txid_provisional_false` (Q4) | FAIL: key absent (document on stderr) | `"txid_provisional": false` |
 
 The base first lines quoted for rows 12-23 were measured on the base-equivalent binary
 (section 1). Row fixtures: row 10 the legacy PSBT unfinalized with its parent as record;
 row 11 the finalized legacy PSBT whose record is the parent with the spent output lowered
 to 999,901,000 sats (the hidden-fee shape: the PSBT shows a 1,000-sat fee, the real one
-is 100,000); row 25 p5's `unfinalized_psbt_b64`; row 26 rows 10 and 11 combined; row 27
-the finalized legacy PSBT spending output 99 of the parent, with the parent as record.
+is 100,000); row 25 p5's `unfinalized_psbt_b64`; row 26 rows 10 and 11 combined; rows 27-30
+the finalized legacy PSBT spending output 99 of the parent, with the parent as record; rows 31-33 the corpus raw-hex / `even` set.
 
 ### 6a. Measured
 
 Re-fold, run on base `88ac6d9` with both sidecars installed (the command above, cargo
-1.85.0): `Summary 27 tests run: 7 passed, 20 failed, 0 skipped`. Passes are exactly the
-seven controls (rows 7, 9, 15, 21, 22, 23, 24). New-row failures are the defect: row 10
+1.85.0): `Summary 27 tests run: 7 passed, 20 failed, 0 skipped`; the Q3/Q4 fold (Sonnet
+5.5, same base code, same cargo) added rows 28-33 and measured `Summary 33 tests run: 9
+passed, 24 failed, 0 skipped`. Passes are exactly the seven controls (rows 7, 9, 15,
+21, 22, 23, 24) and the two encode controls (rows 28, 29: `encode` already refuses).
+Rows 30-33 fail on the absent Q3 JSON entry and the absent `txid_provisional` key
+(`left: Null`, `right: false`).
+The re-fold's new-row failures are the defect: row 10
 TX row without the label; row 11 `FEE       UNKNOWN …`; row 25 its TX row matches p5's
 txid and it fails at the absent not-finalized warning; row 26 `no Q1 warning`; row 27
 its warning absent. From the first fold (author's measurement, same again here): row 1 JSON txid
@@ -394,12 +449,14 @@ rows 6, 8 the UNKNOWN fee lines and the caveat present.
   decides. `inspect.rs:732` (`cHNidP8BAHUCAAAA`) stays on the PSBT refusal (R2 step 2
   then 4); `bh1119_mt_input_parsing.rs:474-480` compares two PSBT reports, both now with
   values. The builder confirms by the full suite (gate).
-- Added: the row binary and four `tests/refusals.toml` entries (sidecar
+- Added: the row binary and six `tests/refusals.toml` entries (sidecar
   `refusals-toml-append.txt`): rows 14, 21 and 24 (`recognised_guard`, which `inspect`
   now reaches for non-UTF-8 input and holds against the new `strings_subject` route) and
   row 22 (`base64_psbt_guard`, likewise). Rows 10 and 11 are no longer refusals (ruling),
-  so the first fold's §8.1 and §8.2d entries are dropped. Coverage and mutation go
-  61 -> 65 (coverage measured with the sidecars installed: `check-refusal-coverage: 65
+  so the first fold's §8.1 and §8.2d entries are dropped. Rows 28 and 29 (Q3: `encode`
+  and `encode --qr` refuse a vout-less record) are declared on `non_witness_utxo_guard`.
+  Coverage and mutation go
+  61 -> 67 (coverage measured with the sidecars installed: `check-refusal-coverage: 67
   refusal tests over 18 ruled refusals`).
   Rows 15 and 23 are controls of inline refusals with no guard fn (`read_input`'s UTF-8
   step, `read_strings::read`'s empty check), so they have no entry and no mutation
@@ -411,12 +468,13 @@ rows 6, 8 the UNKNOWN fee lines and the caveat present.
 
 ## 8. Build order
 
-1. Install both sidecars; run the row command; see `27 tests run: 7 passed, 20 failed`.
+1. Install both sidecars; run the row command; see `33 tests run: 9 passed, 24 failed`.
 2. R1 and R2 (byte reader, `strings_subject`, routing): rows 12-14, 16-20 GREEN; 15,
    21-24 stay GREEN.
 3. R3.2-R3.4 (extraction, values, the hash check in `psbt_input_value`): rows 2-5 GREEN.
 4. R3.5, R3.6 and Q4 (`txid_provisional`, the PROVISIONAL label, the Q1/Q2/Q3 warnings
-   in order): rows 1, 10, 11, 25, 26, 27 GREEN.
+   in order): rows 1, 10, 11, 25, 26, 27, 30, 31, 32, 33 GREEN; 28, 29 stay GREEN (R6
+   changes no code).
 5. R4 (`fee_known`, `has_legacy` for a PSBT subject): rows 6, 8 GREEN; 7, 9 stay GREEN.
 6. R5 comments; the unit tests of section 7; spec re-sync and PROVENANCE row once
    mnemonic-engrave carries the section 5 delta.
@@ -428,11 +486,12 @@ rows 6, 8 the UNKNOWN fee lines and the caveat present.
 |---|---|
 | R1 inspect reads bytes | 12, 13, 14; control 15 |
 | R2 routing (sniff first, `strings_subject` line-start rule, sniff refusal otherwise) | 16, 17, 18, 19, 20; controls 21, 22, 23, 24; unit test (section 7) |
-| R3.1 no PSBT guard refuses at inspect (Q1/Q2 ruling) | 10, 11, 25, 26, 27 (each exits 0) |
+| R3.1 no PSBT guard refuses at inspect (Q1/Q2/Q3 ruling) | 10, 11, 25, 26, 27 (each exits 0) |
 | R3.2, R3.3 extracted transaction, record values, provenance | 1, 2, 3, 4, 5 |
 | R3.4 a mismatched record is PSBT-CLAIMED, fee unverified, never TXID-BOUND (Q2) | 11 |
-| R3.5 PROVISIONAL txid and the Q1 warnings; Q4 key | 10 (provisional), 25 (not provisional), 1 (key false) |
-| R3.6 warning order (r1 M1); Q2 block; Q3 warning | 26; 11; 27 |
+| R3.5 PROVISIONAL txid and the Q1 warnings; Q4 key | 10 (provisional), 25 (not provisional), 1, 31, 32, 33 (key false: PSBT, raw hex, `mt1` set, `decode --json`) |
+| R3.6 warning order (r1 M1); Q2 block; Q3 warning (stderr, JSON) | 26; 11; 27, 30 |
+| R6 every encode/engrave path (`encode`, `encode --qr`) refuses a vout-less record (Q3) | 28, 29 |
 | R4 no-node fee lines; caveat on real witnesses and unsigned inputs | 6, 8, 25 (absent), 10 (present); controls 7, 9 |
 
 ## 10. Gate (builder, final head; run once to a file, then grep)
@@ -441,15 +500,16 @@ rows 6, 8 the UNKNOWN fee lines and the caveat present.
 
 Measured RED (re-fold, base `88ac6d9`, sidecars installed, no implementation): fmt,
 clippy and build pass, then `Summary [  22.249s] 486 tests run: 466 passed, 20 failed, 0
-skipped` and `GATE FAIL: nextest` (exit 1). So the gate can fail, and its 486 pin is
-459 + 27.
+skipped` and `GATE FAIL: nextest` (exit 1). So the gate can fail, and its pins are
+459 + 33 = 492 (Q3/Q4 fold; the 486 figure above is the 27-row re-fold's measurement).
+The Q3/Q4 fold's measurement is in section 6a and the 2026-11-24 gate run below.
 
 The script runs every step of the CI `test` job once, checks the sidecars are installed
 unchanged, and pins the counts. WHAT IT DOES NOT COVER is in its header. Its totals are
-`88ac6d9` + this FIX only (459 + 27 = 486 tests; refusal coverage and mutation 65); a head that also
+`88ac6d9` + this FIX only (459 + 33 = 492 tests; refusal coverage and mutation 67); a head that also
 carries rows 35, 38, 39 or the open `fix/mt-*` neighbours must add their counts.
 
-## 11. Open questions (STOP: the architect rules Q3 and Q4)
+## 11. Rulings applied and decisions (no STOP is open)
 
 - **Q1 (ruled 2026-11-23).** Report; PROVISIONAL txid when signing changes it (R3.5,
   rows 10, 25, 26). Applied reading, flag if wrong: the ruling's reason "txid covers
@@ -463,30 +523,26 @@ carries rows 35, 38, 39 or the open `fix/mt-*` neighbours must add their counts.
   claims; falling through to `witness_utxo` only when the record has no such output);
   the block prints whether or not a node answered for that input (a signer still reads
   the record).
-- **Q3 (STOP) A `non_witness_utxo` that hashes to the input's txid but has no output at
-  its vout (§8.2d's second refusal), given to `inspect`.** The ruling names only the
-  hash half. The outpoint does not exist, so the transaction can never be valid; the
-  value already falls through to `witness_utxo` (PSBT-CLAIMED) or UNKNOWN, so no false
-  TXID-BOUND label arises.
-  - A: report silently (R3 without a Q3 warning). No new text; row 27 becomes exit 0
-    and no warning asserted.
-  - B (recommended): report, with the Q3 warning (section 4, PROPOSED). Follows T17
-    ("inspect warns, encode refuses") for an invalid transaction and the ruling's
-    "never hide" spirit. Rows and gate follow B.
-  - C: refuse with §8.2d's existing text, verb `inspect` (the first fold's option A,
-    narrowed to this half). Row 27 becomes the refusal and gains a refusals entry
-    (coverage 66).
-- **Q4 (STOP) How JSON says the txid is PROVISIONAL.** The ruling: "no txid presented
-  as final"; a `--json` consumer reading `txid` would take it as final.
-  - A (recommended): a new key `"txid_provisional": <bool>` on every report JSON, the
-    line after `"txid"` (section 4). Rows 1, 10, 25 pin it. No existing test asserts the
-    JSON key set (`git grep` of `crates/mt-cli/tests` at `88ac6d9`).
-  - B: no new key; the Q1 warning's headline in `warnings` is the only signal. Rows 1,
-    10, 25 drop their `txid_provisional` assertions.
-  - C: A under another name (architect names it).
+- **Q3 (ruled 2026-11-24, option B).** A `non_witness_utxo` that hashes to the input's
+  txid but has no output at its vout (§8.2d's second refusal): `inspect` REPORTS it with
+  the Q3 warning (R3.6, section 4, row 27, JSON row 30); EVERY encode/engrave path
+  REFUSES it (R6: `encode` and `encode --qr`, rows 28, 29). Brian: "If it's an invalid
+  transaction there is no reason to encode it or engrave it, if we can display/decode it
+  with a warning." No value is read from such an input as TXID-BOUND (it falls through to
+  `witness_utxo`, PSBT-CLAIMED, or UNKNOWN). Applied reading, flag if wrong: `verify
+  --transaction` and `decode` are not encode/engrave paths (R6), so they are unchanged.
+  The D6 #37 Opus r2 and the architect check R6 against §8.2d.
+- **Q4 (ruled 2026-11-24, option A).** `"txid_provisional": <bool>` on every report JSON,
+  the line after `"txid"` (section 4; rows 1, 10, 25, 31, 32, 33). No existing test
+  asserts the JSON key set (`git grep` of `crates/mt-cli/tests` at `88ac6d9`).
 - **O1 (wording, PROPOSED)** every text in section 4: the no-node fee pair, the
   PROVISIONAL label, the Q1, Q2 and Q3 warnings and the Q2 JSON entry. Listed for
   `design/WORDING_REVIEW.md`.
+- **O6 (decided in the 2026-11-24 fold, flag if wrong)** the texts the Q3/Q4 fold
+  chose: none new for holders in `mt` itself (the Q3 warning, its JSON headline and
+  §8.2d's refusal text are the earlier PROPOSED/existing ones, unchanged); the spec-delta
+  sentence appended to the §1.1 paragraph (section 5); and the R6 scope list: `encode`
+  and `encode --qr` are the only encode/engrave paths, `decode` and `verify` are not.
 - **O2 (folded from review r1 I1)** the `strings_subject` criterion is the line-start
   rule (R2), with control row 24.
 - **O3 (decided here, flag if wrong)** non-UTF-8 non-PSBT input to `inspect` gets sniff's

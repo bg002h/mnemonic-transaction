@@ -11,8 +11,9 @@
 //! Brian's ruling of 2026-11-23 (inspect reports an unsigned PSBT, with a
 //! PROVISIONAL txid where signing changes it, and reports a mismatched
 //! `non_witness_utxo` as UNVERIFIED with a fee-loss warning). The rows marked
-//! Q3 and Q4 follow the recommended option of the FIX document's open
-//! questions; the builder replaces them if the architect rules otherwise.
+//! Q3 and Q4 follow Brian's ruling of 2026-11-24 (inspect reports a
+//! `non_witness_utxo` with no output at the input's vout, with a warning, and
+//! every encode path refuses it; every report JSON carries `txid_provisional`).
 
 use assert_cmd::Command;
 use bitcoin::consensus::deserialize;
@@ -310,7 +311,7 @@ fn bh1119_mt_i3_inspect_reports_the_extracted_txid_of_a_legacy_psbt() {
     let r = run("inspect", &["--json"], b64(&psbt.serialize()).as_bytes());
     accepted(&r);
     assert_eq!(doc(&r)["txid"], want.as_str());
-    // Q4 (open, recommended): every report carries the key.
+    // Q4 (ruled): every report carries the key.
     assert_eq!(doc(&r)["txid_provisional"], false);
 }
 
@@ -590,7 +591,7 @@ fn bh1119_mt_i3_inspect_warns_in_encodes_guard_order() {
     );
 }
 
-/// Q3 (open, recommended option B): a matching non_witness_utxo with no
+/// Q3 (ruled, option B): a matching non_witness_utxo with no
 /// output at the input's vout is reported, with a warning that the output
 /// does not exist.
 #[test]
@@ -609,6 +610,90 @@ fn bh1119_mt_i3_inspect_warns_on_a_non_witness_utxo_without_the_spent_output() {
         "stderr:\n{}",
         r.err
     );
+}
+
+/// Q3 (ruled): the same fixture, `--json`: the warnings entry is the
+/// headline alone, and the document still reports the transaction.
+#[test]
+fn bh1119_mt_i3_inspect_json_carries_the_q3_warning_headline() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let want = format!(
+        "input 0 spends output 99 of {}, which has {} output(s): that output does not exist.",
+        prev.compute_txid(),
+        prev.output.len()
+    );
+    let r = run("inspect", &["--json"], b64(&psbt.serialize()).as_bytes());
+    accepted(&r);
+    let d = doc(&r);
+    assert!(
+        d["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str() == Some(want.as_str())),
+        "{d}"
+    );
+    assert_eq!(d["txid"], extracted_txid(&psbt).as_str());
+}
+
+/// Q3 (ruled): `encode` refuses the vout-less record, exit 1, nothing on
+/// stdout, §8.2d's existing text.
+#[test]
+fn bh1119_mt_i3_encode_refuses_a_non_witness_utxo_without_the_spent_output() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let rest = format!(
+        "§8.2d, input 0 spends output 99 of {}, which has {} output(s)",
+        prev.compute_txid(),
+        prev.output.len()
+    );
+    let r = run("encode", &[], b64(&psbt.serialize()).as_bytes());
+    refused(&r, "encode", &rest);
+}
+
+/// Q3 (ruled): `encode --qr` is an engrave path too, and refuses the same.
+#[test]
+fn bh1119_mt_i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let rest = format!(
+        "§8.2d, input 0 spends output 99 of {}, which has {} output(s)",
+        prev.compute_txid(),
+        prev.output.len()
+    );
+    let r = run("encode", &["--qr"], b64(&psbt.serialize()).as_bytes());
+    refused(&r, "encode", &rest);
+}
+
+// ── Q4: every report JSON carries `txid_provisional` ──────────────────────
+
+#[test]
+fn bh1119_mt_q4_inspect_json_of_a_raw_transaction_carries_txid_provisional_false() {
+    let r = run(
+        "inspect",
+        &["--json"],
+        base()["raw_hex"].as_str().unwrap().as_bytes(),
+    );
+    accepted(&r);
+    assert_eq!(doc(&r)["txid_provisional"], false);
+}
+
+#[test]
+fn bh1119_mt_q4_inspect_json_of_an_mt1_set_carries_txid_provisional_false() {
+    let r = run("inspect", &["--json"], even_lines().join("\n").as_bytes());
+    accepted(&r);
+    assert_eq!(doc(&r)["txid_provisional"], false);
+}
+
+/// `decode --json` writes its document to stderr (as today).
+#[test]
+fn bh1119_mt_q4_decode_json_carries_txid_provisional_false() {
+    let r = run("decode", &["--json"], even_lines().join("\n").as_bytes());
+    accepted(&r);
+    let d: serde_json::Value = serde_json::from_str(&r.err)
+        .unwrap_or_else(|e| panic!("stderr is not the JSON document ({e}):\n{}", r.err));
+    assert_eq!(d["txid_provisional"], false);
 }
 
 // ── I5: a binary PSBT is sniffed before any text conversion ───────────────
