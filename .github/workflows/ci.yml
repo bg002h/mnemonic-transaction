@@ -1,15 +1,15 @@
 name: ci
 on:
   push:
-    branches: [main, "ci/**"]
-  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 # Cancel a pull request's superseded run when a newer commit is pushed to it.
 # Every other event gets a group of its own (the run id), so pushes, tags,
 # schedules and dispatches are never cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   test:
