@@ -585,7 +585,8 @@ Closes bh-mt-I3, bh-mt-I5, bh-mt-I6 (none has a line in `design/FOLLOWUPS.md` at
 - `crates/mt-cli/tests/refusals.toml` (append)
 - `design/SPEC_mt_v0_1.md`, `design/PROVENANCE.md` (re-sync, step 5)
 
-`input.rs` is read, not changed. Row 38 (FIX-G, verdict/notice
+`input.rs` changes in one place: `sniff`'s non-UTF-8 arm calls `recognised_guard(false, ..)` like its final arm, so the row-14 refusals.toml entry
+names a check the test depends on (build STOP, coordinator ruling 2026-11-24). Row 38 (FIX-G, verdict/notice
 integrity) changes notice gating in `main.rs` near the same report code; row 39 (FIX-J,
 printed remedies) may change `finalized_guard_psbt`'s remedy (inspect no longer calls
 it, so no row here depends on that text). Text conflicts only expected.
