@@ -106,10 +106,7 @@ None new; none reworded. What changes is only presence and order:
 
 ## 5. Spec, README, help, manual, CHANGELOG
 
-- `design/SPEC_mt_v0_1.md` is a copy owned by mnemonic-engrave (CLAUDE.md
-  "Design files are copies"). Spec delta, applied to mnemonic-engrave's copy
-  first and re-synced byte-for-byte by this FIX's build; anchors as in mt's copy
-  at 88ac6d9. Both sentences are PROPOSED (architect confirms):
+- Apply the three sentences directly to mt's `design/SPEC_mt_v0_1.md` in the GREEN commit, at the anchors above (precedent: bebedc7, eadeef9). Do not re-sync from mnemonic-engrave: its copy is behind mt's (check-provenance.sh reports DRIFTED) and has no F-275 paragraph. List deltas 1 and 2 in the build report for porting to mnemonic-engrave's copy (anchors there: :3347 and :511 at 62fdf37); delta 3 ports with the F-275 paragraph.
   1. §10.10b item b (:3484-3489), after "It does **not** relax §1.1a's rule that
      stdout stays empty unless every check passes." insert:
      `Under `--quiet`, `decode` prints on stderr everything its loud form prints
@@ -133,13 +130,13 @@ None new; none reworded. What changes is only presence and order:
 ## 6. RED rows
 
 Sidecar: `design/FIX_bh1119_mt_verdict_notice/verdict_notice.rs.txt`
-(sha256 `cada033e36f7aeeabf54817500bc41f6057eea03259554ba6ba04638de3a580a`, rustfmt
+(sha256 `adc9b1070c23ae7cd86eef670799ce54ab862f464195d112da0892a8c7911dac`, rustfmt
 edition 2024 clean, clippy `-D warnings` clean when installed). Install as `crates/mt-cli/tests/verdict_notice.rs`, then:
 
     cargo nextest run --locked --build-jobs 2 -j 2 -p mt-cli --test verdict_notice --no-fail-fast
 
 At 88ac6d9 (this branch's base; the FIX commit is docs-only):
-`14 tests run: 4 passed, 10 failed` (the 4 are CONTROL rows 7, 8, 13, 14). Each
+`15 tests run: 4 passed, 11 failed` (the 4 are CONTROL rows 7, 8, 13, 14). Each
 failure is at the row's first assertion after the exit-status check, for the
 defect (log: `/scratch/cache/wt-mt-verdict-notice-red2.log`).
 
@@ -182,13 +179,14 @@ GREEN and kept the whole `mt-cli` suite green: `421 tests run: 421 passed`
   passes with this change and the fix). No other existing test changes: the
   other `--quiet` rows (`decode_verify.rs:1504-1610`) assert with `contains`
   and pass unchanged.
-- Added: `crates/mt-cli/tests/verdict_notice.rs` (14 rows, verbatim from the
+- `decode_verify.rs` `decode_warns_about_a_world_readable_stdout_and_still_exits_0` (:1524-1528): change `err.contains("WARNING")` to `err.contains("WARNING: stdout is a file of mode 0644")`. Under Q1 this stderr also carries the no-node warning, so the bare `WARNING` check no longer tests the F-275 line.
+- Added: `crates/mt-cli/tests/verdict_notice.rs` (15 rows, verbatim from the
   sidecar).
 - `refusals.toml`: unchanged (no refusal added, removed or reworded).
 
-Coverage map (rule -> rows): Q1 (a) -> 2, 6; Q1 (b) -> 1, 3, 4, 5, 6; Q1 (c) ->
+Coverage map (rule -> rows): Q1 (a) -> 2, 6; Q1 (b) -> 1, 3, 4, 5, 6, 15; Q1 (c) ->
 existing `the_decode_warning_is_never_suppressed_and_is_data_under_json`; Q1
-"nothing else" -> 6; Q2 -> 2, 7; Q3 -> 7, 8; V1 refusal -> 9, 10, 11, 12; V1
+"nothing else" -> 6; Q2 -> 2, 7, 15; Q3 -> 7, 8; V1 refusal -> 9, 10, 11, 12; V1
 pass -> 13, 14; V2 -> existing `verify_reports_ok_on_a_clean_set`,
 `verify_reports_its_margin_not_just_a_verdict`; V3 -> 9, 10 (exact refusal
 first line), 12. Spec delta 1 -> 1-6; 2 -> 9-14; 3 -> the changed test above.
@@ -204,11 +202,11 @@ Source files this FIX changes (for build ordering against the other mt rows):
 same `verify` body) and `fix/mt-arg-intake` (argv; `main.rs` near :291) — rebase
 on whichever lands first; the rules here are independent of both.
 
-1. Install the sidecar; run the row command; see `14 tests run: 4 passed, 10 failed`.
+1. Install the sidecar; run the row command; see `15 tests run: 4 passed, 11 failed`.
 2. Q1 + Q2 (decode): rows 1-6 GREEN, 7-8 stay GREEN; apply the section 7 test
    change in the same commit.
 3. V1 (verify): rows 9-12 GREEN, 13-14 stay GREEN.
-4. Re-sync the spec copy once mnemonic-engrave carries section 5's delta.
+4. Apply the three sentences directly to mt's `design/SPEC_mt_v0_1.md` in the GREEN commit, at the anchors above (precedent: bebedc7, eadeef9). Do not re-sync from mnemonic-engrave: its copy is behind mt's (check-provenance.sh reports DRIFTED) and has no F-275 paragraph. List deltas 1 and 2 in the build report for porting to mnemonic-engrave's copy (anchors there: :3347 and :511 at 62fdf37); delta 3 ports with the F-275 paragraph.
 5. Gate (section 10) once to a file.
 
 ## 9. Open points for the architect (no STOP)
@@ -233,7 +231,7 @@ The CI `test` job (`.github/workflows/ci.yml`) plus the rows:
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets --locked -- -D warnings`
 3. `cargo build --locked`
-4. `cargo nextest run --locked --no-fail-fast` (expect base count + 14, 0
+4. `cargo nextest run --locked --no-fail-fast` (expect base count + 15, 0
    failed; if another mt FIX lands first, base count moves by its own additions)
 5. `cargo test --locked --workspace --doc`
 6. `./scripts/check-refusal-coverage.sh` (count unchanged from base)
@@ -241,7 +239,7 @@ The CI `test` job (`.github/workflows/ci.yml`) plus the rows:
 8. `./scripts/journeys.sh`
 9. `bash ci/docs-only.test.sh` and `bash ci/code-docs-check.sh`
 10. Rows by name: `cargo nextest run --locked -p mt-cli --test verdict_notice`
-    -> `14 tests run: 14 passed`. Fewer than 14 is a FAIL.
+    -> `15 tests run: 15 passed`. Fewer than 15 is a FAIL.
 
 ## 11. FOLLOWUPS (listed in the author's report, not appended here)
 
