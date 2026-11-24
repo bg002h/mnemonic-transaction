@@ -57,6 +57,12 @@ for path in sorted(glob.glob("crates/*/tests/*.rs")):
 # Exempt by NAME, and only with a stated reason that a reader can check. An
 # exemption list is safer than a cleverer heuristic: it is visible in the diff.
 EXEMPT = {
+    "bh1119_mt_g_verify_mismatch_prints_no_ok":
+        "asserts notice/verdict ordering around an existing refusal; adds no guard",
+    "bh1119_mt_g_verify_missing_transaction_prints_no_ok":
+        "asserts notice/verdict ordering around an existing refusal; adds no guard",
+    "bh1119_mt_g_verify_refusal_keeps_the_notices":
+        "asserts notice/verdict ordering around an existing refusal; adds no guard",
     "ordinary_amounts_parse":
         "the CONTROL for §8.2c's amount parser -- it asserts a legitimate amount "
         "is NOT refused, so it names a §-refusal in order to check its absence",
