@@ -434,3 +434,41 @@ check = "src/input.rs::base64_psbt_guard"
 spec  = "§8.2f"
 test  = "bh1119_mt_i20_argv_classifier_refuses_long_key_base64"
 check = "src/validate.rs::command_line_guard"
+
+# bughunt-1119 FIX-D (design/FIX_bh1119_mt_inspect_routing.md): bh-mt-I3, I5, I6.
+# `inspect` routes on the bytes, so input that is neither a transaction nor
+# an `mt1` set reaches the sniffer's refusals. (It REPORTS an unfinalized PSBT
+# and a mismatched non_witness_utxo, by Brian's ruling of 2026-11-23, so the
+# §8.1 and §8.2d guards are not called at `inspect` and have no entry here.)
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i5_inspect_names_non_text_junk_by_the_sniffer"
+check = "src/input.rs::recognised_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i6_foreign_text_keeps_the_sniffer_refusal"
+check = "src/input.rs::recognised_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i6_damaged_base64_psbt_containing_mt1_keeps_the_psbt_refusal"
+check = "src/input.rs::base64_psbt_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i6_wrapped_base64_containing_mt1_keeps_the_sniffer_refusal"
+check = "src/input.rs::recognised_guard"
+
+# Q3 (Brian 2026-11-24): inspect REPORTS a matching non_witness_utxo with no
+# output at the input's vout; every encode path (plain and --qr) refuses it.
+[[refusal]]
+spec  = "§8.2d"
+test  = "bh1119_mt_i3_encode_refuses_a_non_witness_utxo_without_the_spent_output"
+check = "src/validate.rs::non_witness_utxo_guard"
+
+[[refusal]]
+spec  = "§8.2d"
+test  = "bh1119_mt_i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output"
+check = "src/validate.rs::non_witness_utxo_guard"
