@@ -246,6 +246,10 @@ pub fn decode_chunk(s: &str, plan: Option<Chunking>) -> Result<DecodedChunk> {
 /// Ordering comes from each chunk's **header index**, never from the order the
 /// strings arrived in — §1.1a takes them "in any order", and sorting them
 /// lexicographically almost works, which is the worst kind of nearly-right.
+///
+/// A complete set whose chunk sizes are not §3b's balanced split is refused
+/// with [`Error::ChunkLengthMismatch`], so the result never depends on the
+/// order the strings arrived in.
 pub fn decode(strings: &[String]) -> Result<DecodedSet> {
     // Read EVERY string first, keeping the failures rather than propagating the
     // first one.
@@ -288,19 +292,13 @@ pub fn decode(strings: &[String]) -> Result<DecodedSet> {
     let count = first.header.count;
     let set_id = first.header.chunk_set_id;
 
-    // The full-chunk size must come from a chunk that is NOT the last one — the
-    // last is shorter whenever the payload does not divide evenly. Taking it
-    // from `strings[0]` works only while the strings happen to arrive in order,
-    // which §1.1a explicitly does not promise; `decode_is_order_independent`
-    // caught exactly that.
-    let bpc = if count == 1 {
-        0 // a single chunk is its own last: its length is taken directly below
-    } else {
-        read.iter()
-            .find(|c| c.header.index < count - 1)
-            .map(|c| c.payload.len())
-            .ok_or(Error::MissingChunk { missing: 1, count })?
-    };
+    // No chunk size is taken from any one chunk: sizes are judged against §3b's
+    // plan once the set is complete (below), so the result cannot depend on the
+    // order the strings arrived in. A set with no non-final chunk read is still
+    // a missing chunk, not a size question.
+    if count > 1 && !read.iter().any(|c| c.header.index < count - 1) {
+        return Err(Error::MissingChunk { missing: 1, count });
+    }
 
     let mut slots: Vec<Option<DecodedChunk>> = vec![None; count];
     let mut duplicates: Vec<Duplicate> = Vec::new();
@@ -360,19 +358,35 @@ pub fn decode(strings: &[String]) -> Result<DecodedSet> {
     }
 
     let mut chunks = Vec::with_capacity(count);
-    let mut bytes = Vec::new();
     for (i, slot) in slots.into_iter().enumerate() {
         let c = slot.ok_or(Error::MissingChunk {
             missing: i + 1,
             count,
         })?;
-        let keep = if i == count - 1 || count == 1 {
-            c.payload.len()
-        } else {
-            bpc
-        };
-        bytes.extend_from_slice(&c.payload[..keep.min(c.payload.len())]);
         chunks.push(c);
+    }
+
+    // §3b's size rule, applied to the complete set: every chunk must be the
+    // balanced split's range for the set's total length, so a set no conforming
+    // encoder wrote is refused rather than reassembled order-dependently.
+    let total: usize = chunks.iter().map(|c| c.payload.len()).sum();
+    let plan = chunk::plan(total)?;
+    for (i, c) in chunks.iter().enumerate() {
+        if i >= plan.count || c.payload.len() != chunk::range(plan, i).len() {
+            return Err(Error::ChunkLengthMismatch {
+                index: i + 1,
+                count,
+                found: c.payload.len(),
+                total,
+                planned_count: plan.count,
+                bytes_per_chunk: plan.bytes_per_chunk,
+                last_chunk_bytes: plan.last_chunk_bytes,
+            });
+        }
+    }
+    let mut bytes = Vec::with_capacity(total);
+    for c in &chunks {
+        bytes.extend_from_slice(&c.payload);
     }
     duplicates.sort_by_key(|d| d.index);
     Ok(DecodedSet {

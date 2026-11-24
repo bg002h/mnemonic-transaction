@@ -157,6 +157,30 @@ pub enum Error {
     #[error("data part of {0} symbols is not a valid mt1 length")]
     InvalidStringLength(usize),
 
+    /// A complete set whose BCH-valid chunks are not §3b's balanced split of the
+    /// total payload. A conforming encoder never writes such a set, so it is
+    /// hand-built or from another implementation. Carries the plan so the
+    /// refusal names the numbers.
+    #[error(
+        "chunk {index} of {count} has payload length {found}; §3b's balanced split of a {total}-byte payload gives count {planned_count}, bytes per chunk {bytes_per_chunk}, last chunk {last_chunk_bytes}"
+    )]
+    ChunkLengthMismatch {
+        /// 1-based number of the first chunk that departs from the plan.
+        index: usize,
+        /// The set size from the headers.
+        count: usize,
+        /// That chunk's payload length in bytes.
+        found: usize,
+        /// The set's total payload length in bytes.
+        total: usize,
+        /// Chunks §3b plans for `total`.
+        planned_count: usize,
+        /// §3b's bytes per chunk for `total`.
+        bytes_per_chunk: usize,
+        /// §3b's last-chunk length for `total`.
+        last_chunk_bytes: usize,
+    },
+
     /// Mixed case. Normalisation is free, so `mt` lowercases input before
     /// anything else — but a *string* mixing cases is not a string this codec
     /// will silently reinterpret.
