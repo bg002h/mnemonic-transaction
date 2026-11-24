@@ -142,9 +142,9 @@ defect (log: `/scratch/cache/wt-mt-verdict-notice-red2.log`).
 
 GREEN feasibility (author, scratch, reverted; not part of this FIX): a 117-line
 diff to `decode`, `verify` and the section 7 test
-(`/scratch/cache/wt-mt-verdict-notice-scratch-green.diff`) turned all 14 rows
-GREEN and kept the whole `mt-cli` suite green: `421 tests run: 421 passed`
-(407 base + 14 rows).
+(`/scratch/cache/wt-mt-verdict-notice-scratch-green.diff`) turned the rows
+GREEN. The build (GREEN commit) ran the whole workspace: `488 tests run: 488 passed`
+(473 base + 15 rows).
 
 | # | row (`bh1119_mt_g_` omitted) | input | base (RED) | after fix |
 |---|---|---|---|---|
@@ -183,9 +183,10 @@ GREEN and kept the whole `mt-cli` suite green: `421 tests run: 421 passed`
 - Added: `crates/mt-cli/tests/verdict_notice.rs` (15 rows, verbatim from the
   sidecar).
 - `refusals.toml`: unchanged (no refusal added, removed or reworded).
+- `scripts/check-refusal-coverage.sh`: three EXEMPT entries (rows 9, 10, 12), reason "asserts notice/verdict ordering around an existing refusal; adds no guard" (coordinator ruling, F2 build; `refusals.toml` stays unchanged).
 
 Coverage map (rule -> rows): Q1 (a) -> 2, 6; Q1 (b) -> 1, 3, 4, 5, 6, 15; Q1 (c) ->
-existing `the_decode_warning_is_never_suppressed_and_is_data_under_json`; Q1
+existing `the_decode_warning_is_never_suppressed_and_is_data_under_json`, 15; Q1
 "nothing else" -> 6; Q2 -> 2, 7, 15; Q3 -> 7, 8; V1 refusal -> 9, 10, 11, 12; V1
 pass -> 13, 14; V2 -> existing `verify_reports_ok_on_a_clean_set`,
 `verify_reports_its_margin_not_just_a_verdict`; V3 -> 9, 10 (exact refusal
@@ -196,8 +197,8 @@ first line), 12. Spec delta 1 -> 1-6; 2 -> 9-14; 3 -> the changed test above.
 Source files this FIX changes (for build ordering against the other mt rows):
 `crates/mt-cli/src/main.rs` (functions `decode` and `verify` only). Tests:
 `crates/mt-cli/tests/verdict_notice.rs` (new),
-`crates/mt-cli/tests/decode_verify.rs` (one test). Spec copy:
-`design/SPEC_mt_v0_1.md` (re-sync). Neighbours touching the same functions:
+`crates/mt-cli/tests/decode_verify.rs` (two tests, section 7). Spec copy:
+`design/SPEC_mt_v0_1.md` (the three spec sentences applied directly, section 5). Neighbours touching the same functions:
 `fix/sec-read-args-transaction-verify-only` (moves `--transaction` onto `verify`;
 same `verify` body) and `fix/mt-arg-intake` (argv; `main.rs` near :291) — rebase
 on whichever lands first; the rules here are independent of both.

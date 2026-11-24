@@ -1487,6 +1487,26 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         transliteration_notices(&read, &mut stderr);
         set_notices(&set, &mut stderr);
         margin_report(&set.chunks, &read, &mut stderr);
+    } else {
+        let tx = decode_tx(&set.bytes, "decode", Subject::Set)?;
+        let txid = tx.compute_txid().to_string();
+        let node = node::Node::find(&args.bitcoin_cli);
+        if node.is_none() {
+            let _ = writeln!(stderr);
+            let _ = write!(
+                stderr,
+                "{}",
+                report::no_node_warning(
+                    &locktime::read(&tx),
+                    &txid,
+                    tx.input.iter().any(|i| i.witness.is_empty()),
+                    report::ReadFrom::Strings,
+                )
+            );
+        }
+        transliteration_notices(&read, &mut stderr);
+        set_notices(&set, &mut stderr);
+        margin_report(&set.chunks, &read, &mut stderr);
     }
     let bytes = set.bytes;
 
@@ -1529,90 +1549,106 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 
     let mut stderr = std::io::stderr();
     let set_id = set.chunks[0].header.chunk_set_id;
-    let _ = writeln!(
-        stderr,
-        "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
-        set.chunks.len()
-    );
-    transliteration_notices(&read, &mut stderr);
-    set_notices(&set, &mut stderr);
-    margin_report(&set.chunks, &read, &mut stderr);
     let bytes = &set.bytes;
 
     // §1.1: verify NEVER asks a node. A predicate whose answer changes between
     // runs is not a predicate, and keeping it offline is what lets it run on an
     // air-gapped machine.
-    if let Some(path) = &args.transaction {
-        let supplied = std::fs::read(path).map_err(|e| {
-            Refusal::new(
-                "verify",
-                "§1.1",
-                format!("cannot read {}", path.display()),
-                format!("{e}"),
-            )
-        })?;
-        // §1.1 rules `--transaction <psbt|hex>`, and a supplied PSBT is compared
-        // against its EXTRACTED transaction (§10.13 c) -- so the flag accepted
-        // half of its own ruling and refused the other half. The PSBT is the
-        // form a wallet exports; the hex is what `finalizepsbt` returns. An
-        // operator checking their steel against what they built has the PSBT.
-        // Same wart as `inspect`'s: sniff hard-codes the verb `encode` in every
-        // refusal it builds, so `mt verify --transaction <a truncated hex file>`
-        // told the operator about `mt encode`. Fixed here rather than left as
-        // the surviving half of one defect.
-        let supplied = match input::sniff(&supplied).map_err(|mut r| {
-            r.verb = "verify".into();
-            r
-        })? {
-            input::Input::RawHex(b) => b,
-            input::Input::Psbt(bytes) => {
-                let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
-                    Refusal::new(
-                        "verify",
-                        "§1.1",
-                        "the supplied PSBT does not parse",
-                        format!("{e}"),
-                    )
-                })?;
-                input::psbt_end_guard(bytes.len(), used, "verify")?;
-                // Finalized, by §8.1's vocabulary: an unfinalized PSBT extracts
-                // to a transaction with empty witnesses, whose txid is the same
-                // but whose BYTES are not what was engraved. Comparing against
-                // it would report a match for something unbroadcastable.
-                validate::finalized_guard_psbt(&psbt).map_err(|r| {
-                    Refusal::new(
-                        "verify",
-                        "§1.1",
-                        "the supplied PSBT is not finalized",
-                        format!(
-                            "{} mt compares against the transaction a PSBT \
+    let compared: Result<bool, Refusal> = (|| {
+        if let Some(path) = &args.transaction {
+            let supplied = std::fs::read(path).map_err(|e| {
+                Refusal::new(
+                    "verify",
+                    "§1.1",
+                    format!("cannot read {}", path.display()),
+                    format!("{e}"),
+                )
+            })?;
+            // §1.1 rules `--transaction <psbt|hex>`, and a supplied PSBT is compared
+            // against its EXTRACTED transaction (§10.13 c) -- so the flag accepted
+            // half of its own ruling and refused the other half. The PSBT is the
+            // form a wallet exports; the hex is what `finalizepsbt` returns. An
+            // operator checking their steel against what they built has the PSBT.
+            // Same wart as `inspect`'s: sniff hard-codes the verb `encode` in every
+            // refusal it builds, so `mt verify --transaction <a truncated hex file>`
+            // told the operator about `mt encode`. Fixed here rather than left as
+            // the surviving half of one defect.
+            let supplied = match input::sniff(&supplied).map_err(|mut r| {
+                r.verb = "verify".into();
+                r
+            })? {
+                input::Input::RawHex(b) => b,
+                input::Input::Psbt(bytes) => {
+                    let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
+                        Refusal::new(
+                            "verify",
+                            "§1.1",
+                            "the supplied PSBT does not parse",
+                            format!("{e}"),
+                        )
+                    })?;
+                    input::psbt_end_guard(bytes.len(), used, "verify")?;
+                    // Finalized, by §8.1's vocabulary: an unfinalized PSBT extracts
+                    // to a transaction with empty witnesses, whose txid is the same
+                    // but whose BYTES are not what was engraved. Comparing against
+                    // it would report a match for something unbroadcastable.
+                    validate::finalized_guard_psbt(&psbt).map_err(|r| {
+                        Refusal::new(
+                            "verify",
+                            "§1.1",
+                            "the supplied PSBT is not finalized",
+                            format!(
+                                "{} mt compares against the transaction a PSBT \
                              EXTRACTS to, and an unfinalized one extracts to \
                              something that cannot be broadcast.",
-                            r.verdict
-                        ),
-                    )
-                })?;
-                bitcoin::consensus::serialize(&psbt.extract_tx_unchecked_fee_rate())
-            }
-        };
-        // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
-        // reports a match for any transaction sharing those bits, and says so in
-        // the words "prove identity".
-        let want = txid_display(bytes, "verify", Subject::Set)?;
-        let got = txid_display(&supplied, "verify", Subject::Input)?;
-        if want != got {
-            return Err(Refusal::new(
-                "verify",
-                "§1.1",
-                "the supplied transaction is not the one on these strings",
-                format!(
-                    "The strings reassemble to txid {want}. The supplied \
+                                r.verdict
+                            ),
+                        )
+                    })?;
+                    bitcoin::consensus::serialize(&psbt.extract_tx_unchecked_fee_rate())
+                }
+            };
+            // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
+            // reports a match for any transaction sharing those bits, and says so in
+            // the words "prove identity".
+            let want = txid_display(bytes, "verify", Subject::Set)?;
+            let got = txid_display(&supplied, "verify", Subject::Input)?;
+            if want != got {
+                return Err(Refusal::new(
+                    "verify",
+                    "§1.1",
+                    "the supplied transaction is not the one on these strings",
+                    format!(
+                        "The strings reassemble to txid {want}. The supplied \
                      transaction is {got}. These differ in the FULL txid, not \
                      merely in the 20-bit set id."
-                ),
-            ));
+                    ),
+                ));
+            }
+            return Ok(true);
         }
-        let _ = writeln!(stderr, "  --transaction matches, on the full txid.");
+        Ok(false)
+    })();
+    match compared {
+        Err(e) => {
+            transliteration_notices(&read, &mut stderr);
+            set_notices(&set, &mut stderr);
+            margin_report(&set.chunks, &read, &mut stderr);
+            return Err(e);
+        }
+        Ok(matched) => {
+            let _ = writeln!(
+                stderr,
+                "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
+                set.chunks.len()
+            );
+            transliteration_notices(&read, &mut stderr);
+            set_notices(&set, &mut stderr);
+            margin_report(&set.chunks, &read, &mut stderr);
+            if matched {
+                let _ = writeln!(stderr, "  --transaction matches, on the full txid.");
+            }
+        }
     }
     Ok(())
 }
