@@ -38,21 +38,29 @@ pub use mt_codec::consts::MAX_CHUNKS;
 ///
 /// Mandatory and not overridable. Neither format makes an unfinalized
 /// transaction unrepresentable, so nothing upstream of `mt` refuses it for us.
-pub fn finalized_guard_psbt(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
-    let bad: Vec<usize> = psbt
-        .inputs
+/// Is this input finalized (§8.1's test): a non-empty `final_script_sig` or
+/// `final_script_witness`?
+pub fn input_is_finalized(i: &bitcoin::psbt::Input) -> bool {
+    let sig = i.final_script_sig.as_ref().is_some_and(|s| !s.is_empty());
+    let wit = i
+        .final_script_witness
+        .as_ref()
+        .is_some_and(|w| !w.is_empty());
+    sig || wit
+}
+
+/// The indexes of the inputs that are not finalized (§8.1's test), in order.
+pub fn unfinalized_inputs(psbt: &bitcoin::Psbt) -> Vec<usize> {
+    psbt.inputs
         .iter()
         .enumerate()
-        .filter(|(_, i)| {
-            let sig = i.final_script_sig.as_ref().is_some_and(|s| !s.is_empty());
-            let wit = i
-                .final_script_witness
-                .as_ref()
-                .is_some_and(|w| !w.is_empty());
-            !(sig || wit)
-        })
+        .filter(|(_, i)| !input_is_finalized(i))
         .map(|(n, _)| n)
-        .collect();
+        .collect()
+}
+
+pub fn finalized_guard_psbt(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
+    let bad = unfinalized_inputs(psbt);
     if bad.is_empty() {
         return Ok(());
     }
@@ -340,49 +348,85 @@ pub fn low_fee_warning(tx: &Transaction, input_values: &[Option<u64>]) -> Option
 /// `non_witness_utxo` *binds the amount* — true of the mechanism, and false of
 /// `mt` until something performed the check.
 pub fn non_witness_utxo_guard(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
-    for (n, inp) in psbt.inputs.iter().enumerate() {
-        let Some(prev) = &inp.non_witness_utxo else {
-            continue;
-        };
-        let want: Txid = psbt.unsigned_tx.input[n].previous_output.txid;
-        let got = prev.compute_txid();
-        if got != want {
-            return Err(Refusal::new(
-                "encode",
-                "§8.2d",
-                format!("input {n}'s non_witness_utxo hashes to {got}, not {want}"),
-                "A PSBT input's non_witness_utxo is the WHOLE previous transaction, \
-                 and hashing it must reproduce that input's previous_output txid. \
-                 These differ, so the record does not describe the output being \
-                 spent — and the value mt would read from it would be the wrong \
-                 one. The fee absorbs any such error in full.",
-            )
-            .with_remedy("Re-export the PSBT from the wallet that built it."));
-        }
-        // E6: the hash matched, so the record IS the previous transaction. If it
-        // has no output at this vout the outpoint does not exist, and no
-        // witness_utxo or --input-value can make it valid.
-        let vout = psbt.unsigned_tx.input[n].previous_output.vout;
-        if prev.output.get(vout as usize).is_none() {
-            return Err(Refusal::new(
-                "encode",
-                "§8.2d",
-                format!(
-                    "input {n} spends output {vout} of {want}, which has {} output(s)",
-                    prev.output.len()
-                ),
-                format!(
-                    "This input's non_witness_utxo is the WHOLE previous transaction, and it \
-                     hashes to the input's txid, so it IS that transaction. It has no output \
-                     {vout}, so the output this input spends does not exist and no node will \
-                     ever accept the transaction. No value supplied with --input-value, and no \
-                     witness_utxo, can change that: the record proves the output is not there."
-                ),
-            )
-            .with_remedy("Re-export the PSBT from the wallet that built it."));
+    for n in 0..psbt.inputs.len() {
+        match record_fault(psbt, n) {
+            None => {}
+            Some(RecordFault::HashMismatch { got, want }) => {
+                return Err(Refusal::new(
+                    "encode",
+                    "§8.2d",
+                    format!("input {n}'s non_witness_utxo hashes to {got}, not {want}"),
+                    "A PSBT input's non_witness_utxo is the WHOLE previous transaction, \
+                     and hashing it must reproduce that input's previous_output txid. \
+                     These differ, so the record does not describe the output being \
+                     spent — and the value mt would read from it would be the wrong \
+                     one. The fee absorbs any such error in full.",
+                )
+                .with_remedy("Re-export the PSBT from the wallet that built it."));
+            }
+            Some(RecordFault::NoOutput {
+                want,
+                vout,
+                outputs,
+            }) => {
+                return Err(Refusal::new(
+                    "encode",
+                    "§8.2d",
+                    format!(
+                        "input {n} spends output {vout} of {want}, which has {outputs} output(s)"
+                    ),
+                    format!(
+                        "This input's non_witness_utxo is the WHOLE previous transaction, and it \
+                         hashes to the input's txid, so it IS that transaction. It has no output \
+                         {vout}, so the output this input spends does not exist and no node will \
+                         ever accept the transaction. No value supplied with --input-value, and no \
+                         witness_utxo, can change that: the record proves the output is not there."
+                    ),
+                )
+                .with_remedy("Re-export the PSBT from the wallet that built it."));
+            }
         }
     }
     Ok(())
+}
+
+/// What is wrong with an input's `non_witness_utxo` (§8.2d).
+///
+/// **The one place the §8.2d predicate lives.** `non_witness_utxo_guard` maps
+/// the first fault to its refusal; `inspect` maps every fault to its warning
+/// (`psbt_findings`). The two cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordFault {
+    /// The record's hash is not the input's `previous_output.txid`.
+    HashMismatch { got: Txid, want: Txid },
+    /// The record hashes to the input's txid but has no output at its vout.
+    NoOutput {
+        want: Txid,
+        vout: u32,
+        outputs: usize,
+    },
+}
+
+/// The §8.2d fault of input `n`'s `non_witness_utxo`, if it has one. `None`
+/// where there is no record or it is sound.
+pub fn record_fault(psbt: &bitcoin::Psbt, n: usize) -> Option<RecordFault> {
+    let prev = psbt.inputs.get(n)?.non_witness_utxo.as_ref()?;
+    let op = psbt.unsigned_tx.input.get(n)?.previous_output;
+    let got = prev.compute_txid();
+    if got != op.txid {
+        return Some(RecordFault::HashMismatch { got, want: op.txid });
+    }
+    // E6: the hash matched, so the record IS the previous transaction. If it
+    // has no output at this vout the outpoint does not exist, and no
+    // witness_utxo or --input-value can make it valid.
+    if prev.output.get(op.vout as usize).is_none() {
+        return Some(RecordFault::NoOutput {
+            want: op.txid,
+            vout: op.vout,
+            outputs: prev.output.len(),
+        });
+    }
+    None
 }
 
 /// Read an input's value from whichever UTXO record the PSBT carries.
@@ -399,16 +443,23 @@ pub fn non_witness_utxo_guard(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
 /// supply the value, and §8.2c's warning into a live one.
 pub fn psbt_input_value(psbt: &bitcoin::Psbt, n: usize) -> Option<(u64, ValueSource)> {
     let inp = psbt.inputs.get(n)?;
-    let vout = psbt.unsigned_tx.input.get(n)?.previous_output.vout as usize;
+    let op = psbt.unsigned_tx.input.get(n)?.previous_output;
     if let Some(prev) = &inp.non_witness_utxo {
-        if let Some(o) = prev.output.get(vout) {
-            return Some((o.value.to_sat(), ValueSource::TxidBound));
+        if let Some(o) = prev.output.get(op.vout as usize) {
+            // Q2: only a record that hashes to the input's txid is TXID-BOUND.
+            // A mismatched one still says what the PSBT claims, and no more.
+            let src = if prev.compute_txid() == op.txid {
+                ValueSource::TxidBound
+            } else {
+                ValueSource::PsbtClaimed
+            };
+            return Some((o.value.to_sat(), src));
         }
-        // The record is present and its hash matched, but it has no output at
-        // this vout -- so it does NOT describe the outpoint being spent, and
-        // falling through to witness_utxo here is fine as long as the LABEL
-        // falls through with it. Returning the source alongside the number is
-        // what makes that structural.
+        // The record is present but has no output at this vout -- so it does
+        // NOT describe the outpoint being spent, and falling through to
+        // witness_utxo here is fine as long as the LABEL falls through with
+        // it. Returning the source alongside the number is what makes that
+        // structural.
     }
     inp.witness_utxo
         .as_ref()
@@ -431,8 +482,105 @@ pub enum ValueSource {
     /// Read from a `non_witness_utxo` whose hash reproduced the input's txid
     /// **and** which has an output at that vout.
     TxidBound,
-    /// Read from a `witness_utxo`, which nothing has checked.
+    /// Read from a `witness_utxo`, which nothing has checked, or from a
+    /// `non_witness_utxo` whose hash is not the input's txid (Q2).
     PsbtClaimed,
+}
+
+// ── What `inspect` REPORTS about a PSBT that `encode` refuses ───────────────
+
+/// Is input `n` native SegWit or Taproot, so that signing does not change the
+/// txid? Reads the spent scriptPubKey from `witness_utxo`, else from the
+/// `non_witness_utxo`'s output at the vout **only if that record hashes to the
+/// input's txid**. An input with neither is not native SegWit (mt cannot tell).
+pub fn input_is_native_segwit(psbt: &bitcoin::Psbt, n: usize) -> bool {
+    let (Some(inp), Some(txin)) = (psbt.inputs.get(n), psbt.unsigned_tx.input.get(n)) else {
+        return false;
+    };
+    if let Some(w) = &inp.witness_utxo {
+        return w.script_pubkey.is_witness_program();
+    }
+    match &inp.non_witness_utxo {
+        Some(prev) if prev.compute_txid() == txin.previous_output.txid => prev
+            .output
+            .get(txin.previous_output.vout as usize)
+            .is_some_and(|o| o.script_pubkey.is_witness_program()),
+        _ => false,
+    }
+}
+
+/// The inputs whose txid contribution signing will change: not finalized, and
+/// not native SegWit (a legacy or P2SH-wrapped input, whose scriptSig signing
+/// fills, or one mt cannot classify).
+pub fn provisional_inputs(psbt: &bitcoin::Psbt) -> Vec<usize> {
+    (0..psbt.inputs.len())
+        .filter(|&n| !input_is_finalized(&psbt.inputs[n]) && !input_is_native_segwit(psbt, n))
+        .collect()
+}
+
+/// One thing `inspect` says about a PSBT, in `encode`'s guard order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PsbtFinding {
+    /// §8.1's condition: some inputs are not finalized.
+    NotFinalized {
+        unfinalized: Vec<usize>,
+        total: usize,
+        provisional: Vec<usize>,
+    },
+    /// §8.2d, a record that is not the transaction the input spends (Q2).
+    Mismatch {
+        n: usize,
+        got: Txid,
+        want: Txid,
+        vout: u32,
+        /// What the PSBT claims for the input, when it says.
+        amount: Option<u64>,
+    },
+    /// §8.2d, a matching record without the spent output (Q3).
+    NoOutput {
+        n: usize,
+        want: Txid,
+        vout: u32,
+        outputs: usize,
+    },
+}
+
+/// Everything `inspect` reports about a PSBT, in `encode`'s guard order: the
+/// §8.1 condition first, then each input's §8.2d fault in index order. Uses
+/// [`record_fault`], the predicate `non_witness_utxo_guard` refuses on.
+pub fn psbt_findings(psbt: &bitcoin::Psbt) -> Vec<PsbtFinding> {
+    let mut out = Vec::new();
+    let unfinalized = unfinalized_inputs(psbt);
+    if !unfinalized.is_empty() {
+        out.push(PsbtFinding::NotFinalized {
+            unfinalized,
+            total: psbt.inputs.len(),
+            provisional: provisional_inputs(psbt),
+        });
+    }
+    for n in 0..psbt.inputs.len() {
+        match record_fault(psbt, n) {
+            None => {}
+            Some(RecordFault::HashMismatch { got, want }) => out.push(PsbtFinding::Mismatch {
+                n,
+                got,
+                want,
+                vout: psbt.unsigned_tx.input[n].previous_output.vout,
+                amount: psbt_input_value(psbt, n).map(|(v, _)| v),
+            }),
+            Some(RecordFault::NoOutput {
+                want,
+                vout,
+                outputs,
+            }) => out.push(PsbtFinding::NoOutput {
+                n,
+                want,
+                vout,
+                outputs,
+            }),
+        }
+    }
+    out
 }
 
 // ── §8.2c — require values a PSBT lacks; warn on an UNBOUND legacy input ─────
