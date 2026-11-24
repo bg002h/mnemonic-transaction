@@ -385,3 +385,36 @@ fn bh1119_mt_g_quiet_with_a_node_keeps_the_notices() {
     );
     assert!(!e.contains("WARNING: no bitcoind reachable."), "{e}");
 }
+
+#[test]
+fn bh1119_mt_g_verify_refusal_keeps_the_set_notice() {
+    let other = tmp(&raw_of("uneven"));
+    let o = verify(&duplicate_even(), other.path());
+    let e = s(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{e}");
+    let d = e
+        .find("DUPLICATE RESOLVED.")
+        .unwrap_or_else(|| panic!("dropped the duplicate notice:\n{e}"));
+    let r = e
+        .find("mt verify: REFUSED")
+        .unwrap_or_else(|| panic!("no refusal:\n{e}"));
+    assert!(d < r, "{e}");
+}
+
+#[test]
+fn bh1119_mt_g_verify_without_transaction_prints_no_match_line() {
+    let f = tmp(&(strings_of("even").join("\n") + "\n"));
+    let o = mt()
+        .arg("verify")
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let e = s(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{e}");
+    assert!(e.starts_with(OK_EVEN), "{e}");
+    assert!(
+        !e.contains(MATCH_LINE),
+        "claims a comparison that never ran:\n{e}"
+    );
+}
