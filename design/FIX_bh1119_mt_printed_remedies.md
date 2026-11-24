@@ -57,6 +57,11 @@ Not to be confused with the older `design/FIX_bughunt_mt_*.md` (a different hunt
   exit code (1) stay.
 - **R2 (§10.10 remedy).** The remedy of the txid refusal (`main.rs:2163-2166`)
   is the text in section 4, T2. Verdict, mechanism, section and exit code stay.
+
+**R2b (§10.10 remedy from `decode` and `verify`).** When `verb` is `decode` or `verify`, the remedy is T2b
+instead of T2 (`encode` and `inspect` keep T2; both accept a raw transaction). Shape:
+`.with_remedy(if verb == "decode" || verb == "verify" { format!(T2b) } else { T2.to_string() })`.
+
 - **R3 (no new input form, T15).** `encode` still refuses Core's whole
   `finalizepsbt` answer; its refusal text is unchanged. Its `hex` field, passed
   alone, encodes (already true at base; row 3 pins both).
@@ -91,6 +96,7 @@ indented two spaces (`refusal.rs:89-93`); the strings below are the
   <txid>`, then pass that. Or `bitcoin-cli finalizepsbt <psbt>` if you have not
   broadcast yet.":**
   ``Fetch the transaction: `bitcoin-cli getrawtransaction <txid>`, then pass that. If you have not broadcast yet, run `bitcoin-cli finalizepsbt <psbt>` instead and pass the value of its `hex` field (present once it shows `"complete": true`).``
+- **T2b (R2b):** `` `mt <verb>` reads the mt1 strings from the plates, not a transaction. To look at the transaction this txid names, fetch it with `bitcoin-cli getrawtransaction <txid>` and pass that to `mt inspect`. ``
 - **T3 (R5), new script line on stdout:** `FAIL: mt <verb> exited <status>; its stderr follows:`
   where `<verb>` is `encode`, `verify`, `inspect` or `decode` and `<status>` is
   mt's exit status in decimal. Example: `FAIL: mt encode exited 1; its stderr follows:`.
@@ -121,7 +127,7 @@ constants and this section only.
 ## 6. RED rows
 
 Row file: `crates/mt-cli/tests/printed_remedies.rs`, installed verbatim from
-`design/FIX_bh1119_mt_printed_remedies/printed_remedies.rs.txt` (5 rows; uses
+`design/FIX_bh1119_mt_printed_remedies/printed_remedies.rs.txt` (6 rows; uses
 `tests/common/mod.rs` `fixture_txids` and `tests/fixtures/p5_base.json`, signet
 and regtest test material only; rows 4-5 need `bash`, `python3` and `/bin/sh`,
 which the CI `ubuntu-latest` runner has).
@@ -133,6 +139,7 @@ Command (run by the author at 88ac6d9 with the row file copied in, then removed)
 |---|---|---|---|---|
 | 1 | `i22_unfinalized_psbt_remedy_names_hex_field` | R1, T1 | FAIL | PASS |
 | 2 | `i22_txid_remedy_names_hex_field` | R2, T2 | FAIL | PASS |
+| 2b | `i22_txid_remedy_reading_verbs_point_to_inspect` | R2b, T2b | FAIL | PASS |
 | 3 | `i22_finalizepsbt_answer_refused_hex_field_encodes` | R3 | PASS (guard) | PASS |
 | 4 | `i25_live_smoke_test_under_umask_022` | R4 | FAIL | PASS |
 | 5 | `i25_live_smoke_test_failure_shows_diagnostic` | R5, T3 | FAIL | PASS |
@@ -166,17 +173,17 @@ strings, the script changed per R4-R5 with a `fail_step` function; the same
 command printed `5 tests run: 5 passed, 0 skipped`, and `bash -n` passed. The
 scratch diff is not committed (builder authors the change).
 
-Coverage map: R1 -> 1; R2 -> 2; R3 -> 3; R4 -> 4; R5 -> 5 (encode step; the
+Coverage map: R1 -> 1; R2 -> 2; R2b -> 2b; R3 -> 3; R4 -> 4; R5 -> 5 (encode step; the
 verify, inspect and decode steps share the function and are checked by gate
 row 9); R6 -> 4 (runs the script as README.md:52 prints it, under umask 022);
-T1 -> 1; T2 -> 2; T3 -> 5.
+T1 -> 1; T2 -> 2; T2b -> 2b; T3 -> 5.
 
 ## 7. Tests that change
 
 None at base pin either remedy text or the script (`grep -rn "pass the
 result\|then pass that\|live-smoke" crates/` -> no output). `refusals.toml` and
 `scripts/check-refusal-coverage.sh` key on sections, not remedies: no change.
-One new test binary (`printed_remedies`, 5 rows).
+One new test binary (`printed_remedies`, 6 rows).
 
 ## 8. Build order and files
 
@@ -207,6 +214,8 @@ dependency on another row.
   the `hex` field would need `encode` to recognise Core's answer, which T15
   rules out on this track.
 
+O1: keep R2 and add R2b/T2b (review r1). O2: file the author's FOLLOWUPS line. O3: keep the refusal text; M-3 filed as a FOLLOWUPS line.
+
 ## 10. Gate (builder, final head; run once to a file, then grep)
 
 Toolchain `$HOME/.cargo/bin` first in PATH; `cargo --version` must print 1.85.0.
@@ -215,7 +224,7 @@ The CI `test` job (`.github/workflows/ci.yml`) plus the rows:
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets --locked -- -D warnings`
 3. `cargo build --locked`
-4. `cargo nextest run --locked --no-fail-fast` (base count + 5; if another mt
+4. `cargo nextest run --locked --no-fail-fast` (base count + 6; if another mt
    FIX lands first, the base count moves by its own additions)
 5. `cargo test --locked --workspace --doc`
 6. `./scripts/check-refusal-coverage.sh` (count unchanged from base)
@@ -228,7 +237,7 @@ The CI `test` job (`.github/workflows/ci.yml`) plus the rows:
    four call sites by hand.
 10. `bash ci/docs-only.test.sh` and `bash ci/code-docs-check.sh`
 11. Rows by name: `cargo nextest run --locked -p mt-cli --test printed_remedies`
-    -> `5 tests run: 5 passed`. Fewer than 5 is a FAIL.
+    -> `6 tests run: 6 passed`. Fewer than 6 is a FAIL.
 12. `grep -n 'and pass the result' crates/mt-cli/src/validate.rs` -> no output.
 13. Optional, not CI: a real regtest node, `MT_RT=./rt ./scripts/live-smoke-test.sh`
     from umask 022 -> ends with `allowed: true` (grade-mt.md:118 asks for it;

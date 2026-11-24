@@ -113,6 +113,31 @@ fn i22_txid_remedy_names_hex_field() {
     );
 }
 
+/// Row 2b. The §10.10 refusal from a reading verb that takes only mt1 strings
+/// (`decode`, `verify`) sends the operator to `mt inspect`.
+#[test]
+fn i22_txid_remedy_reading_verbs_point_to_inspect() {
+    let (own, _) = common::fixture_txids(&base());
+    for verb in ["decode", "verify"] {
+        let f = file_with(&own);
+        let o = mt()
+            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .arg(f.path())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(1), "{verb} did not refuse; stderr:\n{err}");
+        assert_eq!(
+            remedy_of(&err, &format!("mt {verb}: REFUSED — §10.10, ")),
+            format!(
+                "`mt {verb}` reads the mt1 strings from the plates, not a transaction. To look at \
+the transaction this txid names, fetch it with `bitcoin-cli getrawtransaction <txid>` and pass \
+that to `mt inspect`."
+            )
+        );
+    }
+}
+
 /// Row 3 (guard, GREEN on base; pins T15). Core's whole `finalizepsbt` answer
 /// is still refused, and the remedy as now printed works: its `hex` field
 /// encodes.
