@@ -8,8 +8,10 @@
 # Runs every step of the CI `test` job (.github/workflows/ci.yml) once, then the
 # FIX's own checks, and fails on the first short count or missing line.
 #
-# WHAT THIS DOES NOT COVER: it does not judge the PROPOSED wording or the Q1/Q2
-# rulings (architect; the rows follow option A of each); does not run the CI
+# WHAT THIS DOES NOT COVER: it does not judge the PROPOSED wording (rows pin the
+# PROPOSED texts of FIX doc section 4 exactly) or the open Q3/Q4 (rows follow the
+# recommended option of each; Q1/Q2 follow Brian's 2026-11-23 ruling); does not
+# run inspect against a live node (every row is offline); does not run the CI
 # `docs-only` short-circuit job or the release workflow; does not check the spec
 # delta in mnemonic-engrave or run scripts/check-provenance.sh (needs a sibling
 # checkout; run it by hand after the re-sync); does not check the toolkit manual
@@ -37,26 +39,27 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 
-out=$(cargo nextest run --locked --build-jobs 4 -j 4 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
-echo "$out" | grep -E 'Summary .* 482 tests run: 482 passed' || fail "expected 482 tests run, 482 passed"
+out=$(cargo nextest run --locked --build-jobs 2 -j 2 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
+echo "$out" | grep -E 'Summary .* 486 tests run: 486 passed' || fail "expected 486 tests run, 486 passed"
 
-rows=$(cargo nextest run --locked --build-jobs 4 -j 4 -p mt-cli --test bh1119_mt_inspect_routing 2>&1) || fail "inspect_routing rows"
-echo "$rows" | grep -E '23 tests run: 23 passed' || fail "expected 23 inspect_routing rows"
+rows=$(cargo nextest run --locked --build-jobs 2 -j 2 -p mt-cli --test bh1119_mt_inspect_routing 2>&1) || fail "inspect_routing rows"
+echo "$rows" | grep -E '27 tests run: 27 passed' || fail "expected 27 inspect_routing rows"
 
 cargo test --locked --workspace --doc
 
 cov=$(./scripts/check-refusal-coverage.sh) || { echo "$cov"; fail "refusal coverage"; }
-echo "$cov" | grep 'check-refusal-coverage: 66 refusal tests over 18 ruled refusals' || fail "coverage count"
+echo "$cov" | grep 'check-refusal-coverage: 65 refusal tests over 18 ruled refusals' || fail "coverage count"
 
 mut=$(./scripts/mutate-refusals.sh) || { echo "$mut"; fail "mutate-refusals"; }
-echo "$mut" | grep 'mutate-refusals: all 66 refusal tests go red' || fail "mutation count"
+echo "$mut" | grep 'mutate-refusals: all 65 refusal tests go red' || fail "mutation count"
 
 ./scripts/journeys.sh
 bash ci/docs-only.test.sh
 bash ci/code-docs-check.test.sh
 bash ci/code-docs-check.sh
 
-# R2: routing is by sniff first, then strings_subject; the start-of-text test is gone.
+# R2: routing is by sniff first, then strings_subject (line-start rule); the
+# whole-text start test is gone.
 ! git grep -n 'looks_like_an_mt1_set' -- crates/mt-cli/src || fail "looks_like_an_mt1_set is still in src"
 git grep -q 'fn strings_subject' -- crates/mt-cli/src/main.rs || fail "no strings_subject in main.rs"
 # R3: inspect no longer reports a PSBT's unsigned template.
