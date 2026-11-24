@@ -165,6 +165,7 @@ GREEN and kept the whole `mt-cli` suite green: `421 tests run: 421 passed`
 | 12 | verify_refusal_keeps_the_notices | row 1 fixture; --transaction <uneven raw_hex> | `OK printed before REFUSED:` | exit 1; no OK; `CORRECTION APPLIED. 1 chunk needed repair:` before the §1.1 refusal line |
 | 13 | verify_match_prints_one_ok_then_the_match_line (CONTROL) | even; --transaction <even raw_hex> | PASS | stderr exactly `mt verify: OK — 6 chunks, set 0x2dcf2, transaction re-derives.\n  --transaction matches, on the full txid.\n` |
 | 14 | verify_match_keeps_ok_notices_match_order (CONTROL) | row 1 fixture; --transaction <even raw_hex> | PASS | one OK, first; CORRECTION block; match line last |
+| 15 | quiet_with_a_node_keeps_the_notices | row 1 fixture; decode --quiet, `node_stub` | stderr `[]` | starts `\nCORRECTION APPLIED. 1 chunk needed repair:\n`; no `WARNING: no bitcoind reachable.` |
 
 ## 7. Tests that change
 

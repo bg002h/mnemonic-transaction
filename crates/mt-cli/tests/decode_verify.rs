@@ -1522,7 +1522,7 @@ fn decode_warns_about_a_world_readable_stdout_and_still_exits_0() {
         "it must name the mode it measured: {err}"
     );
     assert!(
-        err.contains("WARNING"),
+        err.contains("WARNING: stdout is a file of mode 0644"),
         "and it must be shaped like a warning, so a reader scanning stderr can \
          tell it did not stop the run: {err}"
     );

@@ -370,3 +370,18 @@ fn bh1119_mt_g_verify_match_keeps_ok_notices_match_order() {
     assert!(c < m, "{e}");
     assert!(e.ends_with(&format!("{MATCH_LINE}\n")), "{e}");
 }
+
+/// Row 15: with a node reachable, --quiet still prints the notices, and no
+/// no-node warning.
+#[test]
+fn bh1119_mt_g_quiet_with_a_node_keeps_the_notices() {
+    let stub = common::node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
+    let o = decode(&["--quiet"], &corrected_even(), stub.path());
+    assert_eq!(o.status.code(), Some(0), "{}", s(&o.stderr));
+    let e = s(&o.stderr);
+    assert!(
+        e.starts_with("\nCORRECTION APPLIED. 1 chunk needed repair:\n"),
+        "--quiet with a node dropped the correction notice:\n[{e}]"
+    );
+    assert!(!e.contains("WARNING: no bitcoind reachable."), "{e}");
+}

@@ -511,6 +511,8 @@ overturned an earlier assumption and are marked.
    form is unusually strong: because the content id **is** the txid (§10.13 c),
    `mt` compares hashes rather than structures. `md verify` can only re-encode
    and diff.
+   The `OK` line is printed only after that comparison passes. A failed
+   comparison prints the notices and then the refusal, never the `OK` line.
 
    > **It compares the FULL 32-byte txid, not the 20-bit set id, and an earlier
    > version of this paragraph implied otherwise while claiming to "prove
@@ -2673,8 +2675,8 @@ exactly as permanent, as a machine-engraved one.
    The exit code is **0, asserted unchanged**, and the artifact is asserted
    byte-for-byte against a 0600 control — so a refusal smuggled in as a warning
    is a test failure rather than a shipped regression. A **0600 control emits
-   nothing**, and an anonymous pipe is 0600, so the documented pipeline stays
-   silent. The wording is derived from the mode exactly as at the two `encode`
+   nothing**, and an anonymous pipe is 0600, so the documented pipeline gets no
+   mode warning. The wording is derived from the mode exactly as at the two `encode`
    sites; under `--json` it becomes an entry in the `warnings` array rather than
    prose printed beside the document. `--quiet` does not suppress it: warnings
    are never suppressed, on any verb.
@@ -3487,6 +3489,10 @@ signed PSBT.
        warnings would let a script engrave a plate whose hazards nobody saw,
        which is the opposite of what §0a's stderr split is for. It does **not**
        relax §1.1a's rule that stdout stays empty unless every check passes.
+       Under `--quiet`, `decode` prints on stderr everything its loud form
+       prints after the report, in the same order: the no-node warning when no
+       node is reachable, the misread-character, duplicate, unreadable-string
+       and correction notices, and the stdout-mode warning.
 
        **Under `--json`, every notice is one single-line string in the
        `warnings` array, the same on `decode` and `inspect`.** A duplicate
