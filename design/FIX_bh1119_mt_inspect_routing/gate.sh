@@ -20,7 +20,8 @@
 # encode --qr refuse a vout-less record) are controls: encode already refuses, so
 # they pass before the fix. The totals are 88ac6d9 + this
 # FIX; a head that also carries rows 35, 38, 39 or another fix/mt-* branch must
-# add their counts (FIX doc section 10).
+# add their counts (FIX doc section 10). Build head (main 0753a5f, which carries
+# row 38 and decode-strictness, + this FIX): 459 + 31 + 33 = 523 measured.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -42,7 +43,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 
 out=$(cargo nextest run --locked --build-jobs 2 -j 2 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
-echo "$out" | grep -E 'Summary .* 492 tests run: 492 passed' || fail "expected 492 tests run, 492 passed"
+echo "$out" | grep -E 'Summary .* 523 tests run: 523 passed' || fail "expected 523 tests run, 523 passed"
 
 rows=$(cargo nextest run --locked --build-jobs 2 -j 2 -p mt-cli --test bh1119_mt_inspect_routing 2>&1) || fail "inspect_routing rows"
 echo "$rows" | grep -E '33 tests run: 33 passed' || fail "expected 33 inspect_routing rows"
