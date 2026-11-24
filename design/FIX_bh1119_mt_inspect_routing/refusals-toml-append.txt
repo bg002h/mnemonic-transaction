@@ -1,0 +1,31 @@
+
+# bughunt-1119 FIX-D (design/FIX_bh1119_mt_inspect_routing.md): bh-mt-I3, I5, I6.
+# `inspect` reads a PSBT as its extracted transaction, so it now calls the
+# same two PSBT guards `encode` does (Q1 and Q2, option A); and it routes on
+# the bytes, so input that is neither a transaction nor an `mt1` set reaches
+# the sniffer's refusals.
+
+[[refusal]]
+spec  = "§8.1"
+test  = "bh1119_mt_i3_inspect_refuses_an_unfinalized_psbt"
+check = "src/validate.rs::finalized_guard_psbt"
+
+[[refusal]]
+spec  = "§8.2d"
+test  = "bh1119_mt_i3_inspect_refuses_a_non_witness_utxo_that_is_not_the_parent"
+check = "src/validate.rs::non_witness_utxo_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i5_inspect_names_non_text_junk_by_the_sniffer"
+check = "src/input.rs::recognised_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i6_foreign_text_keeps_the_sniffer_refusal"
+check = "src/input.rs::recognised_guard"
+
+[[refusal]]
+spec  = "§8.2e"
+test  = "bh1119_mt_i6_damaged_base64_psbt_containing_mt1_keeps_the_psbt_refusal"
+check = "src/input.rs::base64_psbt_guard"
