@@ -8,7 +8,7 @@ unfinalized PSBT, its TX labelled PROVISIONAL when signing changes the txid; a
 `non_witness_utxo` that does not hash to the input's txid is REPORTED with that input's
 amount and the fee UNVERIFIED (never TXID-BOUND), a loud fee-loss warning and
 instructions to verify the input; `encode` keeps refusing both. T17 ("inspect warns,
-encode refuses", I16) is cited where section 11 records Q3.
+encode refuses", I16) is cited in the Q2 ruling quoted in section 2.
 Brian 2026-11-24 (#37 Q3, Q4; `coordinator/status/brian-rulings-2026-11-24.md`): Q3, a
 `non_witness_utxo` that hashes to the input's txid but has no output at its vout: "If
 it's an invalid transaction there is no reason to encode it or engrave it, if we can
@@ -188,7 +188,8 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
   2. `mt encode --qr` (a `tx:` record for QR plates).
   Both call `validate::non_witness_utxo_guard` at `main.rs:443`, before the format
   split (`args.qr`, `main.rs:740`) and before any value is read (`require_psbt_input_values`
-  `:444`), so no flag supplies a value that gets past it. **No code changes for R6**:
+  `:444`), so no flag supplies a value that gets past it (the existing pins
+  `tests/tx_validity.rs:437-449`, `bh1119_mt_i17_encode_refuses_missing_vout_*`, hold the refusal). **No code changes for R6**:
   `non_witness_utxo_guard` already refuses the matching-hash, vout-less record (E6, T16;
   `validate.rs:362-378`), with `mt encode: REFUSED — §8.2d, input <n> spends output
   <vout> of <want>, which has <k> output(s)`, the reason and remedy (`Re-export the PSBT
@@ -199,7 +200,9 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
   `verify` (compares a set against a supplied transaction, `--transaction` taking a PSBT
   through `finalized_guard_psbt` only, and writes no encoding), and `inspect`. The
   engraving tool `me` is another repo and consumes `mt encode`'s output, which a refused
-  PSBT never produces.
+  PSBT never produces. A raw transaction carries no UTXO record, so the same transaction supplied as raw hex (for
+  example extracted by a non-Core finalizer; Core's finalizepsbt will not complete it) gives §8.2d nothing to read and
+  is outside R6; it gets §8.2e's raw-transaction warnings, and with a node, §6a's chain check.
 - **R4 the no-node warning tells the truth about a known fee (I3).**
   `report::no_node_warning` gains a parameter `fee_known: bool`. When true, its two fee
   lines (`report.rs:684-691`) are replaced by the PROPOSED pair in section 4; when
@@ -242,16 +245,18 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
                  signatures in their scriptSigs, which are part of the txid, so the
                  signed transaction will have a different txid from the one shown, and
                  no explorer or node knows the one shown. The outputs, fee, locktime and
-                 inputs above do not change when it is signed. mt encode refuses this
-                 PSBT until it is finalized (bitcoin-cli finalizepsbt)."
+                 inputs above do not change when it is signed. mt encode refuses a PSBT
+                 that is not finalized; finalize it and keep the PSBT form, which
+                 carries the input values: bitcoin-cli finalizepsbt <psbt> false"
 
   Not provisional:
 
       headline: "this PSBT is not finalized (<b> of <m> inputs: input <list>)."
       body:     "Every unsigned input is native SegWit or Taproot, whose signatures are
                  not part of the txid, so TX is the txid the signed transaction will
-                 have. mt encode refuses this PSBT until it is finalized (bitcoin-cli
-                 finalizepsbt)."
+                 have. mt encode refuses a PSBT that is not finalized; finalize it and
+                 keep the PSBT form, which carries the input values: bitcoin-cli
+                 finalizepsbt <psbt> false"
 
   (The body lines above are one paragraph each; the wrap decides the breaks.)
 
@@ -340,10 +345,11 @@ for every legacy and `sh(wsh(…))` input" (`SPEC_mt_v0_1.md:525-529`); §1.1 ro
      leaves that input's value and the fee UNVERIFIED, with a warning naming the
      `bitcoin-cli gettxout` check. ``
      (Follows the Q1/Q2 ruling; the Q3 clause, "fails §8.2d" covering a matching record
-     without the vout, follows the Q3 ruling.) Append to that paragraph, PROPOSED: `` The
-     same holds for a `non_witness_utxo` that hashes to the input's txid but has no
-     output at its vout: `inspect` reports it with a warning that the output does not
-     exist, and `encode`, with or without `--qr`, refuses it (§8.2d). ``
+     without the vout, follows the Q3 ruling.) Append to that paragraph, PROPOSED: `` A
+     `non_witness_utxo` that hashes to the input's txid but has no output at its vout is
+     reported too, with a warning that the output does not exist (that input's value, if
+     any, comes from its `witness_utxo` and is PSBT-CLAIMED); `encode`, with or without
+     `--qr`, refuses it (§8.2d). ``
 - **README:** none (it does not describe inspect's routing).
 - **Toolkit manual:** none; `mnemonic-toolkit` `docs/manual/src/40-cli-reference/` has
   no `mt` page (41-mnemonic, 42-md, 43-ms, 44-mk-cli, 45-mr, 46-mr-sitting).
@@ -502,7 +508,9 @@ Measured RED (re-fold, base `88ac6d9`, sidecars installed, no implementation): f
 clippy and build pass, then `Summary [  22.249s] 486 tests run: 466 passed, 20 failed, 0
 skipped` and `GATE FAIL: nextest` (exit 1). So the gate can fail, and its pins are
 459 + 33 = 492 (Q3/Q4 fold; the 486 figure above is the 27-row re-fold's measurement).
-The Q3/Q4 fold's measurement is in section 6a and the 2026-11-24 gate run below.
+The Q3/Q4 fold's measurement is in section 6a. The Q3/Q4 fold's own gate run
+(sidecars installed, no implementation, 2026-11-24, measured): `Summary 492 tests run:
+468 passed, 24 failed` and `GATE FAIL: nextest` (exit 1).
 
 The script runs every step of the CI `test` job once, checks the sidecars are installed
 unchanged, and pins the counts. WHAT IT DOES NOT COVER is in its header. Its totals are
@@ -570,8 +578,9 @@ Closes bh-mt-I3, bh-mt-I5, bh-mt-I6 (none has a line in `design/FOLLOWUPS.md` at
 - `crates/mt-cli/src/report.rs` (`no_node_warning` signature and fee lines; `Report`
   gains `txid_provisional`, `render`'s TX row and `render_json`'s key; unit tests)
 - `crates/mt-cli/src/validate.rs` (`psbt_input_value` checks the record's hash, R3.4;
-  the finalization and native-SegWit classification of R3.5 and the Q2/Q3 findings may
-  live here beside the guards they mirror; the guards' texts are unchanged)
+  the finalization and native-SegWit classification of R3.5 and the Q2/Q3 findings: ONE per-input classifier implements the
+  §8.2d predicate, and both inspect's Q2/Q3 warnings and `non_witness_utxo_guard` (which
+  maps its first refusal) use it, so the two cannot drift; the guards' texts are unchanged)
 - `crates/mt-cli/tests/bh1119_mt_inspect_routing.rs` (new)
 - `crates/mt-cli/tests/refusals.toml` (append)
 - `design/SPEC_mt_v0_1.md`, `design/PROVENANCE.md` (re-sync, step 5)
