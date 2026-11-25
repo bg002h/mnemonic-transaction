@@ -802,6 +802,56 @@ pub fn argv_material_unused_warning(n: usize, path: &std::path::Path) -> Warning
     )
 }
 
+/// §10.10, T22 (I24): the command line is read as text, so every argument must
+/// be valid UTF-8.
+///
+/// The standard `env::args` iterator PANICS on a non-UTF-8 argument (exit 101,
+/// a backtrace pointing into the standard library). This takes the raw `OsString`s instead
+/// and refuses the first bad one BY POSITION, exit 64 (decided by the caller),
+/// before `argv_intake` and `command_line_guard` see anything.
+///
+/// argv[0] (the program path) is converted lossily and never refused: it is not
+/// an argument the holder typed, and clap's name is fixed to `mt`. Arguments
+/// 1.. are converted with `OsString::into_string`; only the FIRST failure is
+/// reported. The refusal never prints the argument, lossy or otherwise, so a
+/// bearer value next to a bad argument is not echoed.
+pub fn utf8_argv_guard(args: Vec<std::ffi::OsString>) -> Result<Vec<String>, Refusal> {
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    for (n, a) in args.into_iter().enumerate() {
+        if n == 0 {
+            out.push(a.to_string_lossy().into_owned());
+            continue;
+        }
+        match a.into_string() {
+            Ok(s) => out.push(s),
+            Err(_) => {
+                // The verb as `command_line_guard` chooses it: argv[1] if it is
+                // valid UTF-8 and one of the four verbs, otherwise `encode`.
+                let verb = out
+                    .get(1)
+                    .filter(|v| matches!(v.as_str(), "encode" | "decode" | "verify" | "inspect"))
+                    .cloned()
+                    .unwrap_or_else(|| "encode".to_string());
+                return Err(Refusal::new(
+                    verb,
+                    "§10.10",
+                    format!("argument {n} is not valid UTF-8"),
+                    format!(
+                        "mt reads its command line as text, and argument {n} holds bytes that \
+                         are not UTF-8. mt reads nothing until every argument is text, and it \
+                         does not print the argument back."
+                    ),
+                )
+                .with_remedy(
+                    "If the argument is a file name, rename the file or make a link to it \
+                     under a UTF-8 name, and pass that name instead.",
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
     // The verb, read from argv — this guard runs BEFORE clap, so nothing has
     // parsed one yet, and a refusal that says `mt mt:` tells the operator less

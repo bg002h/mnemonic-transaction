@@ -472,3 +472,95 @@ check = "src/validate.rs::non_witness_utxo_guard"
 spec  = "§8.2d"
 test  = "bh1119_mt_i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output"
 check = "src/validate.rs::non_witness_utxo_guard"
+
+# bughunt-1119 FIX-H (design/FIX_bh1119_mt_arg_intake.md), rows in tests/arg_intake.rs.
+# I9 (T20): a separator holding a newline is refused; encode and the reader
+# share read_strings::is_grouping_whitespace.
+[[refusal]]
+spec  = "§1.1e"
+test  = "bh1119_mt_i9_encode_refuses_lf_separator"
+check = "src/main.rs::separator_guard"
+
+[[refusal]]
+spec  = "§1.1e"
+test  = "bh1119_mt_i9_encode_refuses_crlf_separator"
+check = "src/main.rs::separator_guard"
+
+[[refusal]]
+spec  = "§1.1e"
+test  = "bh1119_mt_i9_encode_refuses_separator_ending_in_lf"
+check = "src/main.rs::separator_guard"
+
+[[refusal]]
+spec  = "§1.1e"
+test  = "bh1119_mt_i9_non_whitespace_wins_over_newline"
+check = "src/main.rs::separator_guard"
+
+# I11 (T12): --transaction is refused on decode and inspect.
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i11_decode_refuses_transaction"
+check = "src/main.rs::transaction_unsupported_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i11_inspect_refuses_transaction"
+check = "src/main.rs::transaction_unsupported_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i11_inspect_raw_tx_refuses_existing_transaction"
+check = "src/main.rs::transaction_unsupported_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i11_transaction_refusal_precedes_dash_refusal"
+check = "src/main.rs::transaction_unsupported_guard"
+
+# The existing --json/--quiet refusal keeps precedence over both new ones.
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i11_existing_flag_refusals_keep_precedence"
+check = "src/main.rs::json_quiet_guard"
+
+# I12 (T13): --in together with the positional `-` is refused on every verb.
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i12_decode_refuses_in_with_dash"
+check = "src/main.rs::in_with_dash_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i12_verify_refuses_in_with_dash"
+check = "src/main.rs::in_with_dash_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i12_inspect_refuses_in_with_dash"
+check = "src/main.rs::in_with_dash_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i12_encode_refuses_in_with_dash"
+check = "src/main.rs::in_with_dash_guard"
+
+# I24 (T22): a non-UTF-8 argument is refused, exit 64, before argv_intake.
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i24_non_utf8_argument_is_refused_exit_64"
+check = "src/validate.rs::utf8_argv_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i24_names_the_first_non_utf8_argument"
+check = "src/validate.rs::utf8_argv_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i24_refused_before_allow_argv_secret"
+check = "src/validate.rs::utf8_argv_guard"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "bh1119_mt_i24_untyped_verb_falls_back_to_encode"
+check = "src/validate.rs::utf8_argv_guard"
