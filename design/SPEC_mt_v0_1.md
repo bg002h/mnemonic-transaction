@@ -2613,6 +2613,17 @@ exactly as permanent, as a machine-engraved one.
    exists**, since `OpenOptions::mode()` binds on create only and re-running a
    command is the case an operator actually hits (F-244).
 
+   Since mnemonic-io-lib 0.1.3 that write goes to a temp file beside the target
+   and is renamed over it, so a failed write leaves an existing file's bytes as
+   they were and creates nothing at a new name. The `--out` warning is printed
+   only after the write succeeded. A failed write prints `mt: cannot write the
+   output: <path>: <error>` and exits 1. mt then looks at the path again: if a
+   regular file was there and is still the same file with the same size and
+   modification time, the line ends `. <path> is unchanged.`; if nothing was
+   there and nothing is there now, it ends `. Nothing was written.`; otherwise
+   (a device, or a standard-stream name such as `/dev/stdout` that is written in
+   place) it says nothing about the disk.
+
    **It OVERWRITES**, ruled by the operator 2026-08-26, and **it is on `encode`
    alone**: §6b's reasoning is entirely about the refusal this section defines,
    and that refusal fires from `encode`.
@@ -2683,6 +2694,21 @@ exactly as permanent, as a machine-engraved one.
 
    `verify` and `inspect` gain nothing: they are report verbs and write no
    artifact to stdout.
+
+2i. **The output is one of the inputs** → **refuse**, before anything is read.
+   The output is `encode`'s `--out` (else stdout) and the stdout of `decode` and
+   `inspect`; the input is `--in` (else stdin). Same file means the same path, a
+   symlink or a hard link (device and inode), or two absent paths naming one
+   place. `verify` writes no stdout and is not checked. Refusal text:
+   FIX_bh1119_mt_output_writes section 4.
+
+   **A failed stdout write.** A reader that closes the pipe early only stops the
+   output; the exit code is the verb's own. Any other stdout write error, from a
+   verb or from `--help`/`--version` (a full disk, a read-only stdout), prints
+   `mt: cannot write the output: <error>` on stderr and exits 1. A failed stderr
+   write changes nothing: `verify`'s verdict is its exit code, and `decode
+   --json`'s report, which goes to stderr like the text report, is not checked;
+   the hex on stdout is.
 
 3. **An unsigned or unfinalized transaction offered for engraving** → refuse. It
    cannot be broadcast, so it is not a backup.

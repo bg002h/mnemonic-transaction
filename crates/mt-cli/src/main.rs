@@ -21,6 +21,7 @@ mod blocks;
 mod input;
 mod locktime;
 mod node;
+mod out;
 mod read_strings;
 mod refusal;
 mod report;
@@ -299,7 +300,7 @@ fn main() -> std::process::ExitCode {
     let argv: Vec<String> = match validate::utf8_argv_guard(std::env::args_os().collect()) {
         Ok(argv) => argv,
         Err(refusal) => {
-            eprint!("{refusal}");
+            out::stderr_write(format_args!("{refusal}"));
             return std::process::ExitCode::from(64);
         }
     };
@@ -337,11 +338,26 @@ fn main() -> std::process::ExitCode {
     // "proceed": what the override admitted is no longer there to be refused,
     // and anything it did not admit still is.
     if let Err(refusal) = validate::command_line_guard(&intake.argv) {
-        eprint!("{refusal}");
+        out::stderr_write(format_args!("{refusal}"));
         return std::process::ExitCode::FAILURE;
     }
 
-    let cli = Cli::parse_from(&intake.argv);
+    let cli = match Cli::try_parse_from(&intake.argv) {
+        Ok(cli) => cli,
+        Err(e) => {
+            // S1: `--help` and `--version` go to stdout under the same write
+            // rule as the verbs; a usage error keeps clap's stderr text, exit 2.
+            if e.use_stderr() || !out::read_only() {
+                if let Err(w) = e.print() {
+                    if !e.use_stderr() {
+                        out::failed(&w);
+                    }
+                }
+            }
+            let code = u8::try_from(e.exit_code()).unwrap_or(2);
+            return std::process::ExitCode::from(out::exit_code(code));
+        }
+    };
     match cli.command {
         Command::Encode(args) => run(encode(args, intake.material)),
         Command::Decode(args) => run(decode(args, intake.material)),
@@ -354,10 +370,10 @@ fn main() -> std::process::ExitCode {
 /// documented pipeline depends on it.
 fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
     match r {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(()) => std::process::ExitCode::from(out::exit_code(0)),
         Err(refusal) => {
-            eprint!("{refusal}");
-            std::process::ExitCode::FAILURE
+            out::stderr_write(format_args!("{refusal}"));
+            std::process::ExitCode::from(out::exit_code(1))
         }
     }
 }
@@ -375,9 +391,32 @@ fn read_encode_file(path: &std::path::Path) -> Result<Vec<u8>, Refusal> {
     })
 }
 
+/// Q1a: the input a verb reads is `--in <path>`; else standard input, unless
+/// `--allow-argv-secret` material was admitted (then there is nothing to
+/// compare).
+fn input_endpoint(
+    path: Option<&std::path::Path>,
+    has_argv_material: bool,
+) -> Option<mnemonic_io_lib::write::Endpoint<'_>> {
+    match path {
+        Some(p) => Some(mnemonic_io_lib::write::Endpoint::Path(p)),
+        None if has_argv_material => None,
+        None => Some(mnemonic_io_lib::write::Endpoint::Stdin),
+    }
+}
+
 fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
+    // §8.2i: the output is never one of the inputs (Q1c: before any read).
+    validate::same_file_guard(
+        "encode",
+        match args.out.as_deref() {
+            Some(p) => mnemonic_io_lib::write::Endpoint::Path(p),
+            None => mnemonic_io_lib::write::Endpoint::Stdout,
+        },
+        input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
+    )?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "encode")?;
 
     let raw = match (&args.r#in, argv_material) {
@@ -872,30 +911,38 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
 
     match (destination, args.out.as_deref()) {
         (mnemonic_io_lib::Destination::File, Some(path)) => {
-            let _ = writeln!(
-                stderr,
-                "{}",
-                blocks::redirected_output_warning(form, Some(path))
-            );
-            // §6b: `write_private`, never `std::fs::write` (F-244). It creates
-            // at 0600 AND sets the mode a second time on the OPEN FILE, which
-            // is the half that catches a target that already existed at 0644 --
-            // and it truncates, so a shrinking overwrite leaves no tail.
-            mnemonic_io_lib::write::write_private(path, body.as_bytes()).map_err(|e| {
-                Refusal::new(
-                    "encode",
-                    "§6b",
-                    format!("cannot write {}", path.display()),
-                    format!(
-                        "The file could not be created or written: {e}. Nothing \
-                         was engraved and nothing was left behind."
-                    ),
-                )
-                .with_remedy(
-                    "Check the directory exists and is writable, then re-run. \
-                     Without --out the artifact goes to stdout.",
-                )
-            })?;
+            // §6b: `write_private`, never `std::fs::write` (F-244). It writes a
+            // temp file beside the target at 0600 and renames it over the name
+            // (io-lib 0.1.3), so a failed write leaves an existing file's bytes
+            // as they were and creates nothing at a new name.
+            //
+            // W3: the path is looked at BEFORE the write, and again after a
+            // failure, so the line says what is on disk only when that is true.
+            let before = TargetState::look(path);
+            match mnemonic_io_lib::write::write_private(path, body.as_bytes()) {
+                // W2: the warning names the file, so it is printed only now
+                // that the write has returned Ok.
+                Ok(()) => {
+                    let _ = writeln!(
+                        stderr,
+                        "{}",
+                        blocks::redirected_output_warning(form, Some(path))
+                    );
+                }
+                Err(e) => {
+                    let p = path.display();
+                    let state = match (&before, TargetState::look(path)) {
+                        (TargetState::Regular(a), TargetState::Regular(b)) if *a == b => {
+                            format!(". {p} is unchanged.")
+                        }
+                        (TargetState::Absent, TargetState::Absent) => {
+                            ". Nothing was written.".to_string()
+                        }
+                        _ => String::new(),
+                    };
+                    out::failed_text(format!("{p}: {e}{state}"));
+                }
+            }
         }
         // `destination` returns File exactly when `--out` was given, so the
         // (File, None) pair cannot be constructed. It is folded in here rather
@@ -920,12 +967,51 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     Ok(())
 }
 
+/// What `--out` named before (and again after) a write (W3). A regular file
+/// keeps (dev, ino, len, mtime); `NotFound` (a dangling symlink too) is absent;
+/// anything else is other.
+#[derive(Debug)]
+enum TargetState {
+    Regular(RegularKey),
+    Absent,
+    Other,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RegularKey {
+    dev_ino: (u64, u64),
+    len: u64,
+    mtime: Option<std::time::SystemTime>,
+}
+
+impl TargetState {
+    fn look(path: &std::path::Path) -> TargetState {
+        match std::fs::metadata(path) {
+            Ok(md) if md.is_file() => {
+                #[cfg(unix)]
+                let dev_ino = {
+                    use std::os::unix::fs::MetadataExt;
+                    (md.dev(), md.ino())
+                };
+                #[cfg(not(unix))]
+                let dev_ino = (0, 0);
+                TargetState::Regular(RegularKey {
+                    dev_ino,
+                    len: md.len(),
+                    mtime: md.modified().ok(),
+                })
+            }
+            Ok(_) => TargetState::Other,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => TargetState::Absent,
+            Err(_) => TargetState::Other,
+        }
+    }
+}
+
 /// stdout: the strings, lowercase, and nothing else — or, with `--qr`, the one
 /// `tx:` record instead.
 fn emit(body: &str) {
-    let out = std::io::stdout();
-    let mut out = out.lock();
-    let _ = write!(out, "{body}");
+    out::stdout_write(body);
 }
 
 /// The `tx:` record: the reserved prefix and the transaction's canonical
@@ -1522,6 +1608,11 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     json_quiet_guard(args.json, args.quiet, "decode")?;
+    validate::same_file_guard(
+        "decode",
+        mnemonic_io_lib::write::Endpoint::Stdout,
+        input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
+    )?;
     transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
     let text = read_input(&args.r#in, argv_material, "decode")?;
@@ -1602,8 +1693,6 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                 warnings.push(w.headline);
             }
             let _ = write!(stderr, "{}", report::render_json(&r, &warnings));
-            let out = std::io::stdout();
-            let mut out = out.lock();
             let mut hex = String::with_capacity(set.bytes.len() * 2);
             {
                 use core::fmt::Write as _;
@@ -1611,7 +1700,8 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     let _ = write!(hex, "{b:02x}");
                 }
             }
-            let _ = writeln!(out, "{hex}");
+            hex.push('\n');
+            out::stdout_write(&hex);
             return Ok(());
         }
 
@@ -1671,8 +1761,6 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     // stdout ONLY on success: every check above passed, so these bytes are
     // vouched for. A failure path that still printed hex would let the
     // documented pipeline broadcast a transaction that failed mt's own checks.
-    let out = std::io::stdout();
-    let mut out = out.lock();
     let mut hex = String::with_capacity(bytes.len() * 2);
     {
         use core::fmt::Write as _;
@@ -1680,7 +1768,8 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
             let _ = write!(hex, "{b:02x}");
         }
     }
-    let _ = writeln!(out, "{hex}");
+    hex.push('\n');
+    out::stdout_write(&hex);
     Ok(())
 }
 
@@ -1922,17 +2011,11 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
             .to_string(),
     );
 
-    let out = std::io::stdout();
-    let mut out = out.lock();
-    let _ = write!(
-        out,
-        "{}",
-        if args.json {
-            report::render_json(&r, &warnings)
-        } else {
-            r.render()
-        }
-    );
+    out::stdout_write(&if args.json {
+        report::render_json(&r, &warnings)
+    } else {
+        r.render()
+    });
     // With --json the prose is IN the document; emitting it again as prose
     // would put non-JSON on the stream a caller is parsing.
     if args.json {
@@ -1983,6 +2066,11 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "inspect")?;
+    validate::same_file_guard(
+        "inspect",
+        mnemonic_io_lib::write::Endpoint::Stdout,
+        input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
+    )?;
     transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
     // `inspect` reads BYTES and routes on what they ARE (I5, I6), in order:
@@ -2057,17 +2145,11 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
     }
     warnings.extend(correction_warnings(&set.chunks));
 
-    let out = std::io::stdout();
-    let mut out = out.lock();
-    let _ = write!(
-        out,
-        "{}",
-        if args.json {
-            report::render_json(&r, &warnings)
-        } else {
-            r.render()
-        }
-    );
+    out::stdout_write(&if args.json {
+        report::render_json(&r, &warnings)
+    } else {
+        r.render()
+    });
     // With --json the prose is IN the document; emitting it again as prose
     // would put non-JSON on the same stream a caller is parsing.
     if args.json {

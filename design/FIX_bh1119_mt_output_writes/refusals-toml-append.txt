@@ -1,0 +1,48 @@
+
+# bughunt-1119 FIX-B (design/FIX_bh1119_mt_output_writes.md): bh-mt-I4.
+# The output is never one of the inputs (Brian 2026-11-23 Q2; io-lib same_file).
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_encode_in_equals_out_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_encode_out_hard_link_to_in_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_encode_out_symlink_to_in_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_encode_out_equals_stdin_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_encode_stdout_appends_to_in_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_decode_stdout_appends_to_in_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_inspect_stdout_appends_to_in_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_decode_stdin_and_stdout_one_file_refused"
+check = "src/validate.rs::same_file_guard"
+
+[[refusal]]
+spec  = "§8.2i"
+test  = "bh1119_mt_i4_refused_before_the_input_is_read"
+check = "src/validate.rs::same_file_guard"
