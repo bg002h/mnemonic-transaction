@@ -196,6 +196,7 @@ REQUIRED = [
     # warned about the INPUT file's mode and then wrote the strings to an output
     # file it never mentioned again.
     "§8.2h",  # stdout is a world-readable FILE: warn on input, refuse on output
+    "§8.2i",  # the output is one of the inputs (FIX_bh1119_mt_output_writes)
     # REMOVED 2026-08-27, P1 step 1. `SPEC_engrave §2.2` was seeded 2026-08-25
     # with the `me tx` -> `mt encode --record` graft, and RETIRED when
     # `--record`/`--raw`/`--chunks` collapsed into a single `--qr`: `--chunks`
