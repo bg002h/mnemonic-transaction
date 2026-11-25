@@ -451,6 +451,36 @@ fn bh1119_mt_c3_device_target_names_no_state() {
     assert!(last.ends_with(')'), "ends with the OS error: {last}");
 }
 
+/// A standard-stream name is written in place by io-lib even when it resolves
+/// to a regular file (stdout appended to `s.txt`): the truncation runs before
+/// the failing write, so the line must name no on-disk state. The second look
+/// in W3 (architect 1124 F1) is what keeps this true.
+#[test]
+fn bh1119_mt_c3_stdio_alias_onto_a_file_names_no_state() {
+    let (d, tx) = even_hex_file();
+    let s = d.path().join("s.txt");
+    std::fs::write(&s, "OLD BACKUP\n").unwrap();
+    let o = run(Command::new("bash")
+        .arg("-c")
+        .arg(r#"trap '' XFSZ; ulimit -f 0; exec "$@""#)
+        .arg("bash")
+        .arg(bin())
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(&tx)
+        .args(["--out", "/dev/stdout"])
+        .stdout(append_to(&s)));
+    let e = err(&o);
+    assert_eq!(o.status.code(), Some(1), "stderr:\n{e}");
+    let last = last_line(&o);
+    assert!(
+        last.starts_with("mt: cannot write the output: /dev/stdout: "),
+        "stderr:\n{e}"
+    );
+    assert!(!last.ends_with("is unchanged."), "{last}");
+    assert!(!last.ends_with("Nothing was written."), "{last}");
+    assert!(last.ends_with(')'), "ends with the OS error: {last}");
+}
+
 /// Guard: a successful replacement writes the strings 0600 and only then says
 /// where they went.
 #[test]

@@ -27,11 +27,10 @@ D=design/FIX_bh1119_mt_output_writes
 
 cargo --version | grep -q '^cargo 1\.85\.0 ' || fail "cargo is not 1.85.0"
 
-# T5: mt-cli pins mnemonic-io-lib 0.1.2 (mnemonic-engrave #41 merge).
-REV=e09d538dcd0b552cdc58fe7ff228e2eca5f7f64e
-grep -q "rev = \"$REV\"" crates/mt-cli/Cargo.toml || fail "mt-cli does not pin io-lib $REV"
-grep -q "mnemonic-engrave?rev=$REV#$REV" Cargo.lock || fail "Cargo.lock does not resolve io-lib at $REV"
-! grep -q d8fec6786bd5a8325f52dacc18cedc23d9edbd3a Cargo.lock crates/mt-cli/Cargo.toml || fail "the 0.1.1 rev is still pinned"
+# T5 + Brian 2026-11-24: mt-cli pins mnemonic-io-lib 0.1.2 from crates.io.
+grep -qx 'mnemonic-io-lib = "0.1.2"' crates/mt-cli/Cargo.toml || fail 'mt-cli does not pin mnemonic-io-lib = "0.1.2"'
+[ "$(grep -A2 -x 'name = "mnemonic-io-lib"' Cargo.lock | tr '\n' '|')" = 'name = "mnemonic-io-lib"|version = "0.1.2"|source = "registry+https://github.com/rust-lang/crates.io-index"|' ] || fail "Cargo.lock does not resolve io-lib 0.1.2 from crates.io"
+! grep -q 'git+https://github.com/bg002h/mnemonic-engrave' Cargo.lock || fail "Cargo.lock still has an io-lib git source"
 
 # The sidecars are installed unchanged.
 cmp -s "$D/output_writes.rs.txt" crates/mt-cli/tests/bh1119_mt_output_writes.rs \
@@ -45,10 +44,10 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 
 out=$(cargo nextest run --locked --build-jobs 6 -j 6 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
-echo "$out" | grep -E 'Summary .* 556 tests run: 556 passed' || fail "expected 556 tests run, 556 passed"
+echo "$out" | grep -E 'Summary .* 557 tests run: 557 passed' || fail "expected 557 tests run, 557 passed"
 
 rows=$(cargo nextest run --locked --build-jobs 6 -j 6 -p mt-cli --test bh1119_mt_output_writes 2>&1) || fail "output_writes rows"
-echo "$rows" | grep -E '33 tests run: 33 passed' || fail "expected 33 output_writes rows"
+echo "$rows" | grep -E '34 tests run: 34 passed' || fail "expected 34 output_writes rows"
 
 cargo test --locked --workspace --doc
 
