@@ -1729,6 +1729,39 @@ pub fn chunk_ceiling_guard(chunks: usize) -> Result<(), Refusal> {
 
 // ── §8.9 — secrets ───────────────────────────────────────────────────────────
 
+/// Bug hunt 2026-11-25 T2: the 64-byte head above missed an ms1 string later
+/// in the input (after a set of mt1 strings, or after a long comment line).
+/// This scans EVERY whitespace-separated token of a text input for an `ms1`
+/// codex32 string: the token, lowercased, starts `ms1` and the rest is
+/// non-empty and all bech32 characters. The charset test keeps a line of
+/// wrapped base64 (whose start is random) from tripping it.
+///
+/// The scan only reads the bytes; nothing is stripped from what `sniff`
+/// receives. A binary PSBT never reaches it: see [`is_binary_psbt`].
+fn ms1_token_anywhere(raw: &[u8]) -> bool {
+    const BECH32: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    raw.split(|b| b.is_ascii_whitespace()).any(|t| {
+        t.len() > 3
+            && t[..3].eq_ignore_ascii_case(b"ms1")
+            && t[3..]
+                .iter()
+                .all(|b| BECH32.contains(&b.to_ascii_lowercase()))
+    })
+}
+
+/// **A binary PSBT is not scanned for ms1 text.** It is recognised first,
+/// exactly as §8.2e's sniff does (outer whitespace trim only, then the magic
+/// `psbt\xff`), because `0x09`, `0x0a` and `0x20` are ordinary bytes inside one
+/// and no "line" or "token" of it is text: bytes that happened to read
+/// `\nms1` inside a PSBT would otherwise refuse a valid transaction.
+fn is_binary_psbt(raw: &[u8]) -> bool {
+    let start = raw
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(raw.len());
+    raw[start..].starts_with(b"psbt\xff")
+}
+
 /// §8.9: **refuse secret material, as `me` already does for `ms1`.**
 ///
 /// **This must run BEFORE §8.2e names what it saw.** §8.2e's step 4 refusal
@@ -1739,14 +1772,16 @@ pub fn chunk_ceiling_guard(chunks: usize) -> Result<(), Refusal> {
 /// would print its intact secret body to stderr."* Same defect, same fix, and
 /// ordering is the whole of it.
 pub fn secret_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
+    if is_binary_psbt(raw) {
+        return Ok(());
+    }
     let head: String = raw
         .iter()
         .take(64)
         .map(|&b| (b as char).to_ascii_lowercase())
         .collect();
-    let looks_secret = head.trim_start().starts_with("ms1")
-        || head.contains("\nms1")
-        || head.trim_start().starts_with("ms1");
+    let looks_secret =
+        head.trim_start().starts_with("ms1") || head.contains("\nms1") || ms1_token_anywhere(raw);
     if !looks_secret {
         return Ok(());
     }
