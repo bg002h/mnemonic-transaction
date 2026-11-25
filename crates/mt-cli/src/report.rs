@@ -156,6 +156,9 @@ impl Status {
 pub struct Report {
     /// The **txid** — witness-stripped, and *not* the hash of the engraved bytes.
     pub txid: String,
+    /// True when signing will change the txid (an unfinalized input that is
+    /// not native SegWit): the TX row says so, and JSON `txid_provisional`.
+    pub txid_provisional: bool,
     /// Strings in the set, when the caller had strings.
     pub set: Option<(usize, usize)>,
     /// The 20-bit `chunk_set_id` every string in this set carries.
@@ -371,6 +374,7 @@ impl Report {
 
         Self {
             txid: txid.to_string(),
+            txid_provisional: false,
             set: None,
             set_prefix: None,
             network: chain,
@@ -419,7 +423,15 @@ impl Report {
                 None => writeln!(s, "mt1 SET   {n} strings, 1..{n} all present"),
             };
         }
-        let _ = writeln!(s, "TX        {}", self.txid);
+        if self.txid_provisional {
+            let _ = writeln!(
+                s,
+                "TX        {}   (PROVISIONAL — changes when the PSBT is signed)",
+                self.txid
+            );
+        } else {
+            let _ = writeln!(s, "TX        {}", self.txid);
+        }
 
         let _ = match self.network {
             None if self.chain_reply == Some(crate::node::ChainReply::Unrecognised) => writeln!(
@@ -525,6 +537,7 @@ pub fn render_json(r: &Report, warnings: &[String]) -> String {
     };
     let _ = writeln!(s, "{{");
     let _ = writeln!(s, "  \"txid\": \"{}\",", esc(&r.txid));
+    let _ = writeln!(s, "  \"txid_provisional\": {},", r.txid_provisional);
     match r.set {
         Some((n, _)) => {
             let _ = writeln!(s, "  \"strings\": {n},");
@@ -640,7 +653,13 @@ impl ReadFrom {
     }
 }
 
-pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool, from: ReadFrom) -> String {
+pub fn no_node_warning(
+    lock: &Lock,
+    txid: &str,
+    has_legacy: bool,
+    fee_known: bool,
+    from: ReadFrom,
+) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
@@ -681,14 +700,25 @@ pub fn no_node_warning(lock: &Lock, txid: &str, has_legacy: bool, from: ReadFrom
             let _ = writeln!(s, "             {}", lock.report_row(Chain::default()));
         }
     }
-    let _ = writeln!(
-        s,
-        "           - what fee does it pay?                             UNKNOWN"
-    );
-    let _ = writeln!(
-        s,
-        "             (the fee needs input values, which are not in the tx)"
-    );
+    if fee_known {
+        let _ = writeln!(
+            s,
+            "           - what fee does it pay?                             FROM THE PSBT"
+        );
+        let _ = writeln!(
+            s,
+            "             (the PSBT's own input records give it: see the FEE row)"
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "           - what fee does it pay?                             UNKNOWN"
+        );
+        let _ = writeln!(
+            s,
+            "             (the fee needs input values, which are not in the tx)"
+        );
+    }
     let _ = writeln!(s);
     let _ = writeln!(
         s,
@@ -736,6 +766,7 @@ mod tests {
         ] {
             let r = Report {
                 txid: "a".into(),
+                txid_provisional: false,
                 set: None,
                 set_prefix: None,
                 outputs: vec![],
@@ -764,6 +795,7 @@ mod tests {
     fn no_row_is_omitted_when_unanswerable() {
         let r = Report {
             txid: "abc".into(),
+            txid_provisional: false,
             set: None,
             set_prefix: None,
             outputs: vec![],
@@ -811,7 +843,13 @@ mod tests {
 
     #[test]
     fn no_node_warning_names_both_ways_out() {
-        let w = no_node_warning(&Lock::Height(900_000), "deadbeef", true, ReadFrom::Strings);
+        let w = no_node_warning(
+            &Lock::Height(900_000),
+            "deadbeef",
+            true,
+            false,
+            ReadFrom::Strings,
+        );
         assert!(w.contains("run mt inspect again with a bitcoind"));
         assert!(w.contains("block explorer"));
         assert!(
@@ -827,6 +865,7 @@ mod tests {
     fn bughunt_mt_10e_render_json_escapes_control_characters() {
         let r = Report {
             txid: "abc".into(),
+            txid_provisional: false,
             set: None,
             set_prefix: None,
             outputs: vec![],

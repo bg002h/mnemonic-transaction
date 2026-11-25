@@ -48,7 +48,10 @@ pub fn sniff(raw: &[u8]) -> Result<Input, Refusal> {
     //    exports at 64 or 76 columns are handled.
     let text: String = match core::str::from_utf8(trimmed) {
         Ok(s) => s.chars().filter(|c| !c.is_whitespace()).collect(),
-        Err(_) => return Err(unrecognised(trimmed)),
+        Err(_) => {
+            recognised_guard(false, trimmed)?;
+            unreachable!("recognised_guard(false, ..) returns Err")
+        }
     };
 
     //    (a) base64 PSBT -- recognised by DECODING (T23), then the magic.

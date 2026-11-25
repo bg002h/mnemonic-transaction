@@ -57,6 +57,12 @@ for path in sorted(glob.glob("crates/*/tests/*.rs")):
 # Exempt by NAME, and only with a stated reason that a reader can check. An
 # exemption list is safer than a cleverer heuristic: it is visible in the diff.
 EXEMPT = {
+    "bh1119_mt_g_verify_mismatch_prints_no_ok":
+        "asserts notice/verdict ordering around an existing refusal; adds no guard",
+    "bh1119_mt_g_verify_missing_transaction_prints_no_ok":
+        "asserts notice/verdict ordering around an existing refusal; adds no guard",
+    "bh1119_mt_g_verify_refusal_keeps_the_notices":
+        "asserts notice/verdict ordering around an existing refusal; adds no guard",
     "ordinary_amounts_parse":
         "the CONTROL for §8.2c's amount parser -- it asserts a legitimate amount "
         "is NOT refused, so it names a §-refusal in order to check its absence",
@@ -100,6 +106,30 @@ EXEMPT = {
         "explain_failure (it returns Refusal, so mutate-refusals.sh has no "
         "neutral return for it) once a later full line supplies the elided "
         "prefix (QC2 option c); the choice of line is held by row 07d itself",
+    "c1_decode_refuses_recut_set_in_index_order":
+        "mt-codec's §3b balanced-split check (Error::ChunkLengthMismatch, "
+        "bh-mt-I18), reached through explain_failure's generic §1.1 fallback "
+        "like CountMismatch -- there is no CLI guard fn for mutate-refusals.sh "
+        "to neuter; the codec check is held by the codec rows r1-r8 of "
+        "crates/mt-codec/tests/bh1119_mt_decode_strictness.rs",
+    "c2_decode_refuses_recut_set_reversed":
+        "mt-codec's §3b balanced-split check (Error::ChunkLengthMismatch, "
+        "bh-mt-I18), reached through explain_failure's generic §1.1 fallback "
+        "like CountMismatch -- there is no CLI guard fn for mutate-refusals.sh "
+        "to neuter; the codec check is held by the codec rows r1-r8 of "
+        "crates/mt-codec/tests/bh1119_mt_decode_strictness.rs",
+    "c3_verify_refuses_recut_set":
+        "mt-codec's §3b balanced-split check (Error::ChunkLengthMismatch, "
+        "bh-mt-I18), reached through explain_failure's generic §1.1 fallback "
+        "like CountMismatch -- there is no CLI guard fn for mutate-refusals.sh "
+        "to neuter; the codec check is held by the codec rows r1-r8 of "
+        "crates/mt-codec/tests/bh1119_mt_decode_strictness.rs",
+    "c4_inspect_refuses_recut_set":
+        "mt-codec's §3b balanced-split check (Error::ChunkLengthMismatch, "
+        "bh-mt-I18), reached through explain_failure's generic §1.1 fallback "
+        "like CountMismatch -- there is no CLI guard fn for mutate-refusals.sh "
+        "to neuter; the codec check is held by the codec rows r1-r8 of "
+        "crates/mt-codec/tests/bh1119_mt_decode_strictness.rs",
 }
 
 problems = []
