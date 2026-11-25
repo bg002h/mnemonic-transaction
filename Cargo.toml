@@ -21,6 +21,8 @@ all = "warn"
 # versus 0.775s for --release — the same speed with the checks intact.
 [profile.test]
 opt-level = 2
+debug = "line-tables-only"
 
 [profile.dev]
 opt-level = 2
+debug = "line-tables-only"
