@@ -29,6 +29,8 @@ const ELIDED_DROP: usize = 3 + INVARIANT_PREFIX_SYMBOLS;
 pub struct Transliteration {
     /// 1-based position in the whole string.
     pub position: usize,
+    /// 1-based place in the input of the string it was found on.
+    pub line: usize,
     /// What the operator typed.
     pub from: char,
     /// What mt read it as, chosen because the result decoded.
@@ -42,6 +44,12 @@ pub struct ReadStrings {
     pub strings: Vec<String>,
     /// Every character mt replaced, in input order.
     pub notes: Vec<Transliteration>,
+    /// One entry per string, input order: true when the input line did not
+    /// begin `mt1` (an elided line).
+    pub elided: Vec<bool>,
+    /// The 1-based input place of the line the restored prefix was taken from
+    /// as typed, because no `mt1` line resolved; `None` otherwise.
+    pub prefix_fallback: Option<usize>,
     /// Did every transliterated string then decode with **zero** BCH
     /// corrections?
     ///
@@ -121,14 +129,16 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
     }
 
     // 3. Restore elided lines from the set's full string (§3b).
-    let restored = restore_elided(candidates, verb)?;
+    let elided: Vec<bool> = candidates.iter().map(|c| !c.starts_with("mt1")).collect();
+    let (restored, prefix_fallback) = restore_elided(candidates, verb)?;
 
     // §1.1e step 4: only now, and only for strings that did NOT parse.
     let mut notes = Vec::new();
     let mut free = true;
     let strings = restored
         .into_iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(line_n, s)| {
             if pipeline::decode_chunk(&s, None).is_ok() {
                 return s; // step 3: it parsed as written. STOP.
             }
@@ -141,16 +151,7 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
             //
             // Fewest corrections is the honest tie-break: a candidate needing
             // zero is the character that was actually engraved.
-            match positional_autocorrect(&s)
-                .into_iter()
-                .filter_map(|c| {
-                    pipeline::decode_chunk(&c, None)
-                        .ok()
-                        .map(|d| (d.corrected, c))
-                })
-                .min_by_key(|(n, _)| *n)
-                .map(|(_, c)| c)
-            {
+            match best_autocorrect(&s).map(|(c, _)| c) {
                 Some(fixed) => {
                     if pipeline::decode_chunk(&fixed, None).is_ok_and(|d| d.corrected > 0) {
                         free = false;
@@ -159,6 +160,7 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
                         if a != b {
                             notes.push(Transliteration {
                                 position: i + 1,
+                                line: line_n + 1,
                                 from: a,
                                 to: b,
                             });
@@ -173,8 +175,27 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
     Ok(ReadStrings {
         strings,
         notes,
+        elided,
+        prefix_fallback,
         free,
     })
+}
+
+/// The positional-autocorrect candidate of `s` that decodes with the FEWEST
+/// BCH corrections (first on ties), with its decoded chunk.
+fn best_autocorrect(s: &str) -> Option<(String, pipeline::DecodedChunk)> {
+    positional_autocorrect(s)
+        .into_iter()
+        .filter_map(|c| pipeline::decode_chunk(&c, None).ok().map(|d| (c, d)))
+        .min_by_key(|(_, d)| d.corrected)
+}
+
+/// Resolve one line exactly as step 3 of `read` does: as written if it decodes,
+/// else the best autocorrect candidate.
+fn resolve_line(s: &str) -> Option<pipeline::DecodedChunk> {
+    pipeline::decode_chunk(s, None)
+        .ok()
+        .or_else(|| best_autocorrect(s).map(|(_, d)| d))
 }
 
 /// §1.1e's **positional autocorrect** — a repair attempted on FAILURE, never a
@@ -449,7 +470,10 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
 /// Detection needs no flag: a line beginning `mt1` is full, anything else is
 /// elided. **Mixed input is legal** — an operator who elides "after a while"
 /// produces exactly that.
-fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Refusal> {
+fn restore_elided(
+    candidates: Vec<String>,
+    verb: &str,
+) -> Result<(Vec<String>, Option<usize>), Refusal> {
     // A line that BEGINS `mt` but is not `mt1` is a misread separator that the
     // repair could not confirm — because the line carries a second defect too.
     // It is NOT an elided line, and treating it as one prepends 11 characters
@@ -605,7 +629,20 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
              prefix before anything can be restored from it.",
         ));
     }
-    let Some(prefix) = full.get(..ELIDED_DROP).map(str::to_string) else {
+    // THE PREFIX COMES FROM THE CORRECTED TEXT (T19): the first `mt1` line, in
+    // input order, that resolves supplies `mt1` + its post-BCH invariant prefix.
+    // Only when none resolves is the typed `full[..11]` used, as before.
+    let resolved = candidates
+        .iter()
+        .filter(|c| c.starts_with("mt1"))
+        .find_map(|c| resolve_line(c))
+        .map(|d| format!("mt1{}", d.invariant_prefix));
+    let prefix_fallback = if resolved.is_none() {
+        candidates.iter().position(|c| c == full).map(|i| i + 1)
+    } else {
+        None
+    };
+    let Some(prefix) = resolved.or_else(|| full.get(..ELIDED_DROP).map(str::to_string)) else {
         let n = candidates
             .iter()
             .position(|c| c == full)
@@ -628,16 +665,19 @@ fn restore_elided(candidates: Vec<String>, verb: &str) -> Result<Vec<String>, Re
         ));
     };
 
-    Ok(candidates
-        .into_iter()
-        .map(|s| {
-            if s.starts_with("mt1") {
-                s
-            } else {
-                format!("{prefix}{s}")
-            }
-        })
-        .collect())
+    Ok((
+        candidates
+            .into_iter()
+            .map(|s| {
+                if s.starts_with("mt1") {
+                    s
+                } else {
+                    format!("{prefix}{s}")
+                }
+            })
+            .collect(),
+        prefix_fallback,
+    ))
 }
 
 #[cfg(test)]

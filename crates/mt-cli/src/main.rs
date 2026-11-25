@@ -425,7 +425,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     // Both payloads reach the same checks, each by ITS OWN VOCABULARY (§8.1).
     let (tx, mut values, from_raw_hex) = match sniffed {
         input::Input::Psbt(bytes) => {
-            let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
+            let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                 Refusal::new(
                     "encode",
                     "§8.2e",
@@ -437,6 +437,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
                 )
                 .with_remedy("Re-export it from the wallet that built it.")
             })?;
+            input::psbt_end_guard(bytes.len(), used, "encode")?;
 
             validate::finalized_guard_psbt(&psbt)?; // §8.1
             validate::non_witness_utxo_guard(&psbt)?; // §8.2d
@@ -455,26 +456,12 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
                     // record that matched the txid but had no output at the
                     // input's vout made the two disagree, putting an unverified
                     // number under a verified heading.
-                    validate::psbt_input_value(&psbt, n)
-                        .map(|(v, src)| {
-                            (
-                                v,
-                                match src {
-                                    validate::ValueSource::TxidBound => {
-                                        report::Provenance::TxidBound
-                                    }
-                                    validate::ValueSource::PsbtClaimed => {
-                                        report::Provenance::PsbtClaimed
-                                    }
-                                },
-                            )
-                        })
-                        .or_else(|| {
-                            asserted
-                                .iter()
-                                .find(|(i, _)| *i as usize == n)
-                                .map(|(_, v)| (*v, report::Provenance::OperatorAsserted))
-                        })
+                    psbt_record_value(&psbt, n).or_else(|| {
+                        asserted
+                            .iter()
+                            .find(|(i, _)| *i as usize == n)
+                            .map(|(_, v)| (*v, report::Provenance::OperatorAsserted))
+                    })
                 })
                 .collect();
             // A supplied value that CONTRADICTS the record was discarded without
@@ -520,7 +507,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
             (psbt.extract_tx_unchecked_fee_rate(), values, false)
         }
         input::Input::RawHex(b) => {
-            let tx = decode_tx(&b, "encode")?;
+            let tx = decode_tx(&b, "encode", Subject::Input)?;
             validate::finalized_guard_raw(&tx)?; // §8.3
             let values: Vec<Option<(u64, report::Provenance)>> = (0..tx.input.len())
                 .map(|n| {
@@ -744,7 +731,20 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
 
     // stderr: everything the operator must see, before the artifact.
     let _ = writeln!(stderr, "{}", blocks::bearer_warning());
-    let lengths: Vec<usize> = strings.iter().map(|s| s.chars().count()).collect();
+    // What is PRINTED, plate by plate: `--elide-prefix` drops `ELIDED_DROP`
+    // characters from strings 2..n (the same constant `render` uses).
+    let lengths: Vec<usize> = strings
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let n = s.chars().count();
+            if args.elide_prefix && i > 0 {
+                n.saturating_sub(ELIDED_DROP)
+            } else {
+                n
+            }
+        })
+        .collect();
     // BCH corrects CHARACTERS IN AN mt1 STRING. A raw record is engraved as a
     // QR symbol, which carries its own Reed-Solomon and none of this budget, so
     // "mt corrects up to 4 wrong characters per string" is a promise about an
@@ -938,9 +938,13 @@ fn encode_tx_record(tx_bytes: &[u8]) -> String {
     s
 }
 
+/// Characters `--elide-prefix` drops from strings 2..n: `mt1` plus the 8-symbol
+/// invariant prefix. One definition, shared by `render` and the printed counts.
+const ELIDED_DROP: usize = "mt1".len() + mt_codec::consts::INVARIANT_PREFIX_SYMBOLS;
+
 /// Apply `--elide-prefix` and `--group-size` to what goes on stdout.
 fn render(strings: &[String], args: &EncodeArgs) -> Vec<String> {
-    let drop = "mt1".len() + mt_codec::consts::INVARIANT_PREFIX_SYMBOLS;
+    let drop = ELIDED_DROP;
     strings
         .iter()
         .enumerate()
@@ -969,30 +973,169 @@ fn render(strings: &[String], args: &EncodeArgs) -> Vec<String> {
 /// **Not** the double-SHA-256 of these bytes — that is the *wtxid* for any
 /// segwit transaction. The txid hashes the same transaction with marker, flag
 /// and witnesses stripped, which `bitcoin`'s `compute_txid` does.
-fn txid_display(bytes: &[u8], verb: &str) -> Result<String, Refusal> {
-    use bitcoin::consensus::Decodable;
-    let tx = bitcoin::Transaction::consensus_decode(&mut &bytes[..]).map_err(|e| {
-        Refusal::new(
-            verb,
-            "§8.2e",
-            "input is not a decodable Bitcoin transaction",
-            format!(
-                "The bytes are valid hex but do not parse as a transaction: {e}. \
+fn txid_display(bytes: &[u8], verb: &str, subject: Subject) -> Result<String, Refusal> {
+    let (txid, used) = txid_partial(bytes, verb)?;
+    end_guard(subject, bytes.len(), used, verb)?;
+    Ok(txid)
+}
+
+/// The txid of the transaction at the FRONT of `bytes`, and the bytes it used.
+/// No end check: the caller decides when bytes left over are refused.
+fn txid_partial(bytes: &[u8], verb: &str) -> Result<(String, usize), Refusal> {
+    let (tx, used) = bitcoin::consensus::encode::deserialize_partial::<bitcoin::Transaction>(bytes)
+        .map_err(|e| {
+            Refusal::new(
+                verb,
+                "§8.2e",
+                "input is not a decodable Bitcoin transaction",
+                format!(
+                    "The bytes are valid hex but do not parse as a transaction: {e}. \
                  mt reads an ALREADY-SIGNED transaction; it does not build one."
-            ),
-        )
-        .with_remedy(if verb == "encode" {
-            "Check this is the output of `finalizepsbt`, not a template."
-        } else {
-            // On the RECOVERY path there is no PSBT to re-finalize: the operator
-            // is holding steel. Encode-path advice sends them to look for a file
-            // that has not existed for years.
-            "Every checksum held, so this is not miscut steel — the strings are \
+                ),
+            )
+            .with_remedy(if verb == "encode" {
+                "Check this is the output of `finalizepsbt`, not a template."
+            } else {
+                // On the RECOVERY path there is no PSBT to re-finalize: the operator
+                // is holding steel. Encode-path advice sends them to look for a file
+                // that has not existed for years.
+                "Every checksum held, so this is not miscut steel — the strings are \
              more likely from two different engravings mixed together. Check that \
              every plate carries the same 8 characters after `mt1`."
-        })
-    })?;
-    Ok(tx.compute_txid().to_string())
+            })
+        })?;
+    Ok((tx.compute_txid().to_string(), used))
+}
+
+/// A PSBT input's value from its own UTXO records, with the provenance its
+/// record earns. The one mapping `encode` and `inspect` share, so the two
+/// cannot drift.
+fn psbt_record_value(psbt: &bitcoin::Psbt, n: usize) -> Option<(u64, report::Provenance)> {
+    validate::psbt_input_value(psbt, n).map(|(v, src)| {
+        (
+            v,
+            match src {
+                validate::ValueSource::TxidBound => report::Provenance::TxidBound,
+                validate::ValueSource::PsbtClaimed => report::Provenance::PsbtClaimed,
+            },
+        )
+    })
+}
+
+/// `input 0, 1`: indexes joined by `, `, as §8.1's refusal writes them.
+fn index_list(v: &[usize]) -> String {
+    v.iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// How `inspect` says a [`validate::PsbtFinding`]: the stderr text (ends in a
+/// newline) and the JSON `warnings` entry.
+fn finding_texts(f: &validate::PsbtFinding) -> (String, String) {
+    use validate::PsbtFinding as F;
+    match f {
+        F::NotFinalized {
+            unfinalized,
+            total,
+            provisional,
+        } => {
+            let list = index_list(unfinalized);
+            let base = format!(
+                "this PSBT is not finalized ({} of {total} inputs: input {list})",
+                unfinalized.len()
+            );
+            if provisional.is_empty() {
+                let w = refusal::Warning::new(
+                    format!("{base}."),
+                    "Every unsigned input is native SegWit or Taproot, whose signatures are \
+                     not part of the txid, so TX is the txid the signed transaction will \
+                     have. mt encode refuses a PSBT that is not finalized; finalize it and \
+                     keep the PSBT form, which carries the input values: bitcoin-cli \
+                     finalizepsbt <psbt> false",
+                );
+                (w.to_string(), w.headline)
+            } else {
+                let w = refusal::Warning::new(
+                    format!("{base}, so TX is PROVISIONAL."),
+                    format!(
+                        "These unsigned inputs are not native SegWit or Taproot, or carry no \
+                         UTXO record that shows they are: input {}. Signing puts their \
+                         signatures in their scriptSigs, which are part of the txid, so the \
+                         signed transaction will have a different txid from the one shown, and \
+                         no explorer or node knows the one shown. The outputs, fee, locktime and \
+                         inputs above do not change when it is signed. mt encode refuses a PSBT \
+                         that is not finalized; finalize it and keep the PSBT form, which \
+                         carries the input values: bitcoin-cli finalizepsbt <psbt> false",
+                        index_list(provisional)
+                    ),
+                );
+                (w.to_string(), w.headline)
+            }
+        }
+        F::Mismatch {
+            n,
+            got,
+            want,
+            vout,
+            amount,
+        } => {
+            let says = match amount {
+                Some(a) => format!("  The PSBT says input {n} holds {}.\n", fmt_btc(*a)),
+                None => String::new(),
+            };
+            let text = format!(
+                "WARNING: input {n}'s non_witness_utxo is NOT the transaction it spends,\n\
+                 \x20        so its amount and the fee are UNVERIFIED.\n\
+                 \n\
+                 {says}\
+                 \x20 Its record of the spent transaction hashes to\n\
+                 \x20   {got}\n\
+                 \x20 but input {n} spends output {vout} of\n\
+                 \x20   {want}\n\
+                 \x20 A buggy wallet writes this, and so does a HIDDEN-FEE ATTACK.\n\
+                 \n\
+                 \x20 IF INPUT {n} REALLY HOLDS MORE THAN THE PSBT SAYS, EVERY SATOSHI OF\n\
+                 \x20 THE DIFFERENCE GOES TO A MINER AS FEE AND IS LOST. A signer that\n\
+                 \x20 trusts this record shows you the wrong fee.\n\
+                 \n\
+                 \x20 Check input {n} before you sign or broadcast, either way:\n\
+                 \x20   - let mt reach a bitcoind: it asks for the value with gettxout\n\
+                 \x20     and shows it in INPUTS as `from node`, or\n\
+                 \x20   - on a machine with a node, run\n\
+                 \x20       bitcoin-cli gettxout {want} {vout}\n\
+                 \x20     and compare its \"value\" with the amount your signer shows.\n\
+                 \n\
+                 \x20 mt encode refuses this PSBT: re-export it from the wallet that built it.\n"
+            );
+            let json = format!(
+                "input {n}'s non_witness_utxo is NOT the transaction it spends, so its amount \
+                 and the fee are UNVERIFIED. Check it before you sign or broadcast: \
+                 bitcoin-cli gettxout {want} {vout}"
+            );
+            (text, json)
+        }
+        F::NoOutput {
+            n,
+            want,
+            vout,
+            outputs,
+        } => {
+            let w = refusal::Warning::new(
+                format!(
+                    "input {n} spends output {vout} of {want}, which has {outputs} output(s): \
+                     that output does not exist."
+                ),
+                format!(
+                    "The PSBT's non_witness_utxo for input {n} is the transaction it spends \
+                     (its hash matches), and that transaction has no output {vout}, so this \
+                     transaction can never be valid. mt encode refuses this PSBT: re-export \
+                     it from the wallet that built it."
+                ),
+            );
+            (w.to_string(), w.headline)
+        }
+    }
 }
 
 /// Read the strings an operator typed back, from a file or stdin.
@@ -1001,6 +1144,18 @@ fn read_input(
     argv_material: Option<Vec<u8>>,
     verb: &str,
 ) -> Result<String, Refusal> {
+    let bytes = read_input_bytes(path, argv_material, verb)?;
+    input_text(bytes, verb)
+}
+
+/// The byte reader: file / argv material / stdin, the argv-unused warning,
+/// `txid_paste_guard` and `secret_guard`. `inspect` routes on these bytes
+/// before any text is made from them (I5).
+fn read_input_bytes(
+    path: &Option<std::path::PathBuf>,
+    argv_material: Option<Vec<u8>>,
+    verb: &str,
+) -> Result<Vec<u8>, Refusal> {
     let read_file = |p: &std::path::PathBuf| -> Result<Vec<u8>, Refusal> {
         std::fs::read(p).map_err(|e| {
             Refusal::new(
@@ -1043,7 +1198,11 @@ fn read_input(
     // operator who reaches for the wrong tool pastes ms1 into `mt decode`, and
     // every refusal below this point quotes what it saw.
     validate::secret_guard(&bytes, verb)?;
+    Ok(bytes)
+}
 
+/// The UTF-8 step of `read_input`.
+fn input_text(bytes: Vec<u8>, verb: &str) -> Result<String, Refusal> {
     String::from_utf8(bytes).map_err(|_| {
         Refusal::new(
             verb,
@@ -1084,7 +1243,11 @@ fn correction_warnings(chunks: &[mt_codec::DecodedChunk]) -> Vec<String> {
 /// A chunk repaired four times passes while sitting **one scratch from
 /// unrecoverable**, with zero redundancy behind it. A verdict that hides that
 /// tells the operator the opposite of what they need.
-fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
+fn margin_report(
+    chunks: &[mt_codec::DecodedChunk],
+    read: &read_strings::ReadStrings,
+    out: &mut impl Write,
+) {
     const T: usize = 4;
     let mut repaired: Vec<&mt_codec::DecodedChunk> =
         chunks.iter().filter(|c| c.corrected > 0).collect();
@@ -1119,15 +1282,52 @@ fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
         // for — and it is the only way to distinguish a MIS-CUT plate from a
         // MIS-READ one. If the steel really says the corrected character, the
         // plate is fine and the typist slipped.
+        let elided = chunk_is_elided(c, read);
         for (n, &p) in c.corrected_positions.iter().enumerate() {
             let was = c.corrected_from.get(n).copied().map_or('?', symbol_char);
             let now = c.corrected_to.get(n).copied().map_or('?', symbol_char);
-            // data-part offset -> 1-based whole-string position
+            // data-part offset -> 1-based whole-string position; on an elided
+            // plate, the plate position. A symbol inside the restored prefix is
+            // inherited from the full plate: it prints no row here (E1).
+            let pos = if !elided {
+                p + 1 + 3
+            } else if p < mt_codec::consts::INVARIANT_PREFIX_SYMBOLS {
+                continue;
+            } else {
+                p + 1 + 3 - ELIDED_DROP
+            };
             let _ = writeln!(
                 out,
-                "              pos {:>3}   read {was}, corrected to {now}",
-                p + 1 + 3
+                "              pos {pos:>3}   read {was}, corrected to {now}"
             );
+        }
+    }
+    // The inherited prefix symbol(s) of an unreadable full plate: named once,
+    // under the string they were restored from (E1 (c), Brian #23 Q3).
+    if let Some(place) = read.prefix_fallback {
+        let inherited = repaired.iter().find(|c| {
+            chunk_is_elided(c, read)
+                && c.corrected_positions
+                    .iter()
+                    .any(|&p| p < mt_codec::consts::INVARIANT_PREFIX_SYMBOLS)
+        });
+        if let Some(c) = inherited {
+            let _ = writeln!(
+                out,
+                "  string {place} of the input   its prefix was restored onto the elided strings"
+            );
+            for (n, &p) in c.corrected_positions.iter().enumerate() {
+                if p >= mt_codec::consts::INVARIANT_PREFIX_SYMBOLS {
+                    continue;
+                }
+                let was = c.corrected_from.get(n).copied().map_or('?', symbol_char);
+                let now = c.corrected_to.get(n).copied().map_or('?', symbol_char);
+                let _ = writeln!(
+                    out,
+                    "              pos {:>3}   read {was}, corrected to {now}",
+                    p + 1 + 3
+                );
+            }
         }
     }
     if let Some(worst) = repaired.first() {
@@ -1141,6 +1341,14 @@ fn margin_report(chunks: &[mt_codec::DecodedChunk], out: &mut impl Write) {
         }
     }
     let _ = writeln!(out);
+}
+
+/// Was this chunk read from an elided line (one that did not begin `mt1`)?
+fn chunk_is_elided(c: &mt_codec::DecodedChunk, read: &read_strings::ReadStrings) -> bool {
+    read.elided
+        .get(c.input_position.wrapping_sub(1))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// A bech32 symbol value as the character an operator sees on steel.
@@ -1157,6 +1365,37 @@ fn symbol_char(v: u8) -> char {
 /// still means one of the two plates is closer to unrecoverable than the other,
 /// and an unreadable string means a plate is already scrap while the set as a
 /// whole is fine.
+/// The `(position, typed, read-as)` rows to print, in input order (rule E1).
+///
+/// A note on an elided line prints the plate position (whole-string position
+/// minus `ELIDED_DROP`); inside the restored prefix (whole-string position
+/// `<= ELIDED_DROP`) no plate position is ever computed: the note is inherited
+/// from the full plate and prints once, at its whole-string position.
+fn printed_notes(read: &read_strings::ReadStrings) -> Vec<(usize, char, char)> {
+    let mut out: Vec<(usize, char, char)> = Vec::new();
+    for n in &read.notes {
+        if !read
+            .elided
+            .get(n.line.wrapping_sub(1))
+            .copied()
+            .unwrap_or(false)
+        {
+            // A full line keeps its whole-string position.
+            out.push((n.position, n.from, n.to));
+        } else if n.position <= ELIDED_DROP {
+            // Inside the restored prefix: inherited from the one full plate, so
+            // it prints once, at its whole-string position there.
+            let row = (n.position, n.from, n.to);
+            if !out.contains(&row) {
+                out.push(row);
+            }
+        } else {
+            out.push((n.position - ELIDED_DROP, n.from, n.to));
+        }
+    }
+    out
+}
+
 /// What `mt` replaced before the codec ever saw the strings.
 ///
 /// **Separate from the margin report, deliberately.** BCH repairs DAMAGE and
@@ -1164,7 +1403,7 @@ fn symbol_char(v: u8) -> char {
 /// OCCUR in a valid string, and costs nothing. Folding them together made the
 /// margin report say `read 6` about a plate where the operator typed `b`.
 fn transliteration_notices(read: &read_strings::ReadStrings, out: &mut impl Write) {
-    let notes = &read.notes;
+    let notes = printed_notes(read);
     if notes.is_empty() {
         return;
     }
@@ -1174,12 +1413,8 @@ fn transliteration_notices(read: &read_strings::ReadStrings, out: &mut impl Writ
          all, so\nthey cannot be what was engraved — mt tried every alternative \
          and kept the one\nthat cost the checksum least:"
     );
-    for n in notes {
-        let _ = writeln!(
-            out,
-            "  pos {:>3}   you typed {}, mt read it as {}",
-            n.position, n.from, n.to
-        );
+    for (pos, from, to) in notes {
+        let _ = writeln!(out, "  pos {pos:>3}   you typed {from}, mt read it as {to}");
     }
     if read.free {
         let _ = writeln!(
@@ -1304,12 +1539,12 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         // none of the rows that decide whether to broadcast. That is also a
         // second implementation of the `mt1 SET` row, in a different format —
         // the drift the single-owner rule exists to prevent.
-        let tx = decode_tx(&set.bytes, "decode")?;
+        let tx = decode_tx(&set.bytes, "decode", Subject::Set)?;
         let txid = tx.compute_txid().to_string();
         let node = node::Node::find(&args.bitcoin_cli);
         let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
         r.set = Some((set.chunks.len(), set.chunks.len()));
-        r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
+        r.set_prefix = Some(set.chunks[0].invariant_prefix.clone());
         // `--json` is honoured HERE too, and is decided BEFORE anything is
         // written. It was wired into `inspect` alone, so on this verb it parsed
         // and did nothing -- the precise defect render_json's own doc comment
@@ -1326,11 +1561,8 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                         .to_string(),
                 );
             }
-            for n in &read.notes {
-                warnings.push(format!(
-                    "pos {}: you typed {}, mt read it as {}",
-                    n.position, n.from, n.to
-                ));
+            for (pos, from, to) in printed_notes(&read) {
+                warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
             }
             for u in &set.unreadable {
                 warnings.push(format!(
@@ -1381,13 +1613,35 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     &locktime::read(&tx),
                     &txid,
                     tx.input.iter().any(|i| i.witness.is_empty()),
+                    false,
                     report::ReadFrom::Strings,
                 )
             );
         }
         transliteration_notices(&read, &mut stderr);
         set_notices(&set, &mut stderr);
-        margin_report(&set.chunks, &mut stderr);
+        margin_report(&set.chunks, &read, &mut stderr);
+    } else {
+        let tx = decode_tx(&set.bytes, "decode", Subject::Set)?;
+        let txid = tx.compute_txid().to_string();
+        let node = node::Node::find(&args.bitcoin_cli);
+        if node.is_none() {
+            let _ = writeln!(stderr);
+            let _ = write!(
+                stderr,
+                "{}",
+                report::no_node_warning(
+                    &locktime::read(&tx),
+                    &txid,
+                    tx.input.iter().any(|i| i.witness.is_empty()),
+                    false,
+                    report::ReadFrom::Strings,
+                )
+            );
+        }
+        transliteration_notices(&read, &mut stderr);
+        set_notices(&set, &mut stderr);
+        margin_report(&set.chunks, &read, &mut stderr);
     }
     let bytes = set.bytes;
 
@@ -1430,91 +1684,130 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 
     let mut stderr = std::io::stderr();
     let set_id = set.chunks[0].header.chunk_set_id;
-    let _ = writeln!(
-        stderr,
-        "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
-        set.chunks.len()
-    );
-    transliteration_notices(&read, &mut stderr);
-    set_notices(&set, &mut stderr);
-    margin_report(&set.chunks, &mut stderr);
     let bytes = &set.bytes;
 
     // §1.1: verify NEVER asks a node. A predicate whose answer changes between
     // runs is not a predicate, and keeping it offline is what lets it run on an
     // air-gapped machine.
-    if let Some(path) = &args.transaction {
-        let supplied = std::fs::read(path).map_err(|e| {
-            Refusal::new(
-                "verify",
-                "§1.1",
-                format!("cannot read {}", path.display()),
-                format!("{e}"),
-            )
-        })?;
-        // §1.1 rules `--transaction <psbt|hex>`, and a supplied PSBT is compared
-        // against its EXTRACTED transaction (§10.13 c) -- so the flag accepted
-        // half of its own ruling and refused the other half. The PSBT is the
-        // form a wallet exports; the hex is what `finalizepsbt` returns. An
-        // operator checking their steel against what they built has the PSBT.
-        // Same wart as `inspect`'s: sniff hard-codes the verb `encode` in every
-        // refusal it builds, so `mt verify --transaction <a truncated hex file>`
-        // told the operator about `mt encode`. Fixed here rather than left as
-        // the surviving half of one defect.
-        let supplied = match input::sniff(&supplied).map_err(|mut r| {
-            r.verb = "verify".into();
-            r
-        })? {
-            input::Input::RawHex(b) => b,
-            input::Input::Psbt(bytes) => {
-                let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
-                    Refusal::new(
-                        "verify",
-                        "§1.1",
-                        "the supplied PSBT does not parse",
-                        format!("{e}"),
-                    )
-                })?;
-                // Finalized, by §8.1's vocabulary: an unfinalized PSBT extracts
-                // to a transaction with empty witnesses, whose txid is the same
-                // but whose BYTES are not what was engraved. Comparing against
-                // it would report a match for something unbroadcastable.
-                validate::finalized_guard_psbt(&psbt).map_err(|r| {
-                    Refusal::new(
-                        "verify",
-                        "§1.1",
-                        "the supplied PSBT is not finalized",
-                        format!(
-                            "{} mt compares against the transaction a PSBT \
+    let compared: Result<bool, Refusal> = (|| {
+        if let Some(path) = &args.transaction {
+            let supplied = std::fs::read(path).map_err(|e| {
+                Refusal::new(
+                    "verify",
+                    "§1.1",
+                    format!("cannot read {}", path.display()),
+                    format!("{e}"),
+                )
+            })?;
+            // §1.1 rules `--transaction <psbt|hex>`, and a supplied PSBT is compared
+            // against its EXTRACTED transaction (§10.13 c) -- so the flag accepted
+            // half of its own ruling and refused the other half. The PSBT is the
+            // form a wallet exports; the hex is what `finalizepsbt` returns. An
+            // operator checking their steel against what they built has the PSBT.
+            // Same wart as `inspect`'s: sniff hard-codes the verb `encode` in every
+            // refusal it builds, so `mt verify --transaction <a truncated hex file>`
+            // told the operator about `mt encode`. Fixed here rather than left as
+            // the surviving half of one defect.
+            let supplied = match input::sniff(&supplied).map_err(|mut r| {
+                r.verb = "verify".into();
+                r
+            })? {
+                input::Input::RawHex(b) => b,
+                input::Input::Psbt(bytes) => {
+                    let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
+                        Refusal::new(
+                            "verify",
+                            "§1.1",
+                            "the supplied PSBT does not parse",
+                            format!("{e}"),
+                        )
+                    })?;
+                    input::psbt_end_guard(bytes.len(), used, "verify")?;
+                    // Finalized, by §8.1's vocabulary: an unfinalized PSBT extracts
+                    // to a transaction with empty witnesses, whose txid is the same
+                    // but whose BYTES are not what was engraved. Comparing against
+                    // it would report a match for something unbroadcastable.
+                    validate::finalized_guard_psbt(&psbt).map_err(|r| {
+                        Refusal::new(
+                            "verify",
+                            "§1.1",
+                            "the supplied PSBT is not finalized",
+                            format!(
+                                "{} mt compares against the transaction a PSBT \
                              EXTRACTS to, and an unfinalized one extracts to \
                              something that cannot be broadcast.",
-                            r.verdict
-                        ),
-                    )
-                })?;
-                bitcoin::consensus::serialize(&psbt.extract_tx_unchecked_fee_rate())
-            }
-        };
-        // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
-        // reports a match for any transaction sharing those bits, and says so in
-        // the words "prove identity".
-        let want = txid_display(bytes, "verify")?;
-        let got = txid_display(&supplied, "verify")?;
-        if want != got {
-            return Err(Refusal::new(
-                "verify",
-                "§1.1",
-                "the supplied transaction is not the one on these strings",
-                format!(
-                    "The strings reassemble to txid {want}. The supplied \
+                                r.verdict
+                            ),
+                        )
+                    })?;
+                    bitcoin::consensus::serialize(&psbt.extract_tx_unchecked_fee_rate())
+                }
+            };
+            // The FULL 32-byte txid, never the 20-bit set id: a 20-bit compare
+            // reports a match for any transaction sharing those bits, and says so in
+            // the words "prove identity".
+            let want = txid_display(bytes, "verify", Subject::Set)?;
+            let got = txid_display(&supplied, "verify", Subject::Input)?;
+            if want != got {
+                return Err(Refusal::new(
+                    "verify",
+                    "§1.1",
+                    "the supplied transaction is not the one on these strings",
+                    format!(
+                        "The strings reassemble to txid {want}. The supplied \
                      transaction is {got}. These differ in the FULL txid, not \
                      merely in the 20-bit set id."
-                ),
-            ));
+                    ),
+                ));
+            }
+            return Ok(true);
         }
-        let _ = writeln!(stderr, "  --transaction matches, on the full txid.");
+        Ok(false)
+    })();
+    match compared {
+        Err(e) => {
+            transliteration_notices(&read, &mut stderr);
+            set_notices(&set, &mut stderr);
+            margin_report(&set.chunks, &read, &mut stderr);
+            return Err(e);
+        }
+        Ok(matched) => {
+            let _ = writeln!(
+                stderr,
+                "mt verify: OK — {} chunks, set {set_id:#07x}, transaction re-derives.",
+                set.chunks.len()
+            );
+            transliteration_notices(&read, &mut stderr);
+            set_notices(&set, &mut stderr);
+            margin_report(&set.chunks, &read, &mut stderr);
+            if matched {
+                let _ = writeln!(stderr, "  --transaction matches, on the full txid.");
+            }
+        }
     }
     Ok(())
+}
+
+/// Is this text an `mt1` set `inspect` should hand to the strings reader?
+///
+/// **Keyed on how the text, or one of its lines, STARTS**, never on a substring
+/// anywhere in it (P5 M-5: base64 PSBTs carry `mt1` by chance in about 6% of
+/// 4,000-character PSBTs). True iff the text with every whitespace character
+/// removed and ASCII-lowercased opens `mt1`, `mtl` or `mti`, or some line
+/// (`str::lines`, the unit `read_strings` splits on) does so. So grouped
+/// (`mt 1p ge`), `mtl`/`mti`-misread and elided-first-line sets are admitted,
+/// while a JSON-wrapped or damaged base64 PSBT that merely contains `mt1`
+/// inside a line keeps the sniffer's refusal.
+fn strings_subject(text: &str) -> bool {
+    let opens = |s: &str| {
+        let t: String = s
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        t.starts_with("mt1") || t.starts_with("mtl") || t.starts_with("mti")
+    };
+    opens(text) || text.lines().any(opens)
 }
 
 /// `mt inspect` over a RAW TRANSACTION (or a PSBT) rather than `mt1` strings.
@@ -1533,34 +1826,17 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 ///
 /// **The SET rows are absent, and that is correct**: there are no chunks here.
 /// A row reading "1 of 1" would claim a set that does not exist.
-/// Does this input open an `mt1` set? — P5 M-5.
-///
-/// **Keyed on how the input STARTS, which the codec guarantees**, not on a
-/// substring anywhere in it. The previous test was `contains("mt1")`,
-/// case-folded, over the whole text. Its comment argued that hex carries no
-/// `m`/`t` and that a base64 PSBT "begins `cHNidP8`" — both true, and neither
-/// is what `contains` tests. The base64 alphabet includes `m`, `M`, `t`, `T`
-/// and `1`, so the substring turns up by chance in roughly 6% of
-/// 4,000-character PSBTs, and every one of those was routed to the strings
-/// path and refused with a strings-shaped error instead of being inspected.
-///
-/// Leading whitespace is skipped because operators paste with it.
-fn looks_like_an_mt1_set(text: &str) -> bool {
-    text.trim_start().to_ascii_lowercase().starts_with("mt1")
-}
-
-fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
-    // The sniffing helpers were written for `encode` and hard-code that verb in
-    // every refusal they build. Left alone, an operator who typed `mt inspect`
-    // would be told about `mt encode` -- a different command, for the opposite
-    // direction of this journey.
-    let as_inspect = |mut r: Refusal| {
-        r.verb = "inspect".into();
-        r
-    };
-    let tx = match input::sniff(raw).map_err(as_inspect)? {
+fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Refusal> {
+    // `findings` and `psbt_state` stay empty for a raw transaction: it carries
+    // no UTXO record, so there is nothing to report (and no values).
+    let mut findings: Vec<validate::PsbtFinding> = Vec::new();
+    let mut values: Vec<Option<(u64, report::Provenance)>> = Vec::new();
+    let mut provisional = false;
+    // True where the report's txid has a legacy-malleable input (R4).
+    let mut has_legacy_psbt: Option<bool> = None;
+    let tx = match sniffed {
         input::Input::Psbt(bytes) => {
-            let psbt = bitcoin::Psbt::deserialize(&bytes).map_err(|e| {
+            let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                 Refusal::new(
                     "inspect",
                     "§8.2e",
@@ -1568,25 +1844,52 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
                     format!("Decoding the PSBT failed: {e}."),
                 )
             })?;
-            // `unsigned_tx`, not an extraction: the txid is identical either
-            // way (it is defined over exactly these bytes), and every row this
-            // report prints -- outputs, fee, locktime -- comes from them. An
-            // extraction would additionally require the PSBT to be finalized,
-            // which is a demand `inspect` has no reason to make of someone
-            // asking what a file contains.
-            psbt.unsigned_tx.clone()
+            input::psbt_end_guard(bytes.len(), used, "inspect")?;
+            // The EXTRACTED transaction (§10.13 c), not the unsigned template:
+            // a legacy or wrapped input's scriptSig is part of the txid, so the
+            // template's txid is not the transaction's. An unfinalized input
+            // extracts with an empty scriptSig and witness, which is the
+            // template's for that input, and `inspect` demands no finalization
+            // of someone asking what a file contains (Q1, Q2, Q3: it reports).
+            findings = validate::psbt_findings(&psbt);
+            values = (0..psbt.inputs.len())
+                .map(|n| psbt_record_value(&psbt, n))
+                .collect();
+            let prov = validate::provisional_inputs(&psbt);
+            provisional = !prov.is_empty();
+            let tx = psbt.clone().extract_tx_unchecked_fee_rate();
+            has_legacy_psbt = Some(
+                provisional || {
+                    (0..psbt.inputs.len()).any(|n| {
+                        validate::input_is_finalized(&psbt.inputs[n])
+                            && tx.input[n].witness.is_empty()
+                    })
+                },
+            );
+            tx
         }
-        input::Input::RawHex(bytes) => decode_tx(&bytes, "inspect")?,
+        input::Input::RawHex(bytes) => decode_tx(&bytes, "inspect", Subject::Input)?,
     };
     let txid = tx.compute_txid().to_string();
     let node = node::Node::find(&args.bitcoin_cli);
-    let r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
+    let claimed: Vec<(u32, u64, report::Provenance)> = values
+        .iter()
+        .enumerate()
+        .filter_map(|(n, v)| v.map(|(sats, p)| (n as u32, sats, p)))
+        .collect();
+    let mut r = report::Report::build(&tx, &txid, node.as_ref(), &claimed);
+    r.txid_provisional = provisional;
 
     let mut warnings: Vec<String> = Vec::new();
     // E4: the output-range warning is element 0 (JSON) and first on stderr (text).
     let range_warning = validate::output_range_warning(&tx);
     if let Some(w) = &range_warning {
         warnings.push(w.headline.clone());
+    }
+    // Q1/Q2/Q3, in `encode`'s guard order, before the no-node warning.
+    let finding_texts: Vec<(String, String)> = findings.iter().map(finding_texts).collect();
+    for (_, j) in &finding_texts {
+        warnings.push(j.clone());
     }
     if node.is_none() {
         warnings
@@ -1624,6 +1927,10 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
         let _ = writeln!(stderr);
         let _ = write!(stderr, "{w}");
     }
+    for (t, _) in &finding_texts {
+        let _ = writeln!(stderr);
+        let _ = write!(stderr, "{t}");
+    }
     if node.is_none() {
         let _ = writeln!(stderr);
         let _ = write!(
@@ -1632,7 +1939,8 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
             report::no_node_warning(
                 &locktime::read(&tx),
                 &txid,
-                tx.input.iter().any(|i| i.witness.is_empty()),
+                has_legacy_psbt.unwrap_or_else(|| tx.input.iter().any(|i| i.witness.is_empty())),
+                r.fee.is_some(),
                 // NOT Strings: this operator supplied bytes. Telling them mt
                 // "read this transaction from the strings" describes a step
                 // they did not take, on the one screen a recoverer reads in a
@@ -1659,33 +1967,39 @@ fn inspect_transaction(raw: &[u8], args: &ReadArgs) -> Result<(), Refusal> {
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "inspect")?;
-    let text = read_input(&args.r#in, argv_material, "inspect")?;
-    // WALK O -- `mt inspect` GAINS A RAW-TRANSACTION SUBJECT.
-    //
-    // The post-cut test is "scan the QR, then run `mt inspect` on what you
-    // get", and what a scanner hands back is the raw transaction, not `mt1`
-    // strings. Without this branch the device instructs a step no verb can
-    // perform.
-    //
-    // THE DISCRIMINATOR IS THE LITERAL `mt1`, AND IT IS SAFE BY A BECH32
-    // PROPERTY: the data charset `qpzry9x8gf2tvdw0s3jn54khce6mua7l` excludes
-    // `1`, `b`, `i` and `o`, so `1` occurs in an `mt1` string ONLY as the HRP
-    // separator -- and a hex transaction contains no `m` or `t` at all, while a
-    // base64 PSBT begins `cHNidP8`.
-    //
-    // EMPTY INPUT STAYS ON THE STRINGS PATH: "no strings found in the input"
-    // is the better sentence for it than anything the sniffer would produce,
-    // and routing it here would trade a good message for a worse one.
-    if !text.trim().is_empty() && !looks_like_an_mt1_set(&text) {
-        return inspect_transaction(text.as_bytes(), &args);
-    }
+    // `inspect` reads BYTES and routes on what they ARE (I5, I6), in order:
+    // empty input stays on the strings path ("no strings found in the input"
+    // beats anything the sniffer would say); whatever §8.2e's sniff recognises
+    // (a PSBT by magic or decoding, or raw hex -- an `mt1` set is never either:
+    // it carries `m` and `t` and never decodes to `psbt\xff`) is a transaction
+    // subject; otherwise UTF-8 text that opens like a set goes to the strings
+    // reader; otherwise the sniffer's own refusal, naming `inspect`.
+    let bytes = read_input_bytes(&args.r#in, argv_material, "inspect")?;
+    let text = if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+        input_text(bytes, "inspect")?
+    } else {
+        match input::sniff(&bytes) {
+            Ok(sniffed) => return inspect_transaction(sniffed, &args),
+            Err(refusal) => match String::from_utf8(bytes) {
+                Ok(text) if strings_subject(&text) => text,
+                // The sniffing helpers hard-code `encode` in every refusal
+                // they build; an operator who typed `mt inspect` is told
+                // about `inspect`.
+                _ => {
+                    let mut r = refusal;
+                    r.verb = "inspect".into();
+                    return Err(r);
+                }
+            },
+        }
+    };
     let read = read_strings::read(&text, "inspect")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
 
-    let tx = decode_tx(&set.bytes, "inspect")?;
+    let tx = decode_tx(&set.bytes, "inspect", Subject::Set)?;
     let txid = tx.compute_txid().to_string();
 
     // §6a: the node is consulted AUTOMATICALLY when one is reachable. The
@@ -1695,7 +2009,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
 
     let mut r = report::Report::build(&tx, &txid, node.as_ref(), &[]);
     r.set = Some((set.chunks.len(), set.chunks.len()));
-    r.set_prefix = pipeline::invariant_prefix(&strings[0]).ok();
+    r.set_prefix = Some(set.chunks[0].invariant_prefix.clone());
 
     let mut warnings: Vec<String> = Vec::new();
     // E4: the output-range warning is element 0 (JSON) and first on stderr (text).
@@ -1707,11 +2021,8 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         warnings
             .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
     }
-    for n in &read.notes {
-        warnings.push(format!(
-            "pos {}: you typed {}, mt read it as {}",
-            n.position, n.from, n.to
-        ));
+    for (pos, from, to) in printed_notes(&read) {
+        warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
     }
     for u in &set.unreadable {
         warnings.push(format!(
@@ -1761,13 +2072,14 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
                 &locktime::read(&tx),
                 &txid,
                 tx.input.iter().any(|i| i.witness.is_empty()),
+                false,
                 report::ReadFrom::Strings,
             )
         );
     }
     transliteration_notices(&read, &mut std::io::stderr());
     set_notices(&set, &mut std::io::stderr());
-    margin_report(&set.chunks, &mut std::io::stderr());
+    margin_report(&set.chunks, &read, &mut std::io::stderr());
     Ok(())
 }
 
@@ -1945,11 +2257,13 @@ fn content_id_guard(
     verb: &str,
 ) -> Result<(), Refusal> {
     let expected = chunks[0].header.chunk_set_id;
-    let txid = txid_display(bytes, verb)?;
+    let (txid, used) = txid_partial(bytes, verb)?;
     let derived = pipeline::content_id_from_txid_display(&txid)
         .map_err(|e| Refusal::new(verb, "§1.1", "cannot derive the content id", format!("{e}")))?;
     if derived == expected {
-        return Ok(());
+        // Content id first (a mismatch is the louder fault); bytes left after
+        // the transaction are refused only once the id has matched (bh-mt-I1).
+        return set_end_guard(bytes.len(), used, verb);
     }
 
     // THE MARGIN REPORT IS ALREADY THE SUSPECT LIST. Miscorrection risk rises
@@ -2140,21 +2454,72 @@ fn txid_of(tx: &bitcoin::Transaction) -> String {
     tx.compute_txid().to_string()
 }
 
+/// Parse one PSBT from the front of `bytes`; returns it and the bytes it used.
+fn psbt_exact(bytes: &[u8]) -> Result<(bitcoin::Psbt, usize), bitcoin::psbt::Error> {
+    let mut cur = bytes;
+    let psbt = bitcoin::Psbt::deserialize_from_reader(&mut cur)?;
+    Ok((psbt, bytes.len() - cur.len()))
+}
+
+/// Whose bytes a transaction parse reads: the holder's input, or a set's.
+#[derive(Clone, Copy)]
+enum Subject {
+    Input,
+    Set,
+}
+
+/// bh-mt-I1, recovery half: the reassembled bytes must END with the transaction.
+fn set_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal> {
+    if used == total {
+        return Ok(());
+    }
+    let n = total - used;
+    Err(Refusal::new(
+        verb,
+        "§1.1",
+        format!(
+            "the reassembled bytes continue for {n} byte{} after the end of the transaction",
+            if n == 1 { "" } else { "s" }
+        ),
+        format!(
+            "Every checksum held and the strings reassemble, but the bytes are one \
+             complete transaction ({used} byte{}) followed by {n} more. mt encode \
+             never writes bytes after the transaction, so these strings were not \
+             made by mt encode from one transaction. mt will not print or vouch \
+             for a transaction while bytes it cannot account for ride along.",
+            if used == 1 { "" } else { "s" }
+        ),
+    )
+    .with_remedy(
+        "Find out which tool made these strings before trusting anything \
+         recovered from them.",
+    ))
+}
+
+fn end_guard(subject: Subject, total: usize, used: usize, verb: &str) -> Result<(), Refusal> {
+    match subject {
+        Subject::Input => input::tx_end_guard(total, used, verb),
+        Subject::Set => set_end_guard(total, used, verb),
+    }
+}
+
 /// Decode raw bytes into a transaction, with a refusal that names the problem.
-fn decode_tx(bytes: &[u8], verb: &str) -> Result<bitcoin::Transaction, Refusal> {
-    use bitcoin::consensus::Decodable;
-    bitcoin::Transaction::consensus_decode(&mut &bytes[..]).map_err(|e| {
-        Refusal::new(
-            verb,
-            "§8.2e",
-            "the reassembled bytes are not a Bitcoin transaction",
-            format!(
-                "The strings reassembled cleanly, but the result does not parse: \
+fn decode_tx(bytes: &[u8], verb: &str, subject: Subject) -> Result<bitcoin::Transaction, Refusal> {
+    let (tx, used) = bitcoin::consensus::encode::deserialize_partial::<bitcoin::Transaction>(bytes)
+        .map_err(|e| {
+            Refusal::new(
+                verb,
+                "§8.2e",
+                "the reassembled bytes are not a Bitcoin transaction",
+                format!(
+                    "The strings reassembled cleanly, but the result does not parse: \
                  {e}. Every checksum held, so this is not miscut steel — it is \
                  more likely a chunk from a different set."
-            ),
-        )
-    })
+                ),
+            )
+        })?;
+    end_guard(subject, bytes.len(), used, verb)?;
+    Ok(tx)
 }
 
 /// Parse `--input-value <index>:<amount>`.
@@ -2340,32 +2705,38 @@ fn parse_btc(v: &str) -> Result<u64, Refusal> {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_an_mt1_set;
+    use super::strings_subject;
 
-    /// P5 M-5 — the inspect routing predicate, pinned directly.
-    ///
-    /// A unit test rather than a CLI one on purpose: constructing a base64 PSBT
-    /// that is BOTH valid and contains "mt1" is fixture gymnastics, and the
-    /// defect is entirely in this predicate.
+    /// P5 M-5 and review r1 I1 -- the inspect routing predicate, pinned
+    /// directly. A unit test rather than a CLI one on purpose: constructing a
+    /// base64 PSBT that is BOTH valid and contains "mt1" is fixture gymnastics,
+    /// and the defect is entirely in this predicate.
     #[test]
-    fn an_mt1_set_is_recognised_by_how_it_starts_not_by_a_substring() {
-        assert!(looks_like_an_mt1_set("mt1qqqqq"));
+    fn strings_subject_admits_recoverable_sets_only() {
+        assert!(strings_subject("mt1qqqqq"));
         assert!(
-            looks_like_an_mt1_set("  \n mt1qqqqq"),
+            strings_subject("  \n mt1qqqqq"),
             "operators paste with leading whitespace"
         );
-        assert!(looks_like_an_mt1_set("MT1QQQQQ"), "case-folded");
+        assert!(strings_subject("MT1QQQQQ"), "case-folded");
+        assert!(strings_subject("mt 1q qq"), "grouped");
+        assert!(
+            strings_subject("qqqq\nmt1qq"),
+            "elided first line, via its second line"
+        );
+        assert!(strings_subject("mtlqqqq"));
+        assert!(strings_subject("mtiqqqq"));
 
         // THE DEFECT: base64's alphabet contains m, M, t, T and 1, so a PSBT
-        // body turns up the substring by chance and was routed to the strings
-        // path and refused with a strings-shaped error.
-        assert!(
-            !looks_like_an_mt1_set("cHNidP8BAHsCAAAAmt1AAAAA"),
-            "a PSBT that merely CONTAINS mt1 is not a set"
-        );
-        assert!(
-            !looks_like_an_mt1_set(""),
-            "empty stays on the strings path"
-        );
+        // body turns up the substring by chance. `mt1` inside a line is not a
+        // set.
+        assert!(!strings_subject("cHNidP8BAHsCAAAAmt1AAAAA"));
+        assert!(!strings_subject(
+            "{\n \"psbt\": \"cHNidP8BAHUCAAAAmt1AAAAA\"\n}"
+        ));
+        assert!(!strings_subject("HNidP8BAHUCAAAAmt1AAAAA"));
+        assert!(!strings_subject("hello"));
+        assert!(!strings_subject("abababa"));
+        assert!(!strings_subject(""), "empty stays on the strings path");
     }
 }

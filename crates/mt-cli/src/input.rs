@@ -29,8 +29,10 @@ pub enum Input {
 
 /// The PSBT magic, `psbt\xff`.
 const PSBT_MAGIC: &[u8] = b"psbt\xff";
-/// Base64 PSBTs always begin here — it is `psbt\xff` in base64.
-const PSBT_BASE64_PREFIX: &str = "cHNidP8";
+/// Every base64 PSBT begins here: the 36 bits of `psbt\xff` that do not depend
+/// on the byte after the magic (bh-mt-I20). A candidate filter only; base64 is
+/// RECOGNISED by decoding (T23).
+pub(crate) const PSBT_BASE64_STEM: &str = "cHNidP";
 
 /// Sniff, in the order §8.2e rules.
 pub fn sniff(raw: &[u8]) -> Result<Input, Refusal> {
@@ -46,24 +48,17 @@ pub fn sniff(raw: &[u8]) -> Result<Input, Refusal> {
     //    exports at 64 or 76 columns are handled.
     let text: String = match core::str::from_utf8(trimmed) {
         Ok(s) => s.chars().filter(|c| !c.is_whitespace()).collect(),
-        Err(_) => return Err(unrecognised(trimmed)),
+        Err(_) => {
+            recognised_guard(false, trimmed)?;
+            unreachable!("recognised_guard(false, ..) returns Err")
+        }
     };
 
-    //    (a) base64 PSBT
-    if text.starts_with(PSBT_BASE64_PREFIX) {
-        return match base64_decode(&text) {
-            Some(bytes) if bytes.starts_with(PSBT_MAGIC) => Ok(Input::Psbt(bytes)),
-            _ => Err(Refusal::new(
-                "encode",
-                "§8.2e",
-                "input looks like a base64 PSBT but does not decode",
-                "The `cHNidP8` prefix marks a base64-encoded PSBT, but decoding it \
-                 did not yield the `psbt\\xff` magic. The text is probably truncated \
-                 or has had characters altered in transit.",
-            )
-            .with_remedy("Re-export the PSBT and pass the file with --in.")),
-        };
+    //    (a) base64 PSBT -- recognised by DECODING (T23), then the magic.
+    if let Some(bytes) = base64_decode(&text).filter(|b| b.starts_with(PSBT_MAGIC)) {
+        return Ok(Input::Psbt(bytes));
     }
+    base64_psbt_guard(&text)?;
 
     //    (b) raw hex — optional 0x, any case, even length
     let hex_body = text
@@ -164,7 +159,7 @@ fn unrecognised(bytes: &[u8]) -> Refusal {
         ),
         format!(
             "mt accepts a binary PSBT (magic `psbt\\xff`), a base64 PSBT (beginning \
-             `cHNidP8`), or a raw signed transaction as hex. This input begins {head} \
+             `cHNidP`), or a raw signed transaction as hex. This input begins {head} \
              and matches none of them."
         ),
     )
@@ -228,6 +223,77 @@ wrapper it did not ask for is how a mislabelled artifact reaches steel.",
     )
 }
 
+/// bh-mt-I2/I20: text that begins like a base64 PSBT but is not one clean
+/// base64 text decoding to the magic.
+pub fn base64_psbt_guard(text: &str) -> Result<(), Refusal> {
+    if !text.starts_with(PSBT_BASE64_STEM) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        "encode",
+        "§8.2e",
+        "input looks like a base64 PSBT but does not decode",
+        "The text begins `cHNidP`, as every base64-encoded PSBT does, but it is \
+         not one clean base64 text that decodes to the `psbt\\xff` magic: it holds \
+         a character outside the base64 alphabet, a `=` before its end, text after \
+         its padding, the wrong amount of padding, one character left over at its \
+         end, or a last character whose spare bits are not zero; or it decodes \
+         cleanly to bytes that do not begin with the magic. It is probably \
+         truncated, joined to something else, or has had characters altered in \
+         transit.",
+    )
+    .with_remedy("Re-export the PSBT and pass the file with --in."))
+}
+
+fn plural_bytes(n: usize) -> String {
+    format!("{n} byte{}", if n == 1 { "" } else { "s" })
+}
+
+/// bh-mt-I2: a PSBT parsed from the front of the input must END the input.
+pub fn psbt_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal> {
+    if used == total {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§8.2e",
+        format!(
+            "the input continues for {} after the end of the PSBT",
+            plural_bytes(total - used)
+        ),
+        format!(
+            "The input parses as one complete PSBT ({}) and does not stop there. \
+             mt reads exactly one PSBT per input. It will not use the first one \
+             and drop the rest, because the rest may be the PSBT you meant.",
+            plural_bytes(used)
+        ),
+    )
+    .with_remedy("Pass a file that holds exactly one PSBT."))
+}
+
+/// bh-mt-I1: a transaction parsed from the front of the input must END it.
+pub fn tx_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal> {
+    if used == total {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§8.2e",
+        format!(
+            "the input continues for {} after the end of the transaction",
+            plural_bytes(total - used)
+        ),
+        format!(
+            "The hex parses as one complete transaction ({}) and does not stop \
+             there. mt reads exactly one transaction per input. It will not use \
+             the first one and drop the rest, because the rest may be the \
+             transaction you meant.",
+            plural_bytes(used)
+        ),
+    )
+    .with_remedy("Pass a file that holds exactly one transaction."))
+}
+
 fn trim_outer(raw: &[u8]) -> &[u8] {
     let start = raw
         .iter()
@@ -251,14 +317,25 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Canonical base64 (RFC 4648 section 4 alphabet): `Some` iff `s` is exactly the
+/// encoding of the returned bytes -- padded when `s` holds any `=`, unpadded
+/// when it holds none. Anything a lenient decoder would drop is refused.
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let body = s.trim_end_matches('=');
+    let pad = s.len() - body.len();
+    if pad > 2 || (pad > 0 && s.len() % 4 != 0) || body.len() % 4 == 1 {
+        return None;
+    }
+    if pad > 0 && (body.len() + pad) % 4 != 0 {
+        return None;
+    }
+    if pad > 0 && (4 - body.len() % 4) % 4 != pad {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.bytes() {
-        if c == b'=' {
-            break;
-        }
+    for c in body.bytes() {
         let v = TABLE.iter().position(|&t| t == c)? as u32;
         acc = (acc << 6) | v;
         bits += 6;
@@ -266,6 +343,9 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
             bits -= 8;
             out.push(((acc >> bits) & 0xFF) as u8);
         }
+    }
+    if acc & ((1 << bits) - 1) != 0 {
+        return None;
     }
     Some(out)
 }

@@ -1,0 +1,837 @@
+//! Bughunt 2026-11-19 FIX-D, inspect routing (design/FIX_bh1119_mt_inspect_routing.md).
+//!
+//! Keys: bh-mt-I3 (inspect reports a finalized PSBT's unsigned template and
+//! drops its input values), bh-mt-I5 (inspect refuses a binary PSBT as "not
+//! text" before sniffing it), bh-mt-I6 (inspect routes on how the whole input
+//! starts, so grouped, `mtl`-typo and elided-first-line sets are refused).
+//!
+//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
+//! the public fixtures `tests/fixtures/p5_base.json` and the corpus vectors in
+//! `mt-codec/src/test_vectors/mt1_v1.json`. The rows marked Q1 and Q2 follow
+//! Brian's ruling of 2026-11-23 (inspect reports an unsigned PSBT, with a
+//! PROVISIONAL txid where signing changes it, and reports a mismatched
+//! `non_witness_utxo` as UNVERIFIED with a fee-loss warning). The rows marked
+//! Q3 and Q4 follow Brian's ruling of 2026-11-24 (inspect reports a
+//! `non_witness_utxo` with no output at the input's vout, with a warning, and
+//! every encode path refuses it; every report JSON carries `txid_provisional`).
+
+use assert_cmd::Command;
+use bitcoin::consensus::deserialize;
+use std::io::Write;
+
+const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+
+fn mt() -> Command {
+    Command::cargo_bin("mt").unwrap()
+}
+
+fn json(path: &str) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn base() -> serde_json::Value {
+    json(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/p5_base.json"
+    ))
+}
+
+fn vector(label: &str) -> serde_json::Value {
+    let v = json(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../mt-codec/src/test_vectors/mt1_v1.json"
+    ));
+    v["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["label"] == label)
+        .unwrap()
+        .clone()
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    let s = s.trim();
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn b64(bytes: &[u8]) -> String {
+    let mut s = String::new();
+    for c in bytes.chunks(3) {
+        let n = ((c[0] as u32) << 16)
+            | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+            | (*c.get(2).unwrap_or(&0) as u32);
+        for i in 0..4 {
+            if i <= c.len() {
+                s.push(B64[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
+}
+
+fn unb64(s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.trim().bytes().filter(|&c| c != b'=') {
+        acc = (acc << 6) | B64.iter().position(|&t| t == c).unwrap() as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
+}
+
+/// p5's finalized native-segwit PSBT (2 inputs, both with a non_witness_utxo).
+fn p5_b64() -> String {
+    base()["finalized_psbt_b64"].as_str().unwrap().to_string()
+}
+
+/// p5's txid (`encode` on the same PSBT prints it).
+const P5_TXID: &str = "4665e0aa2a97dee3e53fd2eaab0942abc0fef2339e730458ceedcda400d708c3";
+
+/// The corpus `even` set, one string per line, and its txid.
+fn even_lines() -> Vec<String> {
+    vector("even")["strings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn even_txid() -> String {
+    vector("even")["txid"].as_str().unwrap().to_string()
+}
+
+/// What a legacy PSBT row needs.
+#[derive(Clone, Copy)]
+enum Legacy {
+    /// Finalized; the parent as `non_witness_utxo` (value TXID-BOUND).
+    Bound,
+    /// Finalized; only a `witness_utxo` (value PSBT-CLAIMED).
+    Claimed,
+    /// NOT finalized; the parent as `non_witness_utxo` (Q1).
+    Unfinalized,
+    /// Finalized; a `non_witness_utxo` that is NOT the parent (Q2): the
+    /// parent with the spent output lowered to `WRONG_RECORD_SATS`, the
+    /// hidden-fee shape (the PSBT shows a 1,000-sat fee; the real one is
+    /// 100,000).
+    WrongRecord,
+    /// NOT finalized, and the `WrongRecord` record (Q1 and Q2 together, M1).
+    UnfinalizedWrongRecord,
+    /// Finalized; spends output 99 of the parent, which the (matching)
+    /// `non_witness_utxo` does not have (Q3).
+    ShortRecord,
+}
+
+/// The amount the `WrongRecord` record claims for the spent output.
+const WRONG_RECORD_SATS: u64 = 999_901_000;
+
+/// A one-input legacy PSBT spending p5's P2PKH fixture output, paying 0.001
+/// BTC fee. Mirrors `tests/legacy.rs::legacy_psbt`.
+fn legacy_psbt(kind: Legacy) -> bitcoin::Psbt {
+    let v = base();
+    let prev: bitcoin::Transaction =
+        deserialize(&hex(v["legacy_parent_hex"].as_str().unwrap())).unwrap();
+    let vout = v["legacy_parent_vout"].as_u64().unwrap() as u32;
+    let value = prev.output[vout as usize].value;
+    let unsigned = bitcoin::Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: bitcoin::absolute::LockTime::ZERO,
+        input: vec![bitcoin::TxIn {
+            previous_output: bitcoin::OutPoint {
+                txid: prev.compute_txid(),
+                vout: if matches!(kind, Legacy::ShortRecord) {
+                    99
+                } else {
+                    vout
+                },
+            },
+            script_sig: bitcoin::ScriptBuf::new(),
+            sequence: bitcoin::Sequence(0xFFFF_FFFD),
+            witness: bitcoin::Witness::new(),
+        }],
+        output: vec![bitcoin::TxOut {
+            value: value - bitcoin::Amount::from_sat(100_000),
+            script_pubkey: prev.output[vout as usize].script_pubkey.clone(),
+        }],
+    };
+    let mut sig = vec![0x30, 0x44, 0x02, 0x20];
+    sig.extend(std::iter::repeat_n(0x11u8, 32));
+    sig.extend_from_slice(&[0x02, 0x20]);
+    sig.extend(std::iter::repeat_n(0x22u8, 32));
+    sig.push(0x01); // SIGHASH_ALL
+    let mut pk = vec![0x02u8];
+    pk.extend(std::iter::repeat_n(0x33u8, 32));
+    let script_sig = bitcoin::script::Builder::new()
+        .push_slice::<&bitcoin::script::PushBytes>((&sig[..]).try_into().unwrap())
+        .push_slice::<&bitcoin::script::PushBytes>((&pk[..]).try_into().unwrap())
+        .into_script();
+    let mut psbt = bitcoin::Psbt::from_unsigned_tx(unsigned).unwrap();
+    if !matches!(kind, Legacy::Unfinalized | Legacy::UnfinalizedWrongRecord) {
+        psbt.inputs[0].final_script_sig = Some(script_sig);
+    }
+    match kind {
+        Legacy::Bound | Legacy::Unfinalized | Legacy::ShortRecord => {
+            psbt.inputs[0].non_witness_utxo = Some(prev)
+        }
+        Legacy::Claimed => psbt.inputs[0].witness_utxo = Some(prev.output[vout as usize].clone()),
+        Legacy::WrongRecord | Legacy::UnfinalizedWrongRecord => {
+            let mut fake = prev;
+            fake.output[vout as usize].value = bitcoin::Amount::from_sat(WRONG_RECORD_SATS);
+            psbt.inputs[0].non_witness_utxo = Some(fake);
+        }
+    }
+    psbt
+}
+
+fn extracted_txid(psbt: &bitcoin::Psbt) -> String {
+    psbt.clone()
+        .extract_tx_unchecked_fee_rate()
+        .compute_txid()
+        .to_string()
+}
+
+struct Run {
+    code: Option<i32>,
+    out: String,
+    err: String,
+}
+
+fn run(verb: &str, extra: &[&str], stdin: &[u8]) -> Run {
+    let o = mt()
+        .args([verb, "--bitcoin-cli", OFFLINE])
+        .args(extra)
+        .write_stdin(stdin.to_vec())
+        .output()
+        .unwrap();
+    Run {
+        code: o.status.code(),
+        out: String::from_utf8_lossy(&o.stdout).into_owned(),
+        err: String::from_utf8_lossy(&o.stderr).into_owned(),
+    }
+}
+
+/// `inspect --in <file holding bytes>`.
+fn run_in(extra: &[&str], bytes: &[u8]) -> Run {
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(bytes).unwrap();
+    f.flush().unwrap();
+    let o = mt()
+        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .args(extra)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap();
+    Run {
+        code: o.status.code(),
+        out: String::from_utf8_lossy(&o.stdout).into_owned(),
+        err: String::from_utf8_lossy(&o.stderr).into_owned(),
+    }
+}
+
+fn accepted(r: &Run) {
+    assert_eq!(r.code, Some(0), "expected exit 0\nstderr:\n{}", r.err);
+}
+
+/// Exit 1, nothing on stdout, and stderr's first line is
+/// `mt <verb>: REFUSED — <rest>`. Rows name the section and verdict only.
+fn refused(r: &Run, verb: &str, rest: &str) {
+    let first_line = format!("mt {verb}: REFUSED — {rest}");
+    assert_eq!(r.code, Some(1), "expected exit 1\nstderr:\n{}", r.err);
+    assert!(
+        r.out.is_empty(),
+        "a refusal writes nothing on stdout:\n{}",
+        r.out
+    );
+    assert_eq!(
+        r.err.lines().next().unwrap_or(""),
+        first_line,
+        "stderr:\n{}",
+        r.err
+    );
+}
+
+fn doc(r: &Run) -> serde_json::Value {
+    serde_json::from_str(&r.out).unwrap_or_else(|e| panic!("not JSON ({e}):\n{}", r.out))
+}
+
+fn line<'a>(text: &'a str, head: &str) -> &'a str {
+    text.lines()
+        .find(|l| l.starts_with(head))
+        .unwrap_or_else(|| panic!("no {head:?} line in:\n{text}"))
+}
+
+/// `mt encode` of p5 to strings, grouped. Owner-only stdout is not needed:
+/// assert_cmd captures stdout through a pipe, not a file.
+fn p5_grouped(size: &str) -> Vec<u8> {
+    let o = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--group-size", size])
+        .write_stdin(p5_b64())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        !o.stdout.starts_with(b"mt1"),
+        "grouping did not split `mt1`"
+    );
+    o.stdout
+}
+
+const NO_NODE_FEE_UNKNOWN: &str = "           - what fee does it pay?                             UNKNOWN\n             (the fee needs input values, which are not in the tx)\n";
+const NO_NODE_FEE_FROM_PSBT: &str = "           - what fee does it pay?                             FROM THE PSBT\n             (the PSBT's own input records give it: see the FEE row)\n";
+const LEGACY_CAVEAT: &str = "IF AN EXPLORER SAYS THIS TXID DOES NOT EXIST";
+/// Q1 texts (PROPOSED).
+const PROVISIONAL_TX: &str = "(PROVISIONAL — changes when the PSBT is signed)";
+const Q1_PROVISIONAL_ONE: &str =
+    "this PSBT is not finalized (1 of 1 inputs: input 0), so TX is PROVISIONAL.";
+
+// ── I3: a finalized PSBT is reported as its extracted transaction ──────────
+
+#[test]
+fn bh1119_mt_i3_inspect_reports_the_extracted_txid_of_a_legacy_psbt() {
+    let psbt = legacy_psbt(Legacy::Bound);
+    let want = extracted_txid(&psbt);
+    assert_ne!(
+        want,
+        psbt.unsigned_tx.compute_txid().to_string(),
+        "fixture: a legacy input's scriptSig is part of the txid"
+    );
+    let r = run("inspect", &["--json"], b64(&psbt.serialize()).as_bytes());
+    accepted(&r);
+    assert_eq!(doc(&r)["txid"], want.as_str());
+    // Q4 (ruled): every report carries the key.
+    assert_eq!(doc(&r)["txid_provisional"], false);
+}
+
+#[test]
+fn bh1119_mt_i3_inspect_json_carries_a_txid_bound_value_and_fee() {
+    let r = run(
+        "inspect",
+        &["--json"],
+        b64(&legacy_psbt(Legacy::Bound).serialize()).as_bytes(),
+    );
+    accepted(&r);
+    let d = doc(&r);
+    assert_eq!(d["fee"]["sats"], 100_000);
+    assert_eq!(d["fee"]["verified"], true);
+    assert_eq!(d["inputs"][0]["sats"], 1_000_000_000u64);
+    assert_eq!(d["inputs"][0]["provenance"], "TxidBound");
+}
+
+#[test]
+fn bh1119_mt_i3_inspect_json_labels_a_witness_utxo_value_psbt_claimed() {
+    let r = run(
+        "inspect",
+        &["--json"],
+        b64(&legacy_psbt(Legacy::Claimed).serialize()).as_bytes(),
+    );
+    accepted(&r);
+    let d = doc(&r);
+    assert_eq!(d["fee"]["sats"], 100_000);
+    assert_eq!(d["fee"]["verified"], false);
+    assert_eq!(d["inputs"][0]["provenance"], "PsbtClaimed");
+}
+
+#[test]
+fn bh1119_mt_i3_inspect_and_encode_agree_on_a_legacy_psbt() {
+    let text = b64(&legacy_psbt(Legacy::Bound).serialize());
+    let i = run("inspect", &[], text.as_bytes());
+    accepted(&i);
+    let o = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .write_stdin(text)
+        .output()
+        .unwrap();
+    let e = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(o.status.success(), "{e}");
+    for head in ["TX ", "FEE ", "INPUTS "] {
+        assert_eq!(line(&i.out, head), line(&e, head), "row {head:?}");
+    }
+    // The one input row, the line after INPUTS.
+    let after = |t: &str| {
+        let mut it = t.lines().skip_while(|l| !l.starts_with("INPUTS "));
+        it.next();
+        it.next().unwrap_or("").to_string()
+    };
+    assert_eq!(after(&i.out), after(&e));
+    assert!(after(&i.out).ends_with("TXID-BOUND"), "{}", i.out);
+}
+
+#[test]
+fn bh1119_mt_i3_inspect_reports_p5_input_values_offline() {
+    let r = run("inspect", &[], p5_b64().as_bytes());
+    accepted(&r);
+    assert_eq!(line(&r.out, "TX "), format!("TX        {P5_TXID}"));
+    assert_eq!(line(&r.out, "FEE "), "FEE       0.00100000 BTC");
+    assert!(
+        r.out
+            .contains("d13d7cbbd0b32d3d…   3.00000000 BTC   TXID-BOUND"),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out
+            .contains("b6c8e4075b8481b7…   5.00000000 BTC   TXID-BOUND"),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn bh1119_mt_i3_no_node_warning_follows_a_fee_known_from_the_psbt() {
+    let r = run("inspect", &[], p5_b64().as_bytes());
+    accepted(&r);
+    assert!(r.err.contains(NO_NODE_FEE_FROM_PSBT), "stderr:\n{}", r.err);
+    assert!(!r.err.contains(NO_NODE_FEE_UNKNOWN), "stderr:\n{}", r.err);
+}
+
+/// Control: no values, so the fee lines are unchanged.
+#[test]
+fn bh1119_mt_i3_no_node_warning_keeps_unknown_fee_for_raw_hex() {
+    let r = run(
+        "inspect",
+        &[],
+        base()["raw_hex"].as_str().unwrap().as_bytes(),
+    );
+    accepted(&r);
+    assert!(r.err.contains(NO_NODE_FEE_UNKNOWN), "stderr:\n{}", r.err);
+}
+
+#[test]
+fn bh1119_mt_i3_segwit_psbt_omits_the_legacy_caveat() {
+    let r = run("inspect", &[], p5_b64().as_bytes());
+    accepted(&r);
+    assert!(!r.err.contains(LEGACY_CAVEAT), "stderr:\n{}", r.err);
+}
+
+/// Control: a legacy input still gets the caveat.
+#[test]
+fn bh1119_mt_i3_legacy_psbt_keeps_the_legacy_caveat() {
+    let r = run(
+        "inspect",
+        &[],
+        b64(&legacy_psbt(Legacy::Bound).serialize()).as_bytes(),
+    );
+    accepted(&r);
+    assert!(r.err.contains(LEGACY_CAVEAT), "stderr:\n{}", r.err);
+}
+
+/// Q1 (ruled): an unfinalized legacy PSBT is REPORTED, and its TX row is
+/// labelled PROVISIONAL, because signing puts the signature in the scriptSig,
+/// which is part of the txid.
+#[test]
+fn bh1119_mt_i3_inspect_reports_an_unfinalized_legacy_psbt_with_a_provisional_txid() {
+    let psbt = legacy_psbt(Legacy::Unfinalized);
+    let unsigned = psbt.unsigned_tx.compute_txid().to_string();
+    let text = b64(&psbt.serialize());
+    let r = run("inspect", &[], text.as_bytes());
+    accepted(&r);
+    assert_eq!(
+        line(&r.out, "TX "),
+        format!("TX        {unsigned}   {PROVISIONAL_TX}")
+    );
+    assert!(
+        r.err.contains(&format!("WARNING: {Q1_PROVISIONAL_ONE}\n")),
+        "stderr:\n{}",
+        r.err
+    );
+    assert!(r.err.contains(LEGACY_CAVEAT), "stderr:\n{}", r.err);
+    let j = run("inspect", &["--json"], text.as_bytes());
+    accepted(&j);
+    let d = doc(&j);
+    assert_eq!(d["txid"], unsigned.as_str());
+    assert_eq!(d["txid_provisional"], true);
+    assert!(
+        d["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w == Q1_PROVISIONAL_ONE),
+        "{d}"
+    );
+}
+
+/// Q1 (ruled): an unfinalized native-segwit PSBT is reported with its real
+/// txid (signing does not change it), and says it is not finalized.
+#[test]
+fn bh1119_mt_i3_inspect_reports_an_unfinalized_segwit_psbt_with_its_real_txid() {
+    let text = base()["unfinalized_psbt_b64"].as_str().unwrap().to_string();
+    let r = run("inspect", &[], text.as_bytes());
+    accepted(&r);
+    assert_eq!(line(&r.out, "TX "), format!("TX        {P5_TXID}"));
+    assert!(
+        r.err
+            .contains("WARNING: this PSBT is not finalized (2 of 2 inputs: input 0, 1).\n"),
+        "stderr:\n{}",
+        r.err
+    );
+    assert!(!r.err.contains("PROVISIONAL"), "stderr:\n{}", r.err);
+    assert!(!r.err.contains(LEGACY_CAVEAT), "stderr:\n{}", r.err);
+    let j = run("inspect", &["--json"], text.as_bytes());
+    accepted(&j);
+    assert_eq!(doc(&j)["txid_provisional"], false);
+}
+
+/// Q2 (ruled): a non_witness_utxo that is not the parent is REPORTED, its
+/// value and the fee UNVERIFIED (never TXID-BOUND), with the fee-loss warning
+/// and the per-input `bitcoin-cli gettxout` check.
+#[test]
+fn bh1119_mt_i3_inspect_reports_a_non_witness_utxo_that_is_not_the_parent_as_unverified() {
+    let psbt = legacy_psbt(Legacy::WrongRecord);
+    let got = psbt.inputs[0]
+        .non_witness_utxo
+        .as_ref()
+        .unwrap()
+        .compute_txid();
+    let op = psbt.unsigned_tx.input[0].previous_output;
+    let want = op.txid;
+    let vout = op.vout;
+    let text = b64(&psbt.serialize());
+    let r = run("inspect", &[], text.as_bytes());
+    accepted(&r);
+    assert_eq!(
+        line(&r.out, "FEE "),
+        "FEE       0.00001000 BTC   (CLAIMED — no input value verified)"
+    );
+    let short: String = format!("{want}").chars().take(16).collect();
+    assert!(
+        r.out.contains(&format!(
+            "{short}…   9.99901000 BTC   PSBT-CLAIMED — unverified"
+        )),
+        "{}",
+        r.out
+    );
+    assert!(!r.out.contains("TXID-BOUND"), "{}", r.out);
+    let block = format!(
+        "WARNING: input 0's non_witness_utxo is NOT the transaction it spends,\n\
+         \x20        so its amount and the fee are UNVERIFIED.\n\
+         \n\
+         \x20 The PSBT says input 0 holds 9.99901000 BTC.\n\
+         \x20 Its record of the spent transaction hashes to\n\
+         \x20   {got}\n\
+         \x20 but input 0 spends output {vout} of\n\
+         \x20   {want}\n\
+         \x20 A buggy wallet writes this, and so does a HIDDEN-FEE ATTACK.\n\
+         \n\
+         \x20 IF INPUT 0 REALLY HOLDS MORE THAN THE PSBT SAYS, EVERY SATOSHI OF\n\
+         \x20 THE DIFFERENCE GOES TO A MINER AS FEE AND IS LOST. A signer that\n\
+         \x20 trusts this record shows you the wrong fee.\n\
+         \n\
+         \x20 Check input 0 before you sign or broadcast, either way:\n\
+         \x20   - let mt reach a bitcoind: it asks for the value with gettxout\n\
+         \x20     and shows it in INPUTS as `from node`, or\n\
+         \x20   - on a machine with a node, run\n\
+         \x20       bitcoin-cli gettxout {want} {vout}\n\
+         \x20     and compare its \"value\" with the amount your signer shows.\n\
+         \n\
+         \x20 mt encode refuses this PSBT: re-export it from the wallet that built it.\n"
+    );
+    assert!(r.err.contains(&block), "stderr:\n{}", r.err);
+    let j = run("inspect", &["--json"], text.as_bytes());
+    accepted(&j);
+    let d = doc(&j);
+    assert_eq!(d["inputs"][0]["provenance"], "PsbtClaimed");
+    assert_eq!(d["inputs"][0]["sats"], WRONG_RECORD_SATS);
+    assert_eq!(d["fee"]["verified"], false);
+    let entry = format!(
+        "input 0's non_witness_utxo is NOT the transaction it spends, so its amount \
+         and the fee are UNVERIFIED. Check it before you sign or broadcast: \
+         bitcoin-cli gettxout {want} {vout}"
+    );
+    assert!(
+        d["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| *w == *entry),
+        "{d}"
+    );
+}
+
+/// M1 (review r1): a PSBT that is both unfinalized and carries a mismatched
+/// record gets both warnings, in `encode`'s guard order (§8.1, then §8.2d).
+#[test]
+fn bh1119_mt_i3_inspect_warns_in_encodes_guard_order() {
+    let text = b64(&legacy_psbt(Legacy::UnfinalizedWrongRecord).serialize());
+    let r = run("inspect", &[], text.as_bytes());
+    accepted(&r);
+    let q1 = r
+        .err
+        .find("WARNING: this PSBT is not finalized")
+        .unwrap_or_else(|| panic!("no Q1 warning:\n{}", r.err));
+    let q2 = r
+        .err
+        .find("WARNING: input 0's non_witness_utxo is NOT")
+        .unwrap_or_else(|| panic!("no Q2 warning:\n{}", r.err));
+    assert!(q1 < q2, "stderr:\n{}", r.err);
+    let j = run("inspect", &["--json"], text.as_bytes());
+    accepted(&j);
+    let d = doc(&j);
+    let w = d["warnings"].as_array().unwrap();
+    let at = |p: &str| {
+        w.iter()
+            .position(|x| x.as_str().unwrap_or("").starts_with(p))
+            .unwrap_or_else(|| panic!("no {p:?} in {d}"))
+    };
+    assert!(
+        at("this PSBT is not finalized") < at("input 0's non_witness_utxo is NOT"),
+        "{d}"
+    );
+}
+
+/// Q3 (ruled, option B): a matching non_witness_utxo with no
+/// output at the input's vout is reported, with a warning that the output
+/// does not exist.
+#[test]
+fn bh1119_mt_i3_inspect_warns_on_a_non_witness_utxo_without_the_spent_output() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let k = prev.output.len();
+    let want = prev.compute_txid();
+    let r = run("inspect", &[], b64(&psbt.serialize()).as_bytes());
+    accepted(&r);
+    assert!(
+        r.err.contains(&format!(
+            "WARNING: input 0 spends output 99 of {want}, which has {k} output(s): \
+             that output does not exist.\n"
+        )),
+        "stderr:\n{}",
+        r.err
+    );
+}
+
+/// Q3 (ruled): the same fixture, `--json`: the warnings entry is the
+/// headline alone, and the document still reports the transaction.
+#[test]
+fn bh1119_mt_i3_inspect_json_carries_the_q3_warning_headline() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let want = format!(
+        "input 0 spends output 99 of {}, which has {} output(s): that output does not exist.",
+        prev.compute_txid(),
+        prev.output.len()
+    );
+    let r = run("inspect", &["--json"], b64(&psbt.serialize()).as_bytes());
+    accepted(&r);
+    let d = doc(&r);
+    assert!(
+        d["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str() == Some(want.as_str())),
+        "{d}"
+    );
+    assert_eq!(d["txid"], extracted_txid(&psbt).as_str());
+}
+
+/// Q3 (ruled): `encode` refuses the vout-less record, exit 1, nothing on
+/// stdout, §8.2d's existing text.
+#[test]
+fn bh1119_mt_i3_encode_refuses_a_non_witness_utxo_without_the_spent_output() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let rest = format!(
+        "§8.2d, input 0 spends output 99 of {}, which has {} output(s)",
+        prev.compute_txid(),
+        prev.output.len()
+    );
+    let r = run("encode", &[], b64(&psbt.serialize()).as_bytes());
+    refused(&r, "encode", &rest);
+}
+
+/// Q3 (ruled): `encode --qr` is an engrave path too, and refuses the same.
+#[test]
+fn bh1119_mt_i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output() {
+    let psbt = legacy_psbt(Legacy::ShortRecord);
+    let prev = psbt.inputs[0].non_witness_utxo.as_ref().unwrap();
+    let rest = format!(
+        "§8.2d, input 0 spends output 99 of {}, which has {} output(s)",
+        prev.compute_txid(),
+        prev.output.len()
+    );
+    let r = run("encode", &["--qr"], b64(&psbt.serialize()).as_bytes());
+    refused(&r, "encode", &rest);
+}
+
+// ── Q4: every report JSON carries `txid_provisional` ──────────────────────
+
+#[test]
+fn bh1119_mt_q4_inspect_json_of_a_raw_transaction_carries_txid_provisional_false() {
+    let r = run(
+        "inspect",
+        &["--json"],
+        base()["raw_hex"].as_str().unwrap().as_bytes(),
+    );
+    accepted(&r);
+    assert_eq!(doc(&r)["txid_provisional"], false);
+}
+
+#[test]
+fn bh1119_mt_q4_inspect_json_of_an_mt1_set_carries_txid_provisional_false() {
+    let r = run("inspect", &["--json"], even_lines().join("\n").as_bytes());
+    accepted(&r);
+    assert_eq!(doc(&r)["txid_provisional"], false);
+}
+
+/// `decode --json` writes its document to stderr (as today).
+#[test]
+fn bh1119_mt_q4_decode_json_carries_txid_provisional_false() {
+    let r = run("decode", &["--json"], even_lines().join("\n").as_bytes());
+    accepted(&r);
+    let d: serde_json::Value = serde_json::from_str(&r.err)
+        .unwrap_or_else(|e| panic!("stderr is not the JSON document ({e}):\n{}", r.err));
+    assert_eq!(d["txid_provisional"], false);
+}
+
+// ── I5: a binary PSBT is sniffed before any text conversion ───────────────
+
+#[test]
+fn bh1119_mt_i5_inspect_reads_a_binary_psbt_file() {
+    let text = p5_b64();
+    let bin = run_in(&["--json"], &unb64(&text));
+    accepted(&bin);
+    let b64r = run_in(&["--json"], text.as_bytes());
+    accepted(&b64r);
+    assert_eq!(bin.out, b64r.out);
+    assert_eq!(doc(&bin)["txid"], P5_TXID);
+}
+
+#[test]
+fn bh1119_mt_i5_inspect_reads_a_binary_psbt_on_stdin() {
+    let text = p5_b64();
+    let bin = run("inspect", &["--json"], &unb64(&text));
+    accepted(&bin);
+    let b64r = run("inspect", &["--json"], text.as_bytes());
+    accepted(&b64r);
+    assert_eq!(bin.out, b64r.out);
+}
+
+#[test]
+fn bh1119_mt_i5_inspect_names_non_text_junk_by_the_sniffer() {
+    let r = run("inspect", &[], b"\xfe\xfd\x00junkjunk");
+    refused(
+        &r,
+        "inspect",
+        "§8.2e, input is not a PSBT or a raw transaction (11 bytes)",
+    );
+}
+
+/// Control: decode keeps its text-only refusal.
+#[test]
+fn bh1119_mt_i5_decode_still_refuses_non_text() {
+    let r = run("decode", &[], b"\xfe\xfd\x00junkjunk");
+    refused(&r, "decode", "§1.1e, input is not text");
+}
+
+// ── I6: recoverable string syntax reaches the strings reader ──────────────
+
+#[test]
+fn bh1119_mt_i6_inspect_reads_group_size_2_output() {
+    let r = run("inspect", &["--json"], &p5_grouped("2"));
+    accepted(&r);
+    assert_eq!(doc(&r)["txid"], P5_TXID);
+    assert!(!r.err.contains("that is mt encode's OUTPUT"), "{}", r.err);
+}
+
+#[test]
+fn bh1119_mt_i6_inspect_reads_group_size_1_output() {
+    let r = run("inspect", &["--json"], &p5_grouped("1"));
+    accepted(&r);
+    assert_eq!(doc(&r)["txid"], P5_TXID);
+}
+
+#[test]
+fn bh1119_mt_i6_inspect_reads_an_mtl_first_line() {
+    let mut l = even_lines();
+    l[0] = format!("mtl{}", &l[0][3..]);
+    let r = run("inspect", &["--json"], l.join("\n").as_bytes());
+    accepted(&r);
+    assert_eq!(doc(&r)["txid"], even_txid().as_str());
+}
+
+#[test]
+fn bh1119_mt_i6_inspect_reads_an_elided_first_line() {
+    let mut l = even_lines();
+    l[0] = l[0][11..].to_string();
+    let r = run("inspect", &["--json"], l.join("\n").as_bytes());
+    accepted(&r);
+    assert_eq!(doc(&r)["txid"], even_txid().as_str());
+}
+
+/// One string whose only `mt1` was misread as `mtl`: the `even` set's first
+/// string alone is not a whole set, so the row pins only the ROUTE (the
+/// strings reader's refusal, not the sniffer's).
+#[test]
+fn bh1119_mt_i6_a_lone_mtl_string_reaches_the_strings_reader() {
+    let s = &even_lines()[0];
+    let r = run("inspect", &[], format!("mtl{}", &s[3..]).as_bytes());
+    assert_eq!(r.code, Some(1), "stderr:\n{}", r.err);
+    assert!(
+        !r.err.contains("input is not a PSBT or a raw transaction"),
+        "stderr:\n{}",
+        r.err
+    );
+}
+
+/// Controls: foreign input keeps the sniffer's diagnostics.
+#[test]
+fn bh1119_mt_i6_foreign_text_keeps_the_sniffer_refusal() {
+    let r = run("inspect", &[], b"hello world\n");
+    refused(
+        &r,
+        "inspect",
+        "§8.2e, input is not a PSBT or a raw transaction (11 bytes)",
+    );
+}
+
+#[test]
+fn bh1119_mt_i6_damaged_base64_psbt_containing_mt1_keeps_the_psbt_refusal() {
+    let r = run("inspect", &[], b"cHNidP8BAHUCAAAAmt1*AAAA");
+    refused(
+        &r,
+        "inspect",
+        "§8.2e, input looks like a base64 PSBT but does not decode",
+    );
+}
+
+/// Control (reviewer I1): Core's `walletprocesspsbt` JSON around a base64 PSBT
+/// whose text happens to contain `mt1` (case-folded) keeps the sniffer refusal.
+#[test]
+fn bh1119_mt_i6_wrapped_base64_containing_mt1_keeps_the_sniffer_refusal() {
+    let b = p5_b64();
+    let text = format!(
+        "{{\n  \"psbt\": \"{}Mt1{}\",\n  \"complete\": true\n}}\n",
+        &b[..200],
+        &b[203..]
+    );
+    let r = run("inspect", &[], text.as_bytes());
+    assert_eq!(r.code, Some(1), "stderr:\n{}", r.err);
+    assert!(
+        r.err
+            .lines()
+            .next()
+            .unwrap_or("")
+            .starts_with("mt inspect: REFUSED — §8.2e, input is not a PSBT or a raw transaction ("),
+        "stderr:\n{}",
+        r.err
+    );
+}
+
+#[test]
+fn bh1119_mt_i6_empty_input_stays_on_the_strings_path() {
+    let r = run("inspect", &[], b"\n");
+    refused(&r, "inspect", "§1.1e, no strings found in the input");
+}
