@@ -23,6 +23,7 @@
 #     exec bitcoin-cli -regtest -datadir=/path/to/regtest -rpcwallet=w "$@"
 set -euo pipefail
 cd "$(dirname "$0")/.."
+umask 077
 
 RT="${MT_RT:-}"
 if [ -z "$RT" ] || [ ! -x "$RT" ]; then
@@ -34,6 +35,14 @@ MT=target/debug/mt
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# A failing mt step: say which, then show its stderr before the EXIT trap
+# removes $WORK. Arguments: <verb> <status> <errfile>.
+fail_step() {
+  echo "FAIL: mt $1 exited $2; its stderr follows:"
+  sed 's/^/   /' "$3"
+  exit 1
+}
 
 echo "== building a finalized PSBT from the node's own UTXOs =="
 python3 - "$RT" "$WORK" <<'PY'
@@ -60,28 +69,26 @@ if not signed["complete"]:
 open(f"{work}/tx.psbt", "w").write(rt("finalizepsbt", signed["psbt"], "false")["psbt"])
 print(f"   spending {u['amount']} BTC from {u['txid'][:16]}:{u['vout']}")
 PY
-chmod 600 "$WORK/tx.psbt"
 
 echo "== 1. encode =="
-"$MT" encode --bitcoin-cli "$RT" --in "$WORK/tx.psbt" >"$WORK/plates.txt" 2>"$WORK/enc.err"
-chmod 600 "$WORK/plates.txt"
+"$MT" encode --bitcoin-cli "$RT" --in "$WORK/tx.psbt" >"$WORK/plates.txt" 2>"$WORK/enc.err" || fail_step encode $? "$WORK/enc.err"
 n=$(wc -l <"$WORK/plates.txt")
 [ "$n" -gt 0 ] || { echo "FAIL: encode produced no strings"; exit 1; }
 grep -q "STATUS    LIVE" "$WORK/enc.err" || { echo "FAIL: the node did not report LIVE"; sed 's/^/   /' "$WORK/enc.err"; exit 1; }
 echo "   $n strings, STATUS LIVE"
 
 echo "== 2. verify =="
-"$MT" verify --in "$WORK/plates.txt" 2>"$WORK/ver.err" >/dev/null
+"$MT" verify --in "$WORK/plates.txt" 2>"$WORK/ver.err" >/dev/null || fail_step verify $? "$WORK/ver.err"
 grep -q "transaction re-derives" "$WORK/ver.err" || { echo "FAIL: no re-derivation"; exit 1; }
 sed 's/^/   /' "$WORK/ver.err" | head -1
 
 echo "== 3. inspect, with the node =="
-"$MT" inspect --bitcoin-cli "$RT" --in "$WORK/plates.txt" >"$WORK/ins.out" 2>/dev/null
+"$MT" inspect --bitcoin-cli "$RT" --in "$WORK/plates.txt" >"$WORK/ins.out" 2>"$WORK/ins.err" || fail_step inspect $? "$WORK/ins.err"
 grep -q "STATUS    LIVE" "$WORK/ins.out" || { echo "FAIL: inspect did not see the chain"; exit 1; }
 grep -E "^mt1 SET|^TX |^FEE |^STATUS" "$WORK/ins.out" | sed 's/^/   /'
 
 echo "== 4. decode =="
-"$MT" decode --bitcoin-cli "$RT" --in "$WORK/plates.txt" >"$WORK/rt.hex" 2>/dev/null
+"$MT" decode --bitcoin-cli "$RT" --in "$WORK/plates.txt" >"$WORK/rt.hex" 2>"$WORK/dec.err" || fail_step decode $? "$WORK/dec.err"
 [ -s "$WORK/rt.hex" ] || { echo "FAIL: decode produced nothing"; exit 1; }
 
 echo "== 5. WOULD THE NODE ACCEPT IT? =="

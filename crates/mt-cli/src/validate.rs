@@ -82,7 +82,12 @@ pub fn finalized_guard_psbt(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
          be broadcast is not a backup. The PSBT format does not make this state \
          unrepresentable, so mt has to check it.",
     )
-    .with_remedy("Run `bitcoin-cli finalizepsbt <psbt>` and pass the result."))
+    .with_remedy(
+        "Run `bitcoin-cli finalizepsbt <psbt>`. If its answer shows `\"complete\": true`, \
+         pass the value of its `hex` field (the signed transaction), not the whole \
+         answer. If it shows `\"complete\": false`, the PSBT still lacks signatures: \
+         sign it first (`walletprocesspsbt`), then run `finalizepsbt` again.",
+    ))
 }
 
 /// §8.3, raw-transaction vocabulary: **every input carries a non-empty

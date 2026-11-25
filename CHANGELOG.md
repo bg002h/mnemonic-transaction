@@ -1,7 +1,15 @@
 # Changelog
 
 All notable changes to `mt-cli` and `mt-codec` are documented in this file.
-Each release entry is prefixed with the crate name (`## mt-cli [0.2.0]`,
+Each release entry is prefixed with the crate name (`## mt-cli [Unreleased]
+
+### Changed
+- **FIX-J: printed remedies (bh-mt-I22, I25).** The §8.1 and
+  §10.10 remedies tell the operator to pass the `hex` field of `finalizepsbt`'s
+  answer, not the whole answer. `scripts/live-smoke-test.sh` sets `umask 077`
+  and prints a failing step's stderr.
+
+## mt-cli [0.2.0]`,
 `## mt-codec [0.2.0]`).
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

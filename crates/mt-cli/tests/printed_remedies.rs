@@ -79,11 +79,7 @@ fn remedy_of(err: &str, header: &str) -> String {
         .filter(|b| !b.trim().is_empty())
         .last()
         .unwrap();
-    block
-        .lines()
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join(" ")
+    block.lines().map(str::trim).collect::<Vec<_>>().join(" ")
 }
 
 /// Row 1. The §8.1 refusal (a PSBT with unfinalized inputs) prints the remedy
@@ -126,7 +122,11 @@ fn i22_txid_remedy_reading_verbs_point_to_inspect() {
             .output()
             .unwrap();
         let err = String::from_utf8_lossy(&o.stderr).into_owned();
-        assert_eq!(o.status.code(), Some(1), "{verb} did not refuse; stderr:\n{err}");
+        assert_eq!(
+            o.status.code(),
+            Some(1),
+            "{verb} did not refuse; stderr:\n{err}"
+        );
         assert_eq!(
             remedy_of(&err, &format!("mt {verb}: REFUSED — §10.10, ")),
             format!(
@@ -147,11 +147,28 @@ fn i22_finalizepsbt_answer_refused_hex_field_encodes() {
     let answer = format!("{{\"hex\":\"{raw}\",\"complete\":true}}");
     let whole = encode_offline(&answer);
     assert_ne!(whole.code, Some(101), "mt panicked: {}", whole.err);
-    assert_ne!(whole.code, Some(0), "encode accepted Core's whole answer (T15: no new input form)");
-    assert!(whole.out.is_empty(), "a refused encode wrote stdout: {}", whole.out);
+    assert_ne!(
+        whole.code,
+        Some(0),
+        "encode accepted Core's whole answer (T15: no new input form)"
+    );
+    assert!(
+        whole.out.is_empty(),
+        "a refused encode wrote stdout: {}",
+        whole.out
+    );
     let field = encode_offline(&raw);
-    assert_eq!(field.code, Some(0), "the hex field did not encode; stderr:\n{}", field.err);
-    assert!(field.out.starts_with("mt1"), "no mt1 strings on stdout: {}", field.out);
+    assert_eq!(
+        field.code,
+        Some(0),
+        "the hex field did not encode; stderr:\n{}",
+        field.err
+    );
+    assert!(
+        field.out.starts_with("mt1"),
+        "no mt1 strings on stdout: {}",
+        field.out
+    );
 }
 
 /// A scripted `bitcoin-cli` that answers every verb the live script and mt
@@ -208,7 +225,10 @@ fn script_root(mt_bin: Option<&str>) -> tempfile::TempDir {
     std::fs::create_dir_all(root.path().join("scripts")).unwrap();
     std::fs::create_dir_all(root.path().join("target/debug")).unwrap();
     std::fs::copy(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/live-smoke-test.sh"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/live-smoke-test.sh"
+        ),
         root.path().join("scripts/live-smoke-test.sh"),
     )
     .unwrap();
@@ -261,7 +281,8 @@ fn i25_live_smoke_test_failure_shows_diagnostic() {
     let so = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "stdout:\n{so}");
     assert!(
-        so.lines().any(|l| l == "FAIL: mt encode exited 64; its stderr follows:"),
+        so.lines()
+            .any(|l| l == "FAIL: mt encode exited 64; its stderr follows:"),
         "no FAIL line; stdout:\n{so}"
     );
     assert!(
