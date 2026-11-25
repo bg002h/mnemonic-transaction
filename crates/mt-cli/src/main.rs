@@ -2392,10 +2392,19 @@ fn txid_paste_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
          mt prints the txid in its own TX row, which is probably where this came \
          from.",
     )
-    .with_remedy(
+    .with_remedy(if verb == "decode" || verb == "verify" {
+        format!(
+            "`mt {verb}` reads the mt1 strings from the plates, not a transaction. \
+             To look at the transaction this txid names, fetch it with \
+             `bitcoin-cli getrawtransaction <txid>` and pass that to `mt inspect`."
+        )
+    } else {
         "Fetch the transaction: `bitcoin-cli getrawtransaction <txid>`, then pass \
-         that. Or `bitcoin-cli finalizepsbt <psbt>` if you have not broadcast yet.",
-    ))
+         that. If you have not broadcast yet, run `bitcoin-cli finalizepsbt <psbt>` \
+         instead and pass the value of its `hex` field (present once it shows \
+         `\"complete\": true`)."
+            .to_string()
+    }))
 }
 
 /// §10.10, R10: `--json` asks for the report as a document, `--quiet` for no

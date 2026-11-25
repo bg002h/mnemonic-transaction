@@ -57,6 +57,12 @@ for path in sorted(glob.glob("crates/*/tests/*.rs")):
 # Exempt by NAME, and only with a stated reason that a reader can check. An
 # exemption list is safer than a cleverer heuristic: it is visible in the diff.
 EXEMPT = {
+    "i22_unfinalized_psbt_remedy_names_hex_field":
+        "remedy-text pin; the guard is covered by refusals.toml entry refuses_an_unfinalized_psbt",
+    "i22_txid_remedy_names_hex_field":
+        "remedy-text pin; the guard is covered by refusals.toml entry refuses_a_pasted_txid_by_name",
+    "i22_txid_remedy_reading_verbs_point_to_inspect":
+        "remedy-text pin; the guard is covered by refusals.toml entry a_pasted_txid_is_named_on_every_verb",
     "bh1119_mt_g_verify_mismatch_prints_no_ok":
         "asserts notice/verdict ordering around an existing refusal; adds no guard",
     "bh1119_mt_g_verify_missing_transaction_prints_no_ok":

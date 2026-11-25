@@ -12,6 +12,14 @@ axis.
 Releases 0.1.0 and 0.1.1 are described by their tags (`mt-cli-v0.1.0`,
 `mt-cli-v0.1.1`); this file starts at 0.2.0.
 
+## mt-cli [Unreleased]
+
+### Changed
+- **FIX-J: printed remedies (bh-mt-I22, I25).** The §8.1 and
+  §10.10 remedies tell the operator to pass the `hex` field of `finalizepsbt`'s
+  answer, not the whole answer. `scripts/live-smoke-test.sh` sets `umask 077`
+  and prints a failing step's stderr.
+
 ## mt-cli [0.2.0] — 2026-11-04
 
 Fixes from the mt bug hunt (FIX-A to FIX-D).
