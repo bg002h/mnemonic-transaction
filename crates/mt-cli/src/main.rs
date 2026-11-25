@@ -63,7 +63,8 @@ struct ReadArgs {
     #[arg(long, value_name = "PATH")]
     r#in: Option<std::path::PathBuf>,
 
-    /// Accepted and IGNORED: `-` means stdin, which is already the default.
+    /// Accepted alone; refused together with `--in` (T13): `-` means stdin, which
+    /// is already the default.
     ///
     /// F-250 gave this to `encode` and stopped there, so `mt decode -`,
     /// `mt verify -` and `mt inspect -` still answered clap's
@@ -100,9 +101,10 @@ struct ReadArgs {
 
     /// Compare against a transaction, by FULL txid. Takes a **PATH**.
     ///
-    /// `verify` only. Comparing against the 20-bit set id would report a match
-    /// for any transaction sharing those bits — 1 in 1,048,576 by accident, and
-    /// under a second to construct deliberately.
+    /// `verify` only; `decode` and `inspect` refuse it. Comparing against the
+    /// 20-bit set id would report a match for any transaction sharing those
+    /// bits — 1 in 1,048,576 by accident, and under a second to construct
+    /// deliberately.
     ///
     /// **The value name used to read `PSBT|HEX`, and mt's own help therefore
     /// invited the §8.2f leak it refuses.** An operator following it pastes the
@@ -193,13 +195,14 @@ struct EncodeArgs {
     #[arg(long, value_name = "N", conflicts_with = "qr")]
     group_size: Option<usize>,
 
-    /// Separator to use with `--group-size`. **Whitespace only.**
+    /// Separator to use with `--group-size`. **Whitespace only, never a newline.**
     ///
-    /// `read_strings` strips whitespace and nothing else, so a non-whitespace
-    /// separator produces an artifact `mt`'s own verbs refuse. The sequence that
-    /// makes it expensive: choose `-`, engrave nine plates over several hours,
-    /// type them back, and find that mt cannot read what mt produced — with the
-    /// encode-time banner having said "verify the ENGRAVING, not this output".
+    /// `read_strings` strips whitespace within a line (a newline ends a string,
+    /// so it is refused), so any other separator produces an artifact `mt`'s own
+    /// verbs refuse. The sequence that makes it expensive: choose `-`, engrave
+    /// nine plates over several hours, type them back, and find that mt cannot
+    /// read what mt produced — with the encode-time banner having said "verify
+    /// the ENGRAVING, not this output".
     #[arg(long, value_name = "S", default_value = " ")]
     separator: String,
 
@@ -233,7 +236,8 @@ struct EncodeArgs {
     #[arg(long)]
     qr: bool,
 
-    /// Accepted and IGNORED: `-` means stdin, which is already the default.
+    /// Accepted alone; refused together with `--in` (T13): `-` means stdin, which
+    /// is already the default.
     ///
     /// F-250. `-` is the stdin idiom in `cat`, `tar`, `curl`, `gpg` and `jq`, so
     /// an operator carrying that habit types it on their first try — and got
@@ -290,7 +294,15 @@ struct EncodeArgs {
 }
 
 fn main() -> std::process::ExitCode {
-    let argv: Vec<String> = std::env::args().collect();
+    // T22 (I24): argv is read as OsString and refused by position if any
+    // argument is not UTF-8 (exit 64), before anything else looks at it.
+    let argv: Vec<String> = match validate::utf8_argv_guard(std::env::args_os().collect()) {
+        Ok(argv) => argv,
+        Err(refusal) => {
+            eprint!("{refusal}");
+            return std::process::ExitCode::from(64);
+        }
+    };
 
     // §6d — THE OVERRIDE'S OWN PARSE RUNS HERE, ON RAW ARGV, and so does the
     // ROUTING of what it admits. `--allow-argv-secret` is a CHANNEL on `mt`,
@@ -366,6 +378,7 @@ fn read_encode_file(path: &std::path::Path) -> Result<Vec<u8>, Refusal> {
 fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "encode")?;
 
     let raw = match (&args.r#in, argv_material) {
         // Two sources offered for ONE channel. `--in` wins -- it is the private
@@ -1509,6 +1522,8 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     json_quiet_guard(args.json, args.quiet, "decode")?;
+    transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
     let text = read_input(&args.r#in, argv_material, "decode")?;
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
@@ -1672,6 +1687,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "verify")?;
     json_unsupported_guard(args.json, "verify")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "verify")?;
     let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
     let strings = read.strings.clone();
@@ -1967,6 +1983,8 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "inspect")?;
+    transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
     // `inspect` reads BYTES and routes on what they ARE (I5, I6), in order:
     // empty input stays on the strings path ("no strings found in the input"
     // beats anything the sniffer would say); whatever §8.2e's sniff recognises
@@ -2408,6 +2426,54 @@ fn json_quiet_guard(json: bool, quiet: bool, verb: &str) -> Result<(), Refusal> 
     ))
 }
 
+/// §10.10, T12 (I11): `--transaction` compares the set against a transaction,
+/// and only `verify` does that. On `decode` and `inspect` the flag was accepted
+/// and the file never opened; whatever the path (missing, unreadable, matching)
+/// it is refused here, before any input is read.
+fn transaction_unsupported_guard(
+    transaction: Option<&std::path::Path>,
+    verb: &str,
+) -> Result<(), Refusal> {
+    if transaction.is_none() {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        format!("--transaction has no meaning for `{verb}`"),
+        format!(
+            "`--transaction` compares the set against a transaction by its full txid, \
+             and only `verify` makes that comparison. `{verb}` would accept the flag \
+             and never open the file, so a caller would take the transaction as checked \
+             when nothing compared it.\n\
+             \n\
+             mt refuses rather than accepting the flag and ignoring it."
+        ),
+    )
+    .with_remedy(
+        "Run `mt verify --transaction <path>` for the comparison, or drop `--transaction`.",
+    ))
+}
+
+/// §10.10, T13 (I12): `--in <path>` together with the positional `-` names two
+/// inputs; the file used to win and stdin was silently ignored.
+fn in_with_dash_guard(has_in: bool, dash: bool, verb: &str) -> Result<(), Refusal> {
+    if !(has_in && dash) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        verb,
+        "§10.10",
+        "--in and `-` name two different inputs",
+        "`--in` names a file and `-` names standard input, and mt reads exactly one \
+         input. Picking either one silently could give you the answer for the input \
+         you did not mean, at exit 0.\n\
+         \n\
+         mt refuses rather than choosing for you.",
+    )
+    .with_remedy("Drop `-` to read the file, or drop `--in` to read standard input."))
+}
+
 /// §10.10, R11: `inspect` and `verify` have no report to suppress; their
 /// output is their report.
 fn quiet_unsupported_guard(quiet: bool, verb: &str) -> Result<(), Refusal> {
@@ -2578,15 +2644,31 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
 
 /// §1.1e: the separator must be something the READING side strips.
 ///
-/// `read_strings` strips whitespace and nothing else, so a separator of any
-/// other kind lands on **stdout** — the stream the operator engraves — and mt's
+/// `read_strings` strips whitespace within a line (never a newline, which ends
+/// a string; one shared predicate, `is_grouping_whitespace`), so a separator of
+/// any other kind lands on **stdout** — the stream the operator engraves — and mt's
 /// own verbs then refuse the result. The sequence that makes it expensive:
 /// choose `-`, cut nine plates over several hours, type them back, and find
 /// that mt cannot read what mt produced — having been told, by mt, to "verify
 /// the ENGRAVING, not this output".
 fn separator_guard(sep: &str) -> Result<(), Refusal> {
-    if sep.is_empty() || sep.chars().all(char::is_whitespace) {
+    if sep.chars().all(read_strings::is_grouping_whitespace) {
         return Ok(());
+    }
+    // (a) A non-whitespace character gives the existing refusal; (b) a
+    // whitespace separator holding a newline gives N1.
+    if sep.chars().all(char::is_whitespace) {
+        return Err(Refusal::new(
+            "encode",
+            "§1.1e",
+            format!("--separator {sep:?} contains a newline"),
+            "mt reads strings back one per line: a newline ends a string. A \
+             separator containing one cuts every string into pieces on stdout — the \
+             stream you engrave — and mt's own verbs then refuse the result.\n\
+             \n\
+             mt refuses this now rather than after the plates are cut.",
+        )
+        .with_remedy("Use a space, a tab, or omit --separator (a space is the default)."));
     }
     Err(Refusal::new(
         "encode",

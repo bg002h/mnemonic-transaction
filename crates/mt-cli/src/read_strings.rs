@@ -62,6 +62,16 @@ pub struct ReadStrings {
     pub free: bool,
 }
 
+/// §1.1e, T20: the characters the reader strips WITHIN a line, and so the only
+/// characters `encode --separator` may hold. Whitespace, except `\n`: a newline
+/// is what ends a string, so it splits rather than strips.
+///
+/// ONE predicate, used by the reader here and by `separator_guard` in `main.rs`,
+/// so encode admits exactly the separators decode admits.
+pub(crate) fn is_grouping_whitespace(c: char) -> bool {
+    c != '\n' && c.is_whitespace()
+}
+
 pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
     let mut candidates: Vec<String> = Vec::new();
 
@@ -69,7 +79,7 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
     //    *within* a line are grouping separators (§1.1e's --group-size) and are
     //    stripped, not treated as boundaries.
     for line in raw.lines() {
-        let joined: String = line.split_whitespace().collect();
+        let joined: String = line.split(is_grouping_whitespace).collect();
         if joined.is_empty() {
             continue;
         }
