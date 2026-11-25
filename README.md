@@ -22,6 +22,10 @@ mt inspect < typed.txt    # what is IN a set, consulting a node if one is there
 hard interface boundary, not a formatting preference — `mt decode` is meant to
 be piped, and the moment a warning shares that stream a downstream consumer has
 to parse prose out of its own input.
+If stdout cannot be written (a full disk), mt prints
+`mt: cannot write the output: <error>` and exits 1; a reader that closes the pipe
+early only stops the output. mt refuses to write its output into one of its own
+input files.
 
 Input comes from a **file or stdin, never an argument**: an argument lands in
 shell history and in `ps` for every user on the machine, and this material is

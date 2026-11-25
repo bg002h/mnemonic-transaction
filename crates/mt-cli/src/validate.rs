@@ -1794,6 +1794,48 @@ fn thousands(n: u64) -> String {
     out
 }
 
+/// §8.2i — the output is never one of the inputs (FIX_bh1119_mt_output_writes
+/// Q1). `output` is `encode`'s `--out` (else standard output) or the standard
+/// output of `decode` and `inspect`; `input` is `--in`, else standard input, or
+/// `None` when argv material was admitted and there is no input to compare.
+/// Identity is `mnemonic_io_lib::write::same_file`'s (dev and ino, symlinks
+/// followed, hard links equal).
+pub fn same_file_guard(
+    verb: &str,
+    output: mnemonic_io_lib::write::Endpoint<'_>,
+    input: Option<mnemonic_io_lib::write::Endpoint<'_>>,
+) -> Result<(), Refusal> {
+    use mnemonic_io_lib::write::{Endpoint, same_file};
+    let Some(input) = input else {
+        return Ok(());
+    };
+    if same_file(output, &[input]).is_none() {
+        return Ok(());
+    }
+    let name = |e: &Endpoint<'_>, flag: &str, std_name: &str| match e {
+        Endpoint::Path(p) => format!("{flag} {}", p.display()),
+        _ => std_name.to_string(),
+    };
+    let out = name(&output, "--out", "standard output");
+    let inp = name(&input, "--in", "standard input");
+    let mechanism = if matches!(output, Endpoint::Path(_)) {
+        "They are one file (the same path, a symlink or a hard link), so \
+         writing the output would replace the input mt is reading."
+    } else {
+        "They are one file (the same path, a symlink or a hard link), so the \
+         output would go into the file mt reads its input from. A > redirect \
+         empties that file before mt starts, so check that it still holds \
+         what you expect."
+    };
+    Err(Refusal::new(
+        verb,
+        "§8.2i",
+        format!("{out} is the same file as {inp}"),
+        mechanism,
+    )
+    .with_remedy("Write to a new name."))
+}
+
 #[cfg(test)]
 mod mode_wording_tests {
     use super::{grants_read, grants_write, mode_grants};

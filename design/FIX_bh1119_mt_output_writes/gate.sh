@@ -44,7 +44,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 
 out=$(cargo nextest run --locked --build-jobs 6 -j 6 --workspace --no-fail-fast 2>&1) || { echo "$out" | tail -40; fail "nextest"; }
-echo "$out" | grep -E 'Summary .* 557 tests run: 557 passed' || fail "expected 557 tests run, 557 passed"
+echo "$out" | grep -E 'Summary .* 585 tests run: 585 passed' || fail "expected 585 tests run, 585 passed"
 
 rows=$(cargo nextest run --locked --build-jobs 6 -j 6 -p mt-cli --test bh1119_mt_output_writes 2>&1) || fail "output_writes rows"
 echo "$rows" | grep -E '34 tests run: 34 passed' || fail "expected 34 output_writes rows"
@@ -52,10 +52,10 @@ echo "$rows" | grep -E '34 tests run: 34 passed' || fail "expected 34 output_wri
 cargo test --locked --workspace --doc
 
 cov=$(./scripts/check-refusal-coverage.sh) || { echo "$cov"; fail "refusal coverage"; }
-echo "$cov" | grep 'check-refusal-coverage: 76 refusal tests over 19 ruled refusals' || fail "coverage count"
+echo "$cov" | grep 'check-refusal-coverage: 93 refusal tests over 19 ruled refusals' || fail "coverage count"
 
 mut=$(./scripts/mutate-refusals.sh) || { echo "$mut"; fail "mutate-refusals"; }
-echo "$mut" | grep 'mutate-refusals: all 76 refusal tests go red' || fail "mutation count"
+echo "$mut" | grep 'mutate-refusals: all 93 refusal tests go red' || fail "mutation count"
 
 ./scripts/journeys.sh
 bash ci/docs-only.test.sh
