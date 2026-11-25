@@ -295,15 +295,17 @@ struct EncodeArgs {
 }
 
 fn main() -> std::process::ExitCode {
-    // T22 (I24): argv is read as OsString and refused by position if any
-    // argument is not UTF-8 (exit 64), before anything else looks at it.
-    let argv: Vec<String> = match validate::utf8_argv_guard(std::env::args_os().collect()) {
-        Ok(argv) => argv,
-        Err(refusal) => {
-            out::stderr_write(format_args!("{refusal}"));
-            return std::process::ExitCode::from(64);
-        }
-    };
+    // X2 (mt-u1-before-argv-guard-no-purge): the raw argv is read as OsString
+    // and converted LOSSILY first, so the §8.2f `command_line_guard` below sees
+    // every argument, including one that is not UTF-8. A non-UTF-8 token cannot
+    // match a transaction (U+FFFD never does), so lossy text is safe to inspect,
+    // and bearer material typed beside a bad argument still gets its purge
+    // recipe. T22 (I24)'s UTF-8 refusal (exit 64) runs AFTER the guard.
+    let raw_argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let lossy_argv: Vec<String> = raw_argv
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
 
     // §6d — THE OVERRIDE'S OWN PARSE RUNS HERE, ON RAW ARGV, and so does the
     // ROUTING of what it admits. `--allow-argv-secret` is a CHANNEL on `mt`,
@@ -317,7 +319,7 @@ fn main() -> std::process::ExitCode {
     // `[-]`, whose value_parser rejects it -- `error: invalid value '<the whole
     // transaction>' for '[-]'`, exit 2, the material echoed. That is strictly
     // worse than the refusal it replaced.
-    let intake = validate::argv_intake(&argv);
+    let intake = validate::argv_intake(&lossy_argv);
 
     // §8.2f RUNS BEFORE CLAP, and that ordering is the whole refusal.
     //
@@ -340,6 +342,15 @@ fn main() -> std::process::ExitCode {
     if let Err(refusal) = validate::command_line_guard(&intake.argv) {
         out::stderr_write(format_args!("{refusal}"));
         return std::process::ExitCode::FAILURE;
+    }
+
+    // T22 (I24): every argument must be valid UTF-8, refused by position
+    // (exit 64). It runs after the guard above and on the raw argv, so the
+    // override's admitted material is never echoed and never read from a run
+    // that is refused here.
+    if let Err(refusal) = validate::utf8_argv_guard(raw_argv) {
+        out::stderr_write(format_args!("{refusal}"));
+        return std::process::ExitCode::from(64);
     }
 
     let cli = match Cli::try_parse_from(&intake.argv) {

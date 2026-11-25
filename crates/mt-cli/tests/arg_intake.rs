@@ -361,7 +361,7 @@ fn bh1119_mt_i24_names_the_first_non_utf8_argument() {
     assert_refusal(rc, &out, &err, 64, &u_verdict("decode", 3), U_PHRASE);
 }
 
-/// Before `argv_intake`: the override's admitted material is never echoed and
+/// The override's admitted material is stripped before the guard, and is never echoed and
 /// never read.
 #[cfg(unix)]
 #[test]
@@ -375,6 +375,24 @@ fn bh1119_mt_i24_refused_before_allow_argv_secret() {
         b"\xff",
     ]);
     assert_refusal(rc, &out, &err, 64, &u_verdict("encode", 5), U_PHRASE);
+    assert!(!err.contains(&raw[..16]), "material echoed:\n{err}");
+}
+
+/// X2 (mt-u1-before-argv-guard-no-purge): the §8.2f `command_line_guard` runs on
+/// the lossy argv BEFORE the U1 non-UTF-8 refusal, so bearer material typed
+/// beside a non-UTF-8 argument still gets the purge recipe on that run.
+#[cfg(unix)]
+#[test]
+fn secmn_mt_u1_after_command_line_guard_purge_recipe() {
+    let raw = raw_hex();
+    let (rc, out, err) = run_os(&[b"encode", raw.as_bytes(), b"--in", b"\xff"]);
+    assert_eq!(rc, Some(1), "stderr:\n{err}");
+    assert!(out.is_empty(), "a refusal wrote to stdout:\n{out}");
+    assert!(
+        !flat(&err).contains("is not valid UTF-8"),
+        "U1 ran before the guard:\n{err}"
+    );
+    assert!(flat(&err).contains("history"), "no purge recipe:\n{err}");
     assert!(!err.contains(&raw[..16]), "material echoed:\n{err}");
 }
 

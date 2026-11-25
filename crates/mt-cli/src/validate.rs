@@ -813,7 +813,8 @@ pub fn argv_material_unused_warning(n: usize, path: &std::path::Path) -> Warning
 /// The standard `env::args` iterator PANICS on a non-UTF-8 argument (exit 101,
 /// a backtrace pointing into the standard library). This takes the raw `OsString`s instead
 /// and refuses the first bad one BY POSITION, exit 64 (decided by the caller),
-/// before `argv_intake` and `command_line_guard` see anything.
+/// AFTER `command_line_guard` has inspected the lossy argv (X2), so bearer
+/// material beside a bad argument still gets its purge recipe.
 ///
 /// argv[0] (the program path) is converted lossily and never refused: it is not
 /// an argument the holder typed, and clap's name is fixed to `mt`. Arguments
