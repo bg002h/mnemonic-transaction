@@ -60,14 +60,14 @@ Run offline (`--bitcoin-cli /nonexistent/bitcoin-cli`) on the corpus vector `eve
   naming both ("write to a new name"); io-lib `same_file` gets callers."
 - **File-output convention R5** (`coordinator/agent-reports/architect-file-output-convention-1123.md`
   section 3; its unit U3 is this code): "R5 Truthful text. Nothing says "wrote" or "went into" before the write returns. A failure names the path and the OS error. It says what is on disk only when a second look after the failure confirms it: "<path> is unchanged" when a regular file was there and is still the same file with the same size and modification time, and "nothing was written" when nothing was there and nothing is there now. Otherwise (a device, or a standard-stream name such as /dev/stdout, which is written in place) it says nothing about the disk. Texts go through WORDING_REVIEW rows." (amended by architect-io-lib-append-1124 section 2)
-- **Overrides 2026-11-24, Brian** (`coordinator/briefs/bh1119-batch-1124-overrides.md`): mnemonic-io-lib 0.1.3 is published to crates.io from mnemonic-engrave `e09d538d` (the #41 merge), and every consumer pins the registry `mnemonic-io-lib = "0.1.3"` (no git pin, no `.github/` edit).
+- **Overrides 2026-11-24, Brian** (`coordinator/briefs/bh1119-batch-1124-overrides.md`): mnemonic-io-lib 0.1.3 (the first published release; 0.1.2 was never published) is published to crates.io from mnemonic-engrave master once the build/io-lib-0.1.3 PR merges, and every consumer pins the registry `mnemonic-io-lib = "0.1.3"` (no git pin, no `.github/` edit).
 
 ## 3. Behaviour after the fix (rules)
 
 **P1 Pin (T5; Brian 2026-11-24).** `crates/mt-cli/Cargo.toml:19-29` (the comment and the git pin) become exactly the 7 lines below. `Cargo.lock` follows (`cargo update -p mnemonic-io-lib`): its one `mnemonic-io-lib` entry becomes version `0.1.3` with source `registry+https://github.com/rust-lang/crates.io-index`, and no `git+https://github.com/bg002h/mnemonic-engrave` source remains. Before any build the builder runs `cargo search mnemonic-io-lib --limit 1`. If that does not list `0.1.3`, the builder does every step that needs no build, then STOPs and reports (the publish is Brian's).
 ```toml
 # THE SHARED IO/SAFETY MECHANISM (P1), from crates.io. mnemonic-io-lib 0.1.3
-# was published from mnemonic-engrave e09d538d (the #41 merge), so a fresh CI
+# is the first release published from mnemonic-engrave master, so a fresh CI
 # checkout resolves it with no sibling repository and no git source (Brian
 # 2026-11-24; the same registry rationale as md-cli). 0.1.3 writes through a
 # temp file and a rename, so a failed write leaves the old file as it was, and
