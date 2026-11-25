@@ -805,7 +805,7 @@ pub fn argv_material_unused_warning(n: usize, path: &std::path::Path) -> Warning
 /// §10.10, T22 (I24): the command line is read as text, so every argument must
 /// be valid UTF-8.
 ///
-/// `std::env::args()` PANICS on a non-UTF-8 argument (exit 101, a backtrace
+/// the standard `env::args` iterator PANICS on a non-UTF-8 argument (exit 101, a backtrace
 /// pointing into the standard library). This takes the raw `OsString`s instead
 /// and refuses the first bad one BY POSITION, exit 64 (decided by the caller),
 /// before `argv_intake` and `command_line_guard` see anything.
