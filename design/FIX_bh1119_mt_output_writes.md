@@ -59,22 +59,20 @@ Run offline (`--bitcoin-cli /nonexistent/bitcoin-cli`) on the corpus vector `eve
   "output names an input (same path, symlink or hard link): refuse, exit non-zero,
   naming both ("write to a new name"); io-lib `same_file` gets callers."
 - **File-output convention R5** (`coordinator/agent-reports/architect-file-output-convention-1123.md`
-  section 3; its unit U3 is this code): "Nothing says "wrote" or "went into" before the
-  write returns. A failure names the path and the OS error and says what is on disk:
-  "<path> is unchanged" when a file was there, "nothing was written" when none was."
-- **Overrides 2026-11-24, Brian** (`coordinator/briefs/bh1119-batch-1124-overrides.md`): mnemonic-io-lib 0.1.2 is published to crates.io from mnemonic-engrave `e09d538d` (the #41 merge), and every consumer pins the registry `mnemonic-io-lib = "0.1.2"` (no git pin, no `.github/` edit).
+  section 3; its unit U3 is this code): "R5 Truthful text. Nothing says "wrote" or "went into" before the write returns. A failure names the path and the OS error. It says what is on disk only when a second look after the failure confirms it: "<path> is unchanged" when a regular file was there and is still the same file with the same size and modification time, and "nothing was written" when nothing was there and nothing is there now. Otherwise (a device, or a standard-stream name such as /dev/stdout, which is written in place) it says nothing about the disk. Texts go through WORDING_REVIEW rows." (amended by architect-io-lib-append-1124 section 2)
+- **Overrides 2026-11-24, Brian** (`coordinator/briefs/bh1119-batch-1124-overrides.md`): mnemonic-io-lib 0.1.3 is published to crates.io from mnemonic-engrave `e09d538d` (the #41 merge), and every consumer pins the registry `mnemonic-io-lib = "0.1.3"` (no git pin, no `.github/` edit).
 
 ## 3. Behaviour after the fix (rules)
 
-**P1 Pin (T5; Brian 2026-11-24).** `crates/mt-cli/Cargo.toml:19-29` (the comment and the git pin) become exactly the 7 lines below. `Cargo.lock` follows (`cargo update -p mnemonic-io-lib`): its one `mnemonic-io-lib` entry becomes version `0.1.2` with source `registry+https://github.com/rust-lang/crates.io-index`, and no `git+https://github.com/bg002h/mnemonic-engrave` source remains. Before any build the builder runs `cargo search mnemonic-io-lib --limit 1`. If that does not list `0.1.2`, the builder does every step that needs no build, then STOPs and reports (the publish is Brian's).
+**P1 Pin (T5; Brian 2026-11-24).** `crates/mt-cli/Cargo.toml:19-29` (the comment and the git pin) become exactly the 7 lines below. `Cargo.lock` follows (`cargo update -p mnemonic-io-lib`): its one `mnemonic-io-lib` entry becomes version `0.1.3` with source `registry+https://github.com/rust-lang/crates.io-index`, and no `git+https://github.com/bg002h/mnemonic-engrave` source remains. Before any build the builder runs `cargo search mnemonic-io-lib --limit 1`. If that does not list `0.1.3`, the builder does every step that needs no build, then STOPs and reports (the publish is Brian's).
 ```toml
-# THE SHARED IO/SAFETY MECHANISM (P1), from crates.io. mnemonic-io-lib 0.1.2
+# THE SHARED IO/SAFETY MECHANISM (P1), from crates.io. mnemonic-io-lib 0.1.3
 # was published from mnemonic-engrave e09d538d (the #41 merge), so a fresh CI
 # checkout resolves it with no sibling repository and no git source (Brian
-# 2026-11-24; the same registry rationale as md-cli). 0.1.2 writes through a
+# 2026-11-24; the same registry rationale as md-cli). 0.1.3 writes through a
 # temp file and a rename, so a failed write leaves the old file as it was, and
 # adds `same_file`.
-mnemonic-io-lib = "0.1.2"
+mnemonic-io-lib = "0.1.3"
 ```
 
 **S1 One stdout writer (T6).** Every byte mt writes to stdout goes through one writer
@@ -99,7 +97,7 @@ and `--json`), and clap's `--help`, `<verb> --help` and `--version` output.
 - **S1f** clap usage errors keep clap's stderr text and exit 2. Help and version text is
   byte-identical to today's when the write succeeds.
 
-**W1 `--out` writer (T5).** `encode --out` writes through io-lib 0.1.2 `write_private`:
+**W1 `--out` writer (T5).** `encode --out` writes through io-lib 0.1.3 `write_private`:
 an absent path or an existing regular file (symlinks followed) is written to a sibling
 temp file and renamed over the name; any error leaves the old file's bytes as they were
 and removes the temp. Anything else (a device, a FIFO, a directory, `/dev/stdout`) is
@@ -114,7 +112,7 @@ returns Ok. Its text is unchanged. On failure it is not printed.
 - absent before, and still `NotFound` after: `mt: cannot write the output: <path>: <error>. Nothing was written.`
 - anything else: `mt: cannot write the output: <path>: <error>`
 
-The second look is what keeps the sentence true: io-lib 0.1.2 writes a standard-stream name (`/dev/stdout`, `/dev/fd/N`, `/proc/...`, or a symlink into one) in place even when it names a regular file, and truncates it before the failing write (`write.rs:101-121,124-136,165-167,181-184` @e09d538d).
+The second look is what keeps the sentence true: io-lib 0.1.3 writes a standard-stream name (`/dev/stdout`, `/dev/fd/N`, `/proc/...`, or a symlink into one) in place even when it names a regular file, at the stream's own offset, so a failed write can leave part of the output after the earlier contents (io-lib 0.1.3 `write_alias`).
 
 `<path>` is `--out` as typed (`Path::display()`); `<error>` is the io error's Display.
 No refusal block, no remedy. The old §6b refusal (`main.rs:871-883`) and its two
@@ -180,7 +178,7 @@ runs; mt cannot undo that and should not let the holder believe the file is inta
   behind and has no `--out` paragraph). List the deltas in the build report for porting
   to mnemonic-engrave. PROPOSED text:
   1. §8.2h, after the paragraph ending "re-running a command is the case an operator
-     actually hits (F-244)." (`:2610-2614`), insert: `Since mnemonic-io-lib 0.1.2 that
+     actually hits (F-244)." (`:2610-2614`), insert: `Since mnemonic-io-lib 0.1.3 that
      write goes to a temp file beside the target and is renamed over it, so a failed
      write leaves an existing file's bytes as they were and creates nothing at a new
      name. The `--out` warning is printed only after the write succeeded. A failed
@@ -249,7 +247,7 @@ bash mt ...`; every encode/decode/inspect run has `--bitcoin-cli /nonexistent/bi
 | c3_failed_new_file_leaves_nothing | `L0 mt encode --in tx.hex --out strings.txt` (absent) | old refusal; empty 0600 file left (seen by hand) | last line `... <p>: File too large (os error 27). Nothing was written.`; dir holds only tx.hex |
 | c3_missing_directory_says_nothing_was_written | `mt encode --in tx.hex --out <dir>/no-such-dir/strings.txt` | old refusal | last line `mt: cannot write the output: <p>: No such file or directory (os error 2). Nothing was written.` |
 | c3_device_target_names_no_state | `mt encode --in tx.hex --out /dev/full` | old refusal (EPERM) | exit 1, last line starts `mt: cannot write the output: /dev/full: `, ends `)`, no state sentence |
-| c3_stdio_alias_onto_a_file_names_no_state | `L0 mt encode --in tx.hex --out /dev/stdout >> s.txt` (s.txt holds `OLD BACKUP\n`) | old refusal (architect 1124 F1; not run by the architect) | exit 1, last line starts `mt: cannot write the output: /dev/stdout: `, ends `)`, no state sentence |
+| c3_stdio_alias_onto_a_file_names_no_state | `bash -c 'trap "" XFSZ; ulimit -f 1; exec "$@"' bash mt encode --in tx.hex --out /dev/stdout >> s.txt` (s.txt holds 1023 bytes: 1022 `O` and `\n`) | old refusal (architect io-lib 1124 F2) | exit 1, last line starts `mt: cannot write the output: /dev/stdout: `, ends `)`, no state sentence; s.txt starts with its 1023 old bytes |
 | c3_successful_replacement_writes_0600_and_says_so (guard) | `mt encode --in tx.hex --out strings.txt` over a 0644 file | exit 0, `went into`, 0600, bytes = piped stdout | same |
 | i4_encode_in_equals_out_refused | `mt encode --in tx.hex --out tx.hex` | exit 0, tx.hex replaced | §8.2i `--out <p> is the same file as --in <p>`, tx.hex unchanged |
 | i4_encode_out_hard_link_to_in_refused | `--out hard.txt` (hard link to tx.hex) | exit 0 | §8.2i `--out <link> ... --in <tx>` |
@@ -326,7 +324,7 @@ row's counts. Its "does not cover" list is in the script header.
 
 ## 11. Open points for the architect (no STOP)
 
-1. Pin: ruled by Brian 2026-11-24 (registry 0.1.2), P1.
+1. Pin: ruled by Brian 2026-11-24 (registry 0.1.3), P1.
 2. W3: ruled (architect 1124), with the second look.
 3. S1e: ruled (architect 1124).
 4. Q1a: ruled (architect 1124).

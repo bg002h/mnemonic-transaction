@@ -27,9 +27,9 @@ D=design/FIX_bh1119_mt_output_writes
 
 cargo --version | grep -q '^cargo 1\.85\.0 ' || fail "cargo is not 1.85.0"
 
-# T5 + Brian 2026-11-24: mt-cli pins mnemonic-io-lib 0.1.2 from crates.io.
-grep -qx 'mnemonic-io-lib = "0.1.2"' crates/mt-cli/Cargo.toml || fail 'mt-cli does not pin mnemonic-io-lib = "0.1.2"'
-[ "$(grep -A2 -x 'name = "mnemonic-io-lib"' Cargo.lock | tr '\n' '|')" = 'name = "mnemonic-io-lib"|version = "0.1.2"|source = "registry+https://github.com/rust-lang/crates.io-index"|' ] || fail "Cargo.lock does not resolve io-lib 0.1.2 from crates.io"
+# T5 + Brian 2026-11-24: mt-cli pins mnemonic-io-lib 0.1.3 from crates.io.
+grep -qx 'mnemonic-io-lib = "0.1.3"' crates/mt-cli/Cargo.toml || fail 'mt-cli does not pin mnemonic-io-lib = "0.1.3"'
+[ "$(grep -A2 -x 'name = "mnemonic-io-lib"' Cargo.lock | tr '\n' '|')" = 'name = "mnemonic-io-lib"|version = "0.1.3"|source = "registry+https://github.com/rust-lang/crates.io-index"|' ] || fail "Cargo.lock does not resolve io-lib 0.1.3 from crates.io"
 ! grep -q 'git+https://github.com/bg002h/mnemonic-engrave' Cargo.lock || fail "Cargo.lock still has an io-lib git source"
 
 # The sidecars are installed unchanged.
