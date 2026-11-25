@@ -163,7 +163,7 @@ pub fn verify_the_steel(form: Form) -> Warning {
 /// The `~` on the year is load-bearing: a projection presented as a fact is the
 /// mistake §9 refuses for fiat figures, and this text is cut into metal.
 pub fn legend(
-    lock: &crate::locktime::Lock,
+    lock: &crate::locktime::Locks,
     from: Option<&str>,
     to: Option<&str>,
     to_label: Option<&str>,
@@ -238,7 +238,9 @@ pub fn legend(
             let _ = writeln!(s, "    TO ????????   <-- NOT SUPPLIED");
         }
     }
-    let _ = writeln!(s, "    {}", lock.legend());
+    for line in lock.legend() {
+        let _ = writeln!(s, "    {line}");
+    }
     // §5's `n/m` beside each engraved unit. It belongs on the PLATE, not on
     // stdout — stdout is the strings and nothing else — so it is a suggestion
     // like the rest of the legend. Without it a recoverer holding a pile of

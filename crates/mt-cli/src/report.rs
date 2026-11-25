@@ -16,7 +16,7 @@
 //!    checked* — which is where an unverified fee sits.
 //! 3. **`encode` appends, never edits.**
 
-use crate::locktime::{self, Chain, Lock};
+use crate::locktime::{self, Chain, Lock, Locks};
 use crate::node::{Node, ParentState, Utxo};
 use bitcoin::Transaction;
 use std::fmt::Write as _;
@@ -188,8 +188,9 @@ pub struct Report {
     pub chain_reply: Option<crate::node::ChainReply>,
     /// Fee in satoshis, and the weakest provenance of any input.
     pub fee: Option<(u64, Provenance)>,
-    /// `nLockTime`, and the chain height if a node answered.
-    pub locktime: (Lock, Chain),
+    /// `nLockTime` and every input's BIP-68 relative lock, and the chain
+    /// height if a node answered.
+    pub locktime: (Locks, Chain),
     /// Inputs, as (outpoint, value, provenance).
     pub inputs: Vec<(String, Option<u64>, Provenance)>,
     /// Liveness.
@@ -400,7 +401,7 @@ impl Report {
                     // Only fetched when a timestamp lock actually needs it:
                     // §8.4 compares like with like, and a height lock has no
                     // use for MTP.
-                    mtp: match locktime::read(tx) {
+                    mtp: match locktime::read_absolute(tx) {
                         Lock::Time(_) => node.and_then(Node::median_time),
                         _ => None,
                     },
@@ -478,12 +479,15 @@ impl Report {
             }
         }
 
-        // §8.4's spellings only. NEVER a verdict like "PASSED": mt cannot make a
-        // claim about spendability, because a BIP-68 relative timelock lives in
-        // OP_CSV inside the witness script and reading it means evaluating the
-        // sending wallet's script.
+        // §8.4's spellings only. NEVER a verdict like "PASSED": mt reads the
+        // lock FIELDS (nLockTime, and each input's BIP-68 relative lock in
+        // nSequence) and does not evaluate scripts, so it cannot make a claim
+        // about spendability.
         let (lock, chain) = &self.locktime;
-        let _ = writeln!(s, "LOCKTIME  {}", lock.report_row(*chain));
+        for (i, row) in lock.report_rows(*chain).iter().enumerate() {
+            let head = if i == 0 { "LOCKTIME" } else { "" };
+            let _ = writeln!(s, "{head:<8}  {row}");
+        }
 
         let _ = writeln!(s, "INPUTS    {} input(s)", self.inputs.len());
         for (op, val, prov) in &self.inputs {
@@ -579,8 +583,22 @@ pub fn render_json(r: &Report, warnings: &[String]) -> String {
     let (lock, chain) = &r.locktime;
     let _ = writeln!(
         s,
-        "  \"locktime\": {{ \"legend\": \"{}\", \"height\": {}, \"mtp\": {} }},",
-        esc(&lock.legend()),
+        "  \"locktime\": {{ \"legend\": \"{}\", \"relative\": [{}], \"height\": {}, \"mtp\": {} }},",
+        esc(&lock.legend().join("\n")),
+        lock.relative
+            .iter()
+            .map(|r| format!(
+                "{{ \"input\": {}, \"{}\": {} }}",
+                r.input,
+                if r.time { "seconds" } else { "blocks" },
+                if r.time {
+                    u32::from(r.value) * 512
+                } else {
+                    u32::from(r.value)
+                }
+            ))
+            .collect::<Vec<_>>()
+            .join(", "),
         chain.height.map_or("null".into(), |h| h.to_string()),
         chain.mtp.map_or("null".into(), |m| m.to_string()),
     );
@@ -654,7 +672,7 @@ impl ReadFrom {
 }
 
 pub fn no_node_warning(
-    lock: &Lock,
+    lock: &Locks,
     txid: &str,
     has_legacy: bool,
     fee_known: bool,
@@ -684,21 +702,15 @@ pub fn no_node_warning(
     // `NO TIMELOCK` was told, a few lines later in the SAME run, that it was
     // "locked to block 0" — mt contradicting itself about the one fact §8.4
     // calls the most actionable on the plate.
-    match lock {
-        Lock::None | Lock::NotEnforced(_) => {
-            let _ = writeln!(
-                s,
-                "           - has the locktime passed?                          N/A"
-            );
-            let _ = writeln!(s, "             {}", lock.report_row(Chain::default()));
-        }
-        _ => {
-            let _ = writeln!(
-                s,
-                "           - has the locktime passed?                          UNKNOWN"
-            );
-            let _ = writeln!(s, "             {}", lock.report_row(Chain::default()));
-        }
+    // A relative lock makes the question answerable only with a node too: it
+    // counts from the block that confirmed each input's coin.
+    let _ = writeln!(
+        s,
+        "           - has the locktime passed?                          {}",
+        if lock.is_unlocked() { "N/A" } else { "UNKNOWN" }
+    );
+    for row in lock.report_rows(Chain::default()) {
+        let _ = writeln!(s, "             {row}");
     }
     if fee_known {
         let _ = writeln!(
@@ -773,7 +785,7 @@ mod tests {
                 network: None,
                 chain_reply: None,
                 fee: None,
-                locktime: (lt, Chain { height: h, mtp: h }),
+                locktime: (lt.into(), Chain { height: h, mtp: h }),
                 inputs: vec![],
                 status: Status::Unknown,
             };
@@ -802,7 +814,7 @@ mod tests {
             network: None,
             chain_reply: None,
             fee: None,
-            locktime: (Lock::Height(900_000), Chain::default()),
+            locktime: (Lock::Height(900_000).into(), Chain::default()),
             inputs: vec![("x:0".into(), None, Provenance::Unknown)],
             status: Status::Unknown,
         };
@@ -844,7 +856,7 @@ mod tests {
     #[test]
     fn no_node_warning_names_both_ways_out() {
         let w = no_node_warning(
-            &Lock::Height(900_000),
+            &Lock::Height(900_000).into(),
             "deadbeef",
             true,
             false,
@@ -872,7 +884,7 @@ mod tests {
             network: None,
             chain_reply: None,
             fee: None,
-            locktime: (Lock::None, Chain::default()),
+            locktime: (Lock::None.into(), Chain::default()),
             inputs: vec![],
             status: Status::Unknown,
         };
