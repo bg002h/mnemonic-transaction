@@ -32,8 +32,8 @@ toml_path = sys.argv[1]
 text = open(toml_path).read()
 entries = []
 for b in text.split("[[refusal]]")[1:]:
-    f = dict(re.findall(r'^\s*(spec|test|check)\s*=\s*"([^"]+)"', b, re.M))
-    missing = {"spec", "test", "check"} - set(f)
+    f = dict(re.findall(r'^\s*(spec|test|check|class)\s*=\s*"([^"]+)"', b, re.M))
+    missing = {"spec", "test", "check", "class"} - set(f)
     if missing:
         sys.exit(f"FAIL: an entry is missing {sorted(missing)}:\n{b.strip()[:200]}")
     entries.append(f)
@@ -218,6 +218,30 @@ for c in sorted(cited - set(REQUIRED)):
         "changed and this gate was not updated, or the reference is a typo"
     )
 
+# 5. EVERY ROW MAPS TO ITS EXIT-CODE CLASS (exit-code spec R13). The class is
+#    the row's `class`; its test must assert it BY NAME (tests/common/mod.rs
+#    `exit::<CLASS>`), in its own body or as an argument to the helper it calls.
+#    A name and not a number, so `Some(2)` beside an unrelated `2` cannot pass.
+CLASSES = {"NO", "INVALID", "REFUSED", "IO", "USAGE"}
+for e in entries:
+    if e["class"] not in CLASSES:
+        problems.append(f"{e['test']}: class {e['class']!r} is not one of {sorted(CLASSES)}")
+        continue
+    # String literals out first: "mt encode: REFUSED — §8.2f" names the
+    # refusal FORMAT, not the exit class.
+    body = re.sub(r'"(?:[^"\\]|\\.)*"', '""', declared.get(e["test"], (None, ""))[1], flags=re.S)
+    if not re.search(rf"\b{e['class']}\b", body):
+        problems.append(
+            f"{e['test']}: refusals.toml says class {e['class']}, and the test "
+            f"never asserts `{e['class']}`"
+        )
+    for other in CLASSES - {e["class"]}:
+        if re.search(rf"Some\({other}\)|, {other},|\({other}, ", body):
+            problems.append(
+                f"{e['test']}: refusals.toml says class {e['class']}, and the "
+                f"test asserts `{other}`"
+            )
+
 seen = {}
 for e in entries:
     seen.setdefault(e["test"], []).append(e["spec"])
@@ -257,5 +281,5 @@ print(f"check-refusal-coverage: {len(entries)} refusal tests over "
       f"{len(cited)} ruled refusals, each with a test that exists and a check "
       "that resolves")
 for e in entries:
-    print(f"  {e['spec']:<7} {e['test']}")
+    print(f"  {e['spec']:<7} {e['class']:<8} {e['test']}")
 PY
