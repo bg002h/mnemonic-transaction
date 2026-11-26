@@ -41,6 +41,7 @@ Fixes from the mt bug hunt (FIX-A to FIX-D).
   runtime dependency.
 
 ### Fixed
+- **A closed stdout (`mt decode ... >&-`) no longer exits 0 with the output lost.** std's runtime silently reopens a closed fd 0, 1 or 2 on `/dev/null` before `main`, so a write to it "succeeded". `mt` now notes a closed fd 1 before that and plugs each closed standard fd itself (so a file `mt` opens later, such as an `--out` file, cannot become stdout); a verb that writes to stdout (and `--help`/`--version`) prints `mt: cannot write the output: Bad file descriptor (os error 9)` and exits 1, as for a read-only stdout. `encode --out` with stdout closed is unaffected (exit-code survey 2026-11-26, Defect 1).
 - **FIX-B: chunk-set checks.** Chunks of one set that disagree about the set's
   chunk count are refused (`verify` checks the same count in every chunk), and
   `invariant_prefix` returns `TooShort` for input under 24 symbols.

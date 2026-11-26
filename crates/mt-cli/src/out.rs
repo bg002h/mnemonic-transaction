@@ -37,11 +37,70 @@ unsafe extern "C" {
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
 }
 
+#[cfg(unix)]
+static STDOUT_WAS_CLOSED: AtomicBool = AtomicBool::new(false);
+
+/// A closed fd 0, 1 or 2 at exec (`mt ... >&-`). std's runtime opens
+/// `/dev/null` read-write on each closed standard fd before `main`, so by
+/// `main` a closed stdout looks like a writable one and its output is lost
+/// at exit 0. This runs earlier, from the executable's initializer list: it
+/// records a closed fd 1 and plugs each closed fd with `/dev/null` itself
+/// (the lowest free fd, so it lands on that number and stays open for the
+/// whole run), so no file `mt` opens later (an `--out` file) can become
+/// stdout. A target without such a list keeps std's plug only.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly",
+    target_os = "macos"
+))]
+mod closed_fds {
+    use std::sync::atomic::Ordering;
+
+    unsafe extern "C" {
+        fn open(path: *const std::ffi::c_char, flags: i32, ...) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+
+    const F_GETFD: i32 = 1;
+    const O_RDWR: i32 = 2;
+    const EBADF: i32 = 9;
+
+    extern "C" fn probe() {
+        for fd in 0..=2 {
+            // SAFETY: fcntl(F_GETFD) and open() of a NUL-terminated literal
+            // take no other pointer; a bad fd or failed open returns -1.
+            unsafe {
+                if super::fcntl(fd, F_GETFD) != -1
+                    || std::io::Error::last_os_error().raw_os_error() != Some(EBADF)
+                {
+                    continue;
+                }
+                if fd == 1 {
+                    super::STDOUT_WAS_CLOSED.store(true, Ordering::Relaxed);
+                }
+                let n = open(c"/dev/null".as_ptr(), O_RDWR);
+                if n >= 0 && n != fd {
+                    close(n);
+                }
+            }
+        }
+    }
+
+    #[used]
+    #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".init_array"))]
+    #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__mod_init_func"))]
+    static PROBE: extern "C" fn() = probe;
+}
+
 /// std's stdout reports EBADF as a successful write, so a stdout opened
-/// read-only (`1</dev/null`) would lose the output with exit 0 (S1d). Checked
-/// once, at the first stdout write (or clap's `--help`/`--version`): then EBADF
-/// is recorded as the write error. A verb that writes nothing to stdout never
-/// checks. A closed fd 1 (`>&-`) is not detected: fcntl fails.
+/// read-only (`1</dev/null`) or closed at exec (`>&-`, see `closed_fds`)
+/// would lose the output with exit 0 (S1d). Checked once, at the first stdout
+/// write (or clap's `--help`/`--version`): then EBADF is recorded as the write
+/// error. A verb that writes nothing to stdout never checks.
 pub(crate) fn read_only() -> bool {
     static RO: OnceLock<bool> = OnceLock::new();
     *RO.get_or_init(|| {
@@ -53,7 +112,8 @@ pub(crate) fn read_only() -> bool {
             const O_RDWR: i32 = 2;
             // SAFETY: fcntl(F_GETFL) takes no pointer; a bad fd returns -1.
             let fl = unsafe { fcntl(1, F_GETFL) };
-            let ro = fl >= 0 && !matches!(fl & O_ACCMODE, O_WRONLY | O_RDWR);
+            let ro = STDOUT_WAS_CLOSED.load(Ordering::Relaxed)
+                || (fl >= 0 && !matches!(fl & O_ACCMODE, O_WRONLY | O_RDWR));
             if ro {
                 failed(&std::io::Error::from_raw_os_error(9));
             }

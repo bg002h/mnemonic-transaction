@@ -697,3 +697,81 @@ fn bh1119_mt_i4_verify_is_not_checked() {
     assert_eq!(o.status.code(), Some(0), "stderr:\n{}", err(&o));
     assert_eq!(std::fs::read_to_string(&s).unwrap(), even_strings());
 }
+
+// ---- Defect 1 (exit-code survey 2026-11-26): stdout closed at exec --------
+
+/// `mt <args>` with fd 1 really closed at exec (`>&-`). std's runtime plugs a
+/// closed standard fd with `/dev/null` before `main`, so the output was lost
+/// at exit 0.
+fn run_stdout_closed(args: &[&std::ffi::OsStr]) -> Output {
+    Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec "$0" "$@" >&-"#)
+        .arg(bin())
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn closed_stdout_exits_1_with_the_line() {
+    let (_d, s) = even_strings_file();
+    let (_e, tx) = even_hex_file();
+    let s = s.as_os_str();
+    let tx = tx.as_os_str();
+    let off = std::ffi::OsStr::new(OFFLINE);
+    let a = |v: &str| std::ffi::OsStr::new(v).to_owned();
+    for args in [
+        vec![
+            a("decode"),
+            a("--bitcoin-cli"),
+            off.into(),
+            a("--in"),
+            s.into(),
+        ],
+        vec![
+            a("decode"),
+            a("--json"),
+            a("--bitcoin-cli"),
+            off.into(),
+            a("--in"),
+            s.into(),
+        ],
+        vec![
+            a("encode"),
+            a("--bitcoin-cli"),
+            off.into(),
+            a("--in"),
+            tx.into(),
+        ],
+        vec![a("inspect"), a("--in"), s.into()],
+        vec![a("--help")],
+        vec![a("--version")],
+    ] {
+        let refs: Vec<&std::ffi::OsStr> = args.iter().map(|x| x.as_os_str()).collect();
+        let o = run_stdout_closed(&refs);
+        assert!(!err(&o).contains("panicked"), "{args:?}: {}", err(&o));
+        assert_write_failure(&o, BADF);
+    }
+}
+
+/// With stdout closed, `encode --out` succeeds and the file holds exactly the
+/// strings: no stdout write lands in it.
+#[test]
+fn closed_stdout_with_out_file_succeeds_and_nothing_goes_astray() {
+    let (d, tx) = even_hex_file();
+    let out = d.path().join("strings.txt");
+    let o = run_stdout_closed(&[
+        "encode".as_ref(),
+        "--bitcoin-cli".as_ref(),
+        OFFLINE.as_ref(),
+        "--in".as_ref(),
+        tx.as_os_str(),
+        "--out".as_ref(),
+        out.as_os_str(),
+    ]);
+    let e = err(&o);
+    assert_eq!(o.status.code(), Some(0), "stderr:\n{e}");
+    assert!(!e.contains(WRITE_LINE_PREFIX), "stderr:\n{e}");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), even_strings());
+}
