@@ -7,7 +7,7 @@
 //! contract), Brian 2026-11-23 Q2 (an output that names an input is refused)
 //! and the file-output convention's R5 (truthful text).
 //!
-//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
+//! Every run is offline (no `--bitcoin-cli`, no `bitcoin-cli` on `PATH`). Inputs are
 //! the corpus vector `even` in `mt-codec/src/test_vectors/mt1_v1.json`. Unix
 //! only: /dev/full, `ulimit -f`, hard links and symlinks.
 //!
@@ -25,7 +25,9 @@ use std::process::{Command, Output, Stdio};
 mod common;
 use common::exit::{INVALID, IO, REFUSED, USAGE};
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+/// Offline: no `--bitcoin-cli`, and no `bitcoin-cli` on the child's `PATH`
+/// (a NAMED path that is missing adds 32, exit-code spec R9).
+const NO_NODE_PATH: &str = "/nonexistent";
 const FULL: &str = "mt: cannot write the output: No space left on device (os error 28)";
 const BADF: &str = "mt: cannot write the output: Bad file descriptor (os error 9)";
 const WRITE_LINE_PREFIX: &str = "mt: cannot write the output: ";
@@ -41,7 +43,9 @@ fn bin() -> PathBuf {
 }
 
 fn mt() -> Command {
-    Command::new(bin())
+    let mut c = Command::new(bin());
+    c.env("PATH", NO_NODE_PATH);
+    c
 }
 
 fn vector(label: &str) -> serde_json::Value {
@@ -109,7 +113,8 @@ fn run(c: &mut Command) -> Output {
 fn run_no_file_writes(args: &[&std::ffi::OsStr]) -> Output {
     Command::new("bash")
         .arg("-c")
-        .arg(r#"trap '' XFSZ; ulimit -f 0; exec "$@""#)
+        .arg(r#"trap '' XFSZ; ulimit -f 0; export PATH="$NO_NODE_PATH"; exec "$@""#)
+        .env("NO_NODE_PATH", NO_NODE_PATH)
         .arg("bash")
         .arg(bin())
         .args(args)
@@ -180,7 +185,8 @@ fn even_hex_file() -> (tempfile::TempDir, PathBuf) {
 fn bh1119_mt_c2_encode_stdout_full_exits_1() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -190,7 +196,8 @@ fn bh1119_mt_c2_encode_stdout_full_exits_1() {
 fn bh1119_mt_c2_encode_qr_stdout_full_exits_1() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["encode", "--qr", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--qr", "--in"])
         .arg(&tx)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -200,7 +207,8 @@ fn bh1119_mt_c2_encode_qr_stdout_full_exits_1() {
 fn bh1119_mt_c2_decode_stdout_full_exits_1() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(&s)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -210,7 +218,8 @@ fn bh1119_mt_c2_decode_stdout_full_exits_1() {
 fn bh1119_mt_c2_decode_json_stdout_full_exits_1() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["decode", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--json", "--in"])
         .arg(&s)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -220,7 +229,8 @@ fn bh1119_mt_c2_decode_json_stdout_full_exits_1() {
 fn bh1119_mt_c2_inspect_strings_stdout_full_exits_1() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["inspect", "--in"])
         .arg(&s)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -230,7 +240,8 @@ fn bh1119_mt_c2_inspect_strings_stdout_full_exits_1() {
 fn bh1119_mt_c2_inspect_strings_json_stdout_full_exits_1() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["inspect", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["inspect", "--json", "--in"])
         .arg(&s)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -240,7 +251,8 @@ fn bh1119_mt_c2_inspect_strings_json_stdout_full_exits_1() {
 fn bh1119_mt_c2_inspect_transaction_stdout_full_exits_1() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["inspect", "--in"])
         .arg(&tx)
         .stdout(full()));
     assert_write_failure(&o, FULL);
@@ -270,7 +282,8 @@ fn bh1119_mt_c2_version_stdout_full_exits_1() {
 fn bh1119_mt_c2_decode_read_only_stdout_exits_1() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(&s)
         .stdout(read_from(Path::new("/dev/null"))));
     assert_write_failure(&o, BADF);
@@ -286,11 +299,13 @@ fn bh1119_mt_c2_decode_closed_pipe_keeps_exit_0() {
         .arg(
             "import os,subprocess,sys\n\
              r,w=os.pipe(); os.close(r)\n\
-             p=subprocess.run(sys.argv[1:],stdout=w,stderr=subprocess.PIPE)\n\
+             p=subprocess.run(sys.argv[1:],stdout=w,stderr=subprocess.PIPE,\n\
+             env=dict(os.environ,PATH=os.environ['NO_NODE_PATH']))\n\
              sys.stderr.buffer.write(p.stderr); sys.exit(p.returncode)",
         )
         .arg(bin())
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("NO_NODE_PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(&s));
     let e = err(&o);
     assert_eq!(o.status.code(), Some(0), "stderr:\n{e}");
@@ -312,7 +327,8 @@ fn bh1119_mt_c2_verify_stderr_full_keeps_exit_0() {
 fn bh1119_mt_c2_decode_json_stderr_full_keeps_exit_0_and_the_hex() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["decode", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--json", "--in"])
         .arg(&s)
         .stderr(full()));
     assert_eq!(o.status.code(), Some(0));
@@ -324,7 +340,8 @@ fn bh1119_mt_c2_decode_json_stderr_full_keeps_exit_0_and_the_hex() {
 fn bh1119_mt_c2_refused_verb_keeps_exit_1_and_says_no_write_line() {
     let (_d, g) = dir_with("g.txt", "not a transaction\n");
     let o = run(mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(&g)
         .stdout(full()));
     let e = err(&o);
@@ -350,8 +367,6 @@ fn bh1119_mt_c3_failed_replacement_keeps_the_previous_file() {
     std::fs::write(&out, "OLD BACKUP\n").unwrap();
     let o = run_no_file_writes(&[
         "encode".as_ref(),
-        "--bitcoin-cli".as_ref(),
-        OFFLINE.as_ref(),
         "--in".as_ref(),
         tx.as_os_str(),
         "--out".as_ref(),
@@ -374,8 +389,6 @@ fn bh1119_mt_c3_failed_replacement_says_the_file_is_unchanged() {
     std::fs::write(&out, "OLD BACKUP\n").unwrap();
     let o = run_no_file_writes(&[
         "encode".as_ref(),
-        "--bitcoin-cli".as_ref(),
-        OFFLINE.as_ref(),
         "--in".as_ref(),
         tx.as_os_str(),
         "--out".as_ref(),
@@ -400,8 +413,6 @@ fn bh1119_mt_c3_failed_new_file_leaves_nothing() {
     let out = d.path().join("strings.txt");
     let o = run_no_file_writes(&[
         "encode".as_ref(),
-        "--bitcoin-cli".as_ref(),
-        OFFLINE.as_ref(),
         "--in".as_ref(),
         tx.as_os_str(),
         "--out".as_ref(),
@@ -431,7 +442,8 @@ fn bh1119_mt_c3_missing_directory_says_nothing_was_written() {
     let (d, tx) = even_hex_file();
     let out = d.path().join("no-such-dir").join("strings.txt");
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .arg("--out")
         .arg(&out));
@@ -452,7 +464,8 @@ fn bh1119_mt_c3_missing_directory_says_nothing_was_written() {
 fn bh1119_mt_c3_device_target_names_no_state() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .args(["--out", "/dev/full"]));
     let e = err(&o);
@@ -481,10 +494,11 @@ fn bh1119_mt_c3_stdio_alias_onto_a_file_names_no_state() {
     std::fs::write(&s, &old).unwrap();
     let o = run(Command::new("bash")
         .arg("-c")
-        .arg(r#"trap '' XFSZ; ulimit -f 1; exec "$@""#)
+        .arg(r#"trap '' XFSZ; ulimit -f 1; export PATH="$NO_NODE_PATH"; exec "$@""#)
         .arg("bash")
         .arg(bin())
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("NO_NODE_PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .args(["--out", "/dev/stdout"])
         .stdout(append_to(&s)));
@@ -513,7 +527,8 @@ fn bh1119_mt_c3_successful_replacement_writes_0600_and_says_so() {
     std::fs::write(&out, "OLD BACKUP\n").unwrap();
     std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o644)).unwrap();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .arg("--out")
         .arg(&out));
@@ -521,7 +536,8 @@ fn bh1119_mt_c3_successful_replacement_writes_0600_and_says_so() {
     assert_eq!(o.status.code(), Some(0), "stderr:\n{e}");
     assert!(e.contains("went into"), "stderr:\n{e}");
     let piped = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx));
     assert_eq!(std::fs::read(&out).unwrap(), piped.stdout);
     let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
@@ -534,7 +550,8 @@ fn bh1119_mt_c3_successful_replacement_writes_0600_and_says_so() {
 fn bh1119_mt_i4_encode_in_equals_out_refused() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .arg("--out")
         .arg(&tx));
@@ -556,7 +573,8 @@ fn bh1119_mt_i4_encode_out_hard_link_to_in_refused() {
     let link = d.path().join("hard.txt");
     std::fs::hard_link(&tx, &link).unwrap();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .arg("--out")
         .arg(&link));
@@ -577,7 +595,8 @@ fn bh1119_mt_i4_encode_out_symlink_to_in_refused() {
     let link = d.path().join("sym.txt");
     std::os::unix::fs::symlink(&tx, &link).unwrap();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .arg("--out")
         .arg(&link));
@@ -596,7 +615,8 @@ fn bh1119_mt_i4_encode_out_symlink_to_in_refused() {
 fn bh1119_mt_i4_encode_out_equals_stdin_refused() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--out"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--out"])
         .arg(&tx)
         .stdin(read_from(&tx)));
     assert_same_file_refusal(
@@ -614,7 +634,8 @@ fn bh1119_mt_i4_encode_out_equals_stdin_refused() {
 fn bh1119_mt_i4_encode_stdout_appends_to_in_refused() {
     let (_d, tx) = even_hex_file();
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .stdout(append_to(&tx)));
     assert_same_file_refusal(
@@ -632,7 +653,8 @@ fn bh1119_mt_i4_encode_stdout_appends_to_in_refused() {
 fn bh1119_mt_i4_decode_stdout_appends_to_in_refused() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(&s)
         .stdout(append_to(&s)));
     assert_same_file_refusal(
@@ -650,7 +672,8 @@ fn bh1119_mt_i4_decode_stdout_appends_to_in_refused() {
 fn bh1119_mt_i4_inspect_stdout_appends_to_in_refused() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["inspect", "--in"])
         .arg(&s)
         .stdout(append_to(&s)));
     assert_same_file_refusal(
@@ -668,7 +691,8 @@ fn bh1119_mt_i4_inspect_stdout_appends_to_in_refused() {
 fn bh1119_mt_i4_decode_stdin_and_stdout_one_file_refused() {
     let (_d, s) = even_strings_file();
     let o = run(mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode"])
         .stdin(read_from(&s))
         .stdout(append_to(&s)));
     assert_same_file_refusal(
@@ -688,7 +712,8 @@ fn bh1119_mt_i4_decode_stdin_and_stdout_one_file_refused() {
 fn bh1119_mt_i4_refused_before_the_input_is_read() {
     let (_d, g) = dir_with("g.txt", "not a transaction\n");
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&g)
         .arg("--out")
         .arg(&g));
@@ -710,7 +735,8 @@ fn bh1119_mt_i4_distinct_out_is_written() {
     let (d, tx) = even_hex_file();
     let out = d.path().join("strings.txt");
     let o = run(mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["encode", "--in"])
         .arg(&tx)
         .arg("--out")
         .arg(&out));
@@ -737,7 +763,8 @@ fn bh1119_mt_i4_verify_is_not_checked() {
 fn run_stdout_closed(args: &[&std::ffi::OsStr]) -> Output {
     Command::new("sh")
         .arg("-c")
-        .arg(r#"exec "$0" "$@" >&-"#)
+        .arg(r#"export PATH="$NO_NODE_PATH"; exec "$0" "$@" >&-"#)
+        .env("NO_NODE_PATH", NO_NODE_PATH)
         .arg(bin())
         .args(args)
         .output()
@@ -745,36 +772,16 @@ fn run_stdout_closed(args: &[&std::ffi::OsStr]) -> Output {
 }
 
 #[test]
-fn closed_stdout_exits_1_with_the_line() {
+fn closed_stdout_adds_io_with_the_line() {
     let (_d, s) = even_strings_file();
     let (_e, tx) = even_hex_file();
     let s = s.as_os_str();
     let tx = tx.as_os_str();
-    let off = std::ffi::OsStr::new(OFFLINE);
     let a = |v: &str| std::ffi::OsStr::new(v).to_owned();
     for args in [
-        vec![
-            a("decode"),
-            a("--bitcoin-cli"),
-            off.into(),
-            a("--in"),
-            s.into(),
-        ],
-        vec![
-            a("decode"),
-            a("--json"),
-            a("--bitcoin-cli"),
-            off.into(),
-            a("--in"),
-            s.into(),
-        ],
-        vec![
-            a("encode"),
-            a("--bitcoin-cli"),
-            off.into(),
-            a("--in"),
-            tx.into(),
-        ],
+        vec![a("decode"), a("--in"), s.into()],
+        vec![a("decode"), a("--json"), a("--in"), s.into()],
+        vec![a("encode"), a("--in"), tx.into()],
         vec![a("inspect"), a("--in"), s.into()],
         vec![a("--help")],
         vec![a("--version")],
@@ -794,8 +801,6 @@ fn closed_stdout_with_out_file_succeeds_and_nothing_goes_astray() {
     let out = d.path().join("strings.txt");
     let o = run_stdout_closed(&[
         "encode".as_ref(),
-        "--bitcoin-cli".as_ref(),
-        OFFLINE.as_ref(),
         "--in".as_ref(),
         tx.as_os_str(),
         "--out".as_ref(),

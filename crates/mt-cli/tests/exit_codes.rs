@@ -14,7 +14,10 @@ fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+/// The offline posture: no `--bitcoin-cli` on the command line and no
+/// `bitcoin-cli` on `PATH` (set on the child only). A NAMED path that is
+/// missing is a helper failing (R9), not a way to go offline.
+const NO_NODE_PATH: &str = "/nonexistent";
 
 fn corpus() -> serde_json::Value {
     let p = concat!(
@@ -66,7 +69,12 @@ fn one_error_set() -> String {
 }
 
 fn run(args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
-    let o = mt().args(args).write_stdin(stdin).output().unwrap();
+    let o = mt()
+        .env("PATH", NO_NODE_PATH)
+        .args(args)
+        .write_stdin(stdin)
+        .output()
+        .unwrap();
     (
         o.status.code(),
         String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -119,6 +127,39 @@ fn a_bad_separator_is_usage_before_any_input_is_read() {
     assert!(err.contains("§1.1e"), "{err}");
 }
 
+/// R2 (review M1): every command-line check is judged before the §8.2i
+/// same-file refusal, which stats files. A command line that is wrong AND
+/// writes onto its input is 64, not 8.
+#[test]
+fn a_usage_error_outranks_a_same_file_refusal() {
+    let f = tmp(&strings("even").join("\n"));
+    let tx = tmp(vector("even", "raw_hex").as_str().unwrap());
+    for verb in ["decode", "inspect"] {
+        let same = std::fs::OpenOptions::new()
+            .append(true)
+            .open(f.path())
+            .unwrap();
+        let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
+            .env("PATH", NO_NODE_PATH)
+            .args([verb, "--in"])
+            .arg(f.path())
+            .arg("--transaction")
+            .arg(tx.path())
+            .stdout(same)
+            .output()
+            .unwrap();
+        assert_eq!(
+            o.status.code(),
+            Some(USAGE),
+            "{verb}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    let p = tx.path().to_str().unwrap();
+    let (code, _, err) = run(&["encode", "--in", p, "-", "--out", p], "");
+    assert_eq!(code, Some(USAGE), "encode: {err}");
+}
+
 // ── help (R11) ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -143,7 +184,7 @@ output); 16 a correction was applied; 32 a file, device or helper failed.";
 fn an_invalid_or_empty_input_is_invalid_on_every_verb() {
     for verb in ["encode", "decode", "verify", "inspect"] {
         for input in ["garbage\n", ""] {
-            let (code, out, err) = run(&[verb, "--bitcoin-cli", OFFLINE], input);
+            let (code, out, err) = run(&[verb], input);
             assert_eq!(code, Some(INVALID), "{verb} on {input:?}: {err}");
             assert!(out.is_empty());
         }
@@ -192,7 +233,8 @@ fn a_failed_stdout_write_adds_io() {
         .unwrap();
     let f = tmp(&strings("even").join("\n"));
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(f.path())
         .stdout(full)
         .output()
@@ -206,7 +248,8 @@ fn a_failed_stdout_write_adds_io() {
         .unwrap();
     let f = tmp(&one_error_set());
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", NO_NODE_PATH)
+        .args(["decode", "--in"])
         .arg(f.path())
         .stdout(full)
         .output()
@@ -214,29 +257,30 @@ fn a_failed_stdout_write_adds_io() {
     assert_eq!(o.status.code(), Some(IO | REPAIRED));
 }
 
-/// R9: a `bitcoin-cli` the operator NAMED, that runs and fails, sets 32 and
-/// the output still prints. An absent one is the documented offline mechanism
-/// and stays 0; so does the default `bitcoin-cli` failing.
-#[test]
-fn a_named_bitcoin_cli_that_fails_is_io_and_an_absent_one_is_offline() {
+/// A `bitcoin-cli` stub with this shell body, in its own directory (a file
+/// open for writing cannot be exec'd).
+fn helper(body: &str) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let cli = dir.path().join("bitcoin-cli");
-    std::fs::write(&cli, "#!/bin/sh\ncat >/dev/null\nexit 1\n").unwrap();
+    std::fs::write(&cli, body).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
+    let p = cli.to_str().unwrap().to_string();
+    (dir, p)
+}
+
+/// Run `decode`, `inspect` and `encode` against a named `--bitcoin-cli`, and
+/// assert each exits `want` and still prints its output (R9: the run keeps its
+/// report and strings).
+fn assert_named_helper_gives(cli: &str, want: i32, why: &str) {
     let set = strings("even").join("\n");
     for verb in ["decode", "inspect"] {
-        let (code, out, err) = run(&[verb, "--bitcoin-cli", cli.to_str().unwrap()], &set);
-        assert_eq!(code, Some(IO), "{verb}: {err}");
-        assert!(
-            !out.is_empty() || verb == "inspect",
-            "{verb} lost its output"
-        );
-        let (code, _, err) = run(&[verb, "--bitcoin-cli", OFFLINE], &set);
-        assert_eq!(code, Some(OK), "{verb}: {err}");
+        let (code, out, err) = run(&[verb, "--bitcoin-cli", cli], &set);
+        assert_eq!(code, Some(want), "{why}, {verb}: {err}");
+        assert!(!out.is_empty(), "{why}: {verb} lost its output");
     }
     let raw = vector("even", "raw_hex");
     let f = tmp(raw.as_str().unwrap());
@@ -244,14 +288,79 @@ fn a_named_bitcoin_cli_that_fails_is_io_and_an_absent_one_is_offline() {
         &[
             "encode",
             "--bitcoin-cli",
-            cli.to_str().unwrap(),
+            cli,
             "--in",
             f.path().to_str().unwrap(),
         ],
         "",
     );
-    assert_eq!(code, Some(IO), "{err}");
-    assert!(out.starts_with("mt1"), "encode lost its output");
+    assert_eq!(code, Some(want), "{why}, encode: {err}");
+    assert!(out.starts_with("mt1"), "{why}: encode lost its output");
+}
+
+/// R9: a `bitcoin-cli` the operator NAMED, that runs and fails, sets 32 and
+/// the output still prints.
+#[test]
+fn a_named_bitcoin_cli_that_fails_is_io() {
+    let (_d, cli) = helper("#!/bin/sh\ncat >/dev/null\nexit 1\n");
+    assert_named_helper_gives(&cli, IO, "exits 1");
+}
+
+/// R9 (review I1): a named helper that exits 0 but gives no reply mt can use
+/// (nothing at all, or garbage) has failed just the same.
+#[test]
+fn a_named_bitcoin_cli_with_no_usable_reply_is_io() {
+    let (_d, cli) = helper("#!/bin/sh\ncat >/dev/null\nexit 0\n");
+    assert_named_helper_gives(&cli, IO, "silent");
+    let (_d, cli) = helper("#!/bin/sh\ncat >/dev/null\necho garbage\n");
+    assert_named_helper_gives(&cli, IO, "garbage");
+}
+
+/// R9 and §3 test 2, "failed or gone missing" (coordinator ruling on review
+/// I2): a NAMED path that does not exist, or cannot be started, is 32.
+#[test]
+fn a_named_bitcoin_cli_that_is_missing_is_io() {
+    assert_named_helper_gives("/nonexistent/bitcoin-cli", IO, "missing path");
+    let (_d, cli) = helper("#!/nonexistent/sh\nexit 0\n");
+    assert_named_helper_gives(&cli, IO, "missing interpreter");
+}
+
+/// Only the DEFAULT `bitcoin-cli` being absent is the offline path: 0, with
+/// its warning.
+#[test]
+fn the_default_bitcoin_cli_absent_is_offline() {
+    let set = strings("even").join("\n");
+    for verb in ["decode", "inspect"] {
+        let (code, out, err) = run(&[verb], &set);
+        assert_eq!(code, Some(OK), "{verb}: {err}");
+        assert!(!out.is_empty(), "{verb} lost its output");
+        assert!(
+            format!("{out}{err}").contains("no bitcoind reachable"),
+            "{verb}: the offline warning is missing:\n{out}{err}"
+        );
+    }
+}
+
+/// Core's real answers are not a failing helper: `gettxout` null (empty
+/// output) and `getrawtransaction` not found (exit 5). (`getindexinfo` `{}`
+/// and exit 89 are pinned in `node_tristate.rs`.)
+#[test]
+fn a_named_node_giving_real_null_answers_is_ok() {
+    let s = common::node_stub("", &[]);
+    let raw = vector("even", "raw_hex");
+    let f = tmp(raw.as_str().unwrap());
+    let (code, out, err) = run(
+        &[
+            "inspect",
+            "--bitcoin-cli",
+            s.path().to_str().unwrap(),
+            "--in",
+            f.path().to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(code, Some(OK), "{err}");
+    assert!(!out.is_empty());
 }
 
 // ── 8: refused ───────────────────────────────────────────────────────────────
@@ -290,7 +399,7 @@ fn a_verify_mismatch_is_no() {
 fn a_correction_sets_repaired_on_every_reading_verb() {
     let set = one_error_set();
     for verb in ["decode", "verify", "inspect"] {
-        let (code, out, err) = run(&[verb, "--bitcoin-cli", OFFLINE], &set);
+        let (code, out, err) = run(&[verb], &set);
         assert_eq!(code, Some(REPAIRED), "{verb}: {err}");
         if verb == "decode" {
             assert_eq!(
@@ -301,9 +410,9 @@ fn a_correction_sets_repaired_on_every_reading_verb() {
         }
     }
     // And --quiet / --json do not hide it.
-    let (code, _, _) = run(&["decode", "--quiet", "--bitcoin-cli", OFFLINE], &set);
+    let (code, _, _) = run(&["decode", "--quiet"], &set);
     assert_eq!(code, Some(REPAIRED));
-    let (code, _, _) = run(&["inspect", "--json", "--bitcoin-cli", OFFLINE], &set);
+    let (code, _, _) = run(&["inspect", "--json"], &set);
     assert_eq!(code, Some(REPAIRED));
 }
 
@@ -311,7 +420,7 @@ fn a_correction_sets_repaired_on_every_reading_verb() {
 fn a_clean_set_stays_ok() {
     let set = strings("even").join("\n");
     for verb in ["decode", "verify", "inspect"] {
-        let (code, _, err) = run(&[verb, "--bitcoin-cli", OFFLINE], &set);
+        let (code, _, err) = run(&[verb], &set);
         assert_eq!(code, Some(OK), "{verb}: {err}");
     }
 }

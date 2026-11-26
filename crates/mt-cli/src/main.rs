@@ -125,13 +125,11 @@ struct ReadArgs {
     #[arg(long)]
     json: bool,
 
-    /// Path to `bitcoin-cli`. Pointing this at something absent forces the
-    /// OFFLINE path — the mechanism every air-gapped gate and journey uses,
-    /// because the alternative an implementer reaches for is editing `PATH`,
-    /// which is process-global and would silently change neighbouring tests.
+    /// Path to `bitcoin-cli`, for a binary not on `PATH`.
     ///
-    /// A path you name that runs and does not answer adds 32 to the exit
-    /// status (the report still prints); an absent path does not.
+    /// A path you name that is missing, fails or does not answer adds 32 to
+    /// the exit status (the report still prints). To run offline, do not pass
+    /// this flag and have no `bitcoin-cli` on `PATH`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
 }
@@ -292,12 +290,9 @@ struct EncodeArgs {
 
     /// Path to `bitcoin-cli`, for a binary not on `PATH`.
     ///
-    /// Pointing this at something that does not exist is how a run is forced
-    /// **offline** — the mechanism every gate and journey that must run
-    /// air-gapped uses.
-    ///
-    /// A path you name that runs and does not answer adds 32 to the exit
-    /// status (the strings still print); an absent path does not.
+    /// A path you name that is missing, fails or does not answer adds 32 to
+    /// the exit status (the strings still print). To run offline, do not pass
+    /// this flag and have no `bitcoin-cli` on `PATH`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
 }
@@ -376,8 +371,8 @@ fn main() -> std::process::ExitCode {
         }
     };
     // R9: a `--bitcoin-cli` the operator NAMED is a helper they asked for, so
-    // its failure is IO (32). The default is not; neither is an absent path,
-    // which is the documented way to force the offline path.
+    // its failure, absence included, is IO (32). The default is not: its
+    // absence is the offline path.
     if matches
         .subcommand()
         .and_then(|(_, m)| m.value_source("bitcoin_cli"))
@@ -440,7 +435,9 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     // A setting, judged from the command line alone, so before any input is
     // read (exit-code spec R2).
     separator_guard(&args.separator)?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "encode")?;
     // §8.2i: the output is never one of the inputs (Q1c: before any read).
+    // After every command-line check: it stats files (R2).
     validate::same_file_guard(
         "encode",
         match args.out.as_deref() {
@@ -449,7 +446,6 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         },
         input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
     )?;
-    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "encode")?;
 
     let raw = match (&args.r#in, argv_material) {
         // Two sources offered for ONE channel. `--in` wins -- it is the private
@@ -1655,13 +1651,14 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     json_quiet_guard(args.json, args.quiet, "decode")?;
+    transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
+    // §8.2i, after every command-line check: it stats files (R2).
     validate::same_file_guard(
         "decode",
         mnemonic_io_lib::write::Endpoint::Stdout,
         input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
     )?;
-    transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
-    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
     let text = read_input(&args.r#in, argv_material, "decode")?;
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
@@ -2120,13 +2117,14 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "inspect")?;
+    transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
+    // §8.2i, after every command-line check: it stats files (R2).
     validate::same_file_guard(
         "inspect",
         mnemonic_io_lib::write::Endpoint::Stdout,
         input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
     )?;
-    transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
-    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
     // `inspect` reads BYTES and routes on what they ARE (I5, I6), in order:
     // empty input stays on the strings path ("no strings found in the input"
     // beats anything the sniffer would say); whatever §8.2e's sniff recognises

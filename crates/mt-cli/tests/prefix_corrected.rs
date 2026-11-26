@@ -12,7 +12,6 @@ use std::io::Write;
 mod common;
 use common::exit::{INVALID, REPAIRED};
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 const ELIDED_DROP: usize = 11;
 const CS: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
@@ -81,7 +80,7 @@ fn damage(line: &str, at: &[usize]) -> String {
 fn run(verb: &str, extra: &[&str], text: &str) -> std::process::Output {
     let f = tmp(text);
     mt().arg(verb)
-        .args(["--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
         .args(extra)
         .arg("--in")
         .arg(f.path())
@@ -92,7 +91,7 @@ fn run(verb: &str, extra: &[&str], text: &str) -> std::process::Output {
 fn encode(extra: &[&str]) -> std::process::Output {
     let f = tmp(&p5_psbt());
     mt().arg("encode")
-        .args(["--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
         .args(extra)
         .arg("--in")
         .arg(f.path())

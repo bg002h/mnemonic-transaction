@@ -8,8 +8,6 @@ use mt_codec::string_layer::bch::{bytes_to_5bit, encode_5bit_to_string};
 use mt_codec::{ChunkHeader, decode};
 use std::io::Write;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
@@ -67,7 +65,7 @@ fn run(verb: &str, strings: &[String]) -> (Option<i32>, String, String) {
     }
     let o = mt()
         .arg(verb)
-        .args(["--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .output()

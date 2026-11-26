@@ -15,8 +15,6 @@ use std::io::Write;
 mod common;
 use common::exit::USAGE;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 /// The texts this FIX adds (PROPOSED, architect confirms). A wording change
 /// updates these constants and nothing else.
 const T_PHRASE: &str = "only `verify` makes that comparison";
@@ -67,7 +65,8 @@ fn file_with(text: &str) -> tempfile::NamedTempFile {
 fn encode_with(extra: &[&str]) -> (Option<i32>, String, String) {
     let tx = file_with(&raw_hex());
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .args(extra)
         .arg("--in")
         .arg(tx.path())
@@ -152,7 +151,8 @@ fn bh1119_mt_i9_encode_admits_every_separator_decode_admits() {
         assert_eq!(rc, Some(0), "separator {sep:?} refused:\n{err}");
         let f = file_with(&out);
         let back = mt()
-            .args(["decode", "--quiet", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["decode", "--quiet", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -178,7 +178,8 @@ fn run_read(
     extra: &[&std::ffi::OsStr],
 ) -> (Option<i32>, String, String) {
     let out = mt()
-        .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args([verb, "--in"])
         .arg(input)
         .args(extra)
         .write_stdin("not read\n")
@@ -324,7 +325,8 @@ fn bh1119_mt_i12_in_alone_and_dash_alone_still_work() {
     assert_eq!(out.trim(), raw);
     let body = std::fs::read_to_string(set.path()).unwrap();
     let dashed = mt()
-        .args(["decode", "--quiet", "--bitcoin-cli", OFFLINE, "-"])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--quiet", "-"])
         .write_stdin(body)
         .output()
         .unwrap();
@@ -398,7 +400,8 @@ fn bh1119_mt_i24_utf8_non_ascii_path_still_works() {
     let p = dir.path().join("plate-é.txt");
     std::fs::copy(set.path(), &p).unwrap();
     let out = mt()
-        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["verify", "--in"])
         .arg(&p)
         .output()
         .unwrap();
@@ -421,7 +424,8 @@ fn bh1119_mt_i24_non_utf8_program_path_is_not_refused() {
     let link = dir.path().join(std::ffi::OsStr::from_bytes(b"mt-\xff"));
     std::os::unix::fs::symlink(assert_cmd::cargo::cargo_bin("mt"), &link).unwrap();
     let out = std::process::Command::new(&link)
-        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["verify", "--in"])
         .arg(set.path())
         .output()
         .unwrap();

@@ -14,8 +14,6 @@ mod common;
 use common::exit::INVALID;
 use common::hex_to_bytes;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 /// The texts this FIX adds (PROPOSED, architect confirms). A wording change
 /// updates these constants and nothing else.
 const ZERO_OUT: &str = "the transaction has 0 outputs";
@@ -80,7 +78,12 @@ struct Run {
 
 fn run(args: &[&str], input: &str) -> Run {
     let f = file_with(input);
-    let o = mt().args(args).arg("--in").arg(f.path()).output().unwrap();
+    let mut c = mt();
+    if !args.contains(&"--bitcoin-cli") {
+        // Offline: no helper named, and none on the child's PATH.
+        c.env("PATH", "/nonexistent");
+    }
+    let o = c.args(args).arg("--in").arg(f.path()).output().unwrap();
     Run {
         code: o.status.code(),
         out: String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -89,7 +92,7 @@ fn run(args: &[&str], input: &str) -> Run {
 }
 
 fn encode_offline(input: &str, extra: &[&str]) -> Run {
-    let mut a = vec!["encode", "--bitcoin-cli", OFFLINE];
+    let mut a = vec!["encode"];
     a.extend_from_slice(extra);
     run(&a, input)
 }
@@ -228,7 +231,7 @@ fn bh1119_mt_i16_encode_output_at_money_range_is_accepted() {
 // ── I16, inspect warns ──────────────────────────────────────────────────────
 
 fn inspect_offline(input: &str, extra: &[&str]) -> Run {
-    let mut a = vec!["inspect", "--bitcoin-cli", OFFLINE];
+    let mut a = vec!["inspect"];
     a.extend_from_slice(extra);
     run(&a, input)
 }
@@ -345,7 +348,7 @@ fn bh1119_mt_i16_decode_output_sum_overflow_does_not_panic() {
     let bytes = bitcoin::consensus::serialize(&tx);
     let strings =
         mt_codec::string_layer::pipeline::encode(&bytes, &tx.compute_txid().to_string()).unwrap();
-    let r = run(&["decode", "--bitcoin-cli", OFFLINE], &strings.join("\n"));
+    let r = run(&["decode"], &strings.join("\n"));
     assert_ne!(r.code, Some(101), "decode panicked: {}", r.err);
     assert_eq!(r.code, Some(0), "stderr:\n{}", r.err);
     assert_eq!(r.out.trim(), to_hex(&bytes));

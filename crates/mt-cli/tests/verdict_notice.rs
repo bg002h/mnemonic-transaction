@@ -12,7 +12,6 @@ use common::exit::{IO, NO, REPAIRED};
 use assert_cmd::Command;
 use std::io::Write;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 const NO_NODE_HEAD: &str = "\nWARNING: no bitcoind reachable. mt read this transaction from the\n";
 const OK_EVEN: &str = "mt verify: OK — 6 chunks, set 0x2dcf2, transaction re-derives.";
 const MATCH_LINE: &str = "  --transaction matches, on the full txid.";
@@ -127,7 +126,14 @@ fn decode(extra: &[&str], text: &str, cli: &std::path::Path) -> std::process::Ou
 }
 
 fn decode_offline(extra: &[&str], text: &str) -> std::process::Output {
-    decode(extra, text, std::path::Path::new(OFFLINE))
+    let f = tmp(text);
+    mt().env("PATH", "/nonexistent")
+        .arg("decode")
+        .args(extra)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap()
 }
 
 fn verify(text: &str, transaction: &std::path::Path) -> std::process::Output {

@@ -35,8 +35,9 @@ another transaction, a node proves an input spent or disagrees with a value);
 world-readable stdout, an output that is one of the inputs); 16 a correction was
 applied (the output is the same, and a plate is damaged); 32 a file or helper
 failed (an input that cannot be read, an output that cannot be written, a
-`--bitcoin-cli` you named that runs and does not answer; pointing it at nothing
-is the offline path, and stays 0). A script that accepts a corrected plate tests
+`--bitcoin-cli` you named that is missing, fails or does not answer; no
+`bitcoin-cli` at all, none named and none on `PATH`, is the offline path and
+stays 0). A script that accepts a corrected plate tests
 `[ $(( rc & ~16 )) -eq 0 ]`.
 
 Input comes from a **file or stdin, never an argument**: an argument lands in
@@ -49,13 +50,16 @@ bearer.
 
 ```sh
 cargo build
-./target/debug/mt encode --bitcoin-cli /nonexistent --in tx.hex
+PATH=/nonexistent ./target/debug/mt encode --in tx.hex
 ```
 
-`--bitcoin-cli /nonexistent` forces the **offline** path, which is the
-constellation's normal posture. With a real `bitcoin-cli` on `PATH`, `mt`
-consults it automatically and asks the operator for nothing — `bitcoin-cli`
-already holds the RPC URL, the cookie, the network and the wallet.
+With no `bitcoin-cli` to be found (no `--bitcoin-cli`, none on `PATH`) `mt`
+takes the **offline** path, which is the constellation's normal posture, and
+exits 0 with a warning. With a real `bitcoin-cli` on `PATH`, `mt` consults it
+automatically and asks the operator for nothing — `bitcoin-cli` already holds
+the RPC URL, the cookie, the network and the wallet. A `--bitcoin-cli PATH`
+you name is a helper you asked for: if it is missing, fails or gives no usable
+answer, `mt` still prints its output and adds 32 to the exit status.
 `mt` supports Bitcoin Core 0.21 or newer, with -txindex for full node checks.
 
 ## Verifying the tool, not just running it

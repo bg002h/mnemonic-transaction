@@ -22,19 +22,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static NAMED: AtomicBool = AtomicBool::new(false);
 
 /// The operator named `--bitcoin-cli` on the command line (exit-code spec R9).
-/// From here on, a `bitcoin-cli` that runs and does not answer adds IO (32) to
-/// the exit code. An absent one does not: pointing the flag at nothing is the
-/// documented way to force the offline path, and that is "no node", not a
-/// failing one.
+/// From here on, a `bitcoin-cli` that is missing, cannot be started, fails,
+/// or gives a reply mt cannot use adds IO (32) to the exit code (§3 test 2,
+/// "failed or gone missing"). Only the DEFAULT `bitcoin-cli` being absent is
+/// the offline path, "no node at all", which stays 0.
 pub fn helper_named() {
     NAMED.store(true, Ordering::Relaxed);
 }
 
-/// A call to a named helper failed: note IO, once is enough.
+/// A call to a named helper failed, or its reply could not be used: note IO,
+/// once is enough. Core's real answers (a null `gettxout`, not-found exit 5,
+/// a `getindexinfo` without a txindex) are answers and never come here.
 fn helper_failed() {
     if NAMED.load(Ordering::Relaxed) {
         crate::out::note(crate::exit::Exit::IO);
     }
+}
+
+/// `helper_failed`, then `v`: for the branches where a reply arrived but
+/// carries nothing mt can use.
+fn unusable<T>(v: T) -> T {
+    helper_failed();
+    v
 }
 
 /// A node, or the absence of one.
@@ -97,15 +106,23 @@ pub enum Utxo {
 }
 
 impl Node {
-    /// Locate `bitcoin-cli`. Absent or not runnable is **not an error** — §6a's
-    /// posture is that offline operation is the constellation's default and an
-    /// absent node is an absent answer, not a bad one.
+    /// Locate `bitcoin-cli`. Absent or not runnable is **not a refusal** —
+    /// §6a's posture is that offline operation is the constellation's default
+    /// and an absent node is an absent answer, not a bad one. (A NAMED helper
+    /// that is absent still adds IO to the exit code, R9.)
     pub fn find(cli: &Path) -> Option<Self> {
         let node = Self {
             cli: cli.to_path_buf(),
         };
         match node.call(&["getblockcount"]) {
-            Reply::Answered(_) => Some(node),
+            Reply::Answered(s) => {
+                // Something answered. A reply that is no block height is a
+                // helper failing (R9), though later calls may still answer.
+                if s.parse::<u64>().is_err() {
+                    helper_failed();
+                }
+                Some(node)
+            }
             Reply::Failed(_) => None,
         }
     }
@@ -128,8 +145,8 @@ impl Node {
             .spawn()
         {
             Ok(c) => c,
-            // Absent: the offline path, not a failure (R9).
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Reply::Failed(None),
+            // Missing or not startable. For the default `bitcoin-cli` that is
+            // the offline path; for a named one it is a failure (R9).
             Err(_) => {
                 helper_failed();
                 return Reply::Failed(None);
@@ -166,7 +183,9 @@ impl Node {
 
     /// Current chain height.
     pub fn block_count(&self) -> Option<u64> {
-        self.answer(&["getblockcount"])?.parse().ok()
+        self.answer(&["getblockcount"])?
+            .parse()
+            .map_or_else(|_| unusable(None), Some)
     }
 
     /// Is this outpoint in the UTXO set?
@@ -182,8 +201,10 @@ impl Node {
             Reply::Answered(s) if s.is_empty() => Utxo::Null,
             Reply::Answered(s) => match serde_json::from_str::<serde_json::Value>(&s) {
                 Ok(serde_json::Value::Null) => Utxo::Null,
-                Ok(v) => extract_value_sats(&v).map_or(Utxo::Unanswered, Utxo::Unspent),
-                Err(_) => Utxo::Unanswered,
+                Ok(v) => {
+                    extract_value_sats(&v).map_or_else(|| unusable(Utxo::Unanswered), Utxo::Unspent)
+                }
+                Err(_) => unusable(Utxo::Unanswered),
             },
         }
     }
@@ -197,10 +218,13 @@ impl Node {
     pub fn median_time(&self) -> Option<u64> {
         // JSON, and only a non-negative integer counts (N5b): `1.7e9` is no MTP.
         let json = self.answer(&["getblockchaininfo"])?;
-        serde_json::from_str::<serde_json::Value>(&json)
-            .ok()?
-            .get("mediantime")?
-            .as_u64()
+        let t = serde_json::from_str::<serde_json::Value>(&json)
+            .ok()
+            .and_then(|v| v.get("mediantime")?.as_u64());
+        if t.is_none() {
+            helper_failed();
+        }
+        t
     }
 
     /// Which chain this node is on.
@@ -220,7 +244,7 @@ impl Node {
             return ChainReply::NotSaid;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return ChainReply::NotSaid;
+            return unusable(ChainReply::NotSaid);
         };
         match v.get("chain").and_then(serde_json::Value::as_str) {
             Some("main") => ChainReply::Known(bitcoin::Network::Bitcoin),
@@ -229,7 +253,7 @@ impl Node {
             Some("signet") => ChainReply::Known(bitcoin::Network::Signet),
             Some("regtest") => ChainReply::Known(bitcoin::Network::Regtest),
             Some(_) => ChainReply::Unrecognised,
-            None => ChainReply::NotSaid,
+            None => unusable(ChainReply::NotSaid),
         }
     }
 
@@ -247,11 +271,15 @@ impl Node {
     /// index", which reads UNKNOWN (§6a's fail-safe direction), because another
     /// synced index once made an unsynced txindex read as synced (bug hunt #5).
     pub fn has_txindex(&self) -> bool {
+        // `{}` (no txindex) is a real answer; a reply that is not JSON is not.
         self.answer(&["getindexinfo"]).is_some_and(|s| {
-            serde_json::from_str::<serde_json::Value>(s.trim()).is_ok_and(|v| {
-                v.get("txindex").and_then(|t| t.get("synced"))
-                    == Some(&serde_json::Value::Bool(true))
-            })
+            match serde_json::from_str::<serde_json::Value>(s.trim()) {
+                Ok(v) => {
+                    v.get("txindex").and_then(|t| t.get("synced"))
+                        == Some(&serde_json::Value::Bool(true))
+                }
+                Err(_) => unusable(false),
+            }
         })
     }
 
@@ -271,10 +299,10 @@ impl Node {
                     Some(c) => match c.as_u64() {
                         Some(0) => ParentState::InMempool,
                         Some(_) => ParentState::Confirmed,
-                        None => ParentState::Unanswered,
+                        None => unusable(ParentState::Unanswered),
                     },
                 },
-                _ => ParentState::Unanswered,
+                _ => unusable(ParentState::Unanswered),
             },
         }
     }
@@ -303,7 +331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_binary_is_absence_not_failure() {
+    fn a_missing_binary_is_absence_not_a_node() {
         assert!(
             Node::find(Path::new("/nonexistent/bitcoin-cli")).is_none(),
             "an absent bitcoin-cli must yield None, never panic"

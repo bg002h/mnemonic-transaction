@@ -17,7 +17,6 @@ use std::io::Write;
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn base() -> serde_json::Value {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p5_base.json");
@@ -115,7 +114,7 @@ fn run(psbt: &str, extra: &[&str]) -> (String, bool) {
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     let mut c = mt();
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c.arg("--in").arg(f.path()).output().unwrap();
     (

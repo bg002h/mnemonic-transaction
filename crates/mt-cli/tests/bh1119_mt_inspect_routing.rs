@@ -5,7 +5,7 @@
 //! text" before sniffing it), bh-mt-I6 (inspect routes on how the whole input
 //! starts, so grouped, `mtl`-typo and elided-first-line sets are refused).
 //!
-//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
+//! Every run is offline (no `--bitcoin-cli`, no `bitcoin-cli` on `PATH`). Inputs are
 //! the public fixtures `tests/fixtures/p5_base.json` and the corpus vectors in
 //! `mt-codec/src/test_vectors/mt1_v1.json`. The rows marked Q1 and Q2 follow
 //! Brian's ruling of 2026-11-23 (inspect reports an unsigned PSBT, with a
@@ -21,8 +21,6 @@ use std::io::Write;
 
 mod common;
 use common::exit::INVALID;
-
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
@@ -213,7 +211,8 @@ struct Run {
 
 fn run(verb: &str, extra: &[&str], stdin: &[u8]) -> Run {
     let o = mt()
-        .args([verb, "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args([verb])
         .args(extra)
         .write_stdin(stdin.to_vec())
         .output()
@@ -231,7 +230,8 @@ fn run_in(extra: &[&str], bytes: &[u8]) -> Run {
     f.write_all(bytes).unwrap();
     f.flush().unwrap();
     let o = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["inspect"])
         .args(extra)
         .arg("--in")
         .arg(f.path())
@@ -285,7 +285,8 @@ fn line<'a>(text: &'a str, head: &str) -> &'a str {
 /// assert_cmd captures stdout through a pipe, not a file.
 fn p5_grouped(size: &str) -> Vec<u8> {
     let o = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--group-size", size])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--group-size", size])
         .write_stdin(p5_b64())
         .output()
         .unwrap();
@@ -358,7 +359,8 @@ fn bh1119_mt_i3_inspect_and_encode_agree_on_a_legacy_psbt() {
     let i = run("inspect", &[], text.as_bytes());
     accepted(&i);
     let o = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(text)
         .output()
         .unwrap();

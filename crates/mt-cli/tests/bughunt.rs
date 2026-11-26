@@ -5,12 +5,11 @@ use assert_cmd::Command;
 use std::io::Write;
 
 mod common;
-use common::exit::{INVALID, REPAIRED, USAGE};
+use common::exit::{INVALID, IO, OK, REPAIRED, USAGE};
 
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn corpus() -> serde_json::Value {
     let p = concat!(
@@ -49,7 +48,7 @@ fn tmp(content: &str) -> tempfile::NamedTempFile {
 fn run_in(verb: &str, extra: &[&str], content: &str) -> std::process::Output {
     let f = tmp(content);
     mt().arg(verb)
-        .args(["--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
         .args(extra)
         .arg("--in")
         .arg(f.path())
@@ -654,9 +653,11 @@ esac
     (out.status.code(), s(&out.stdout), s(&out.stderr))
 }
 
-fn assert_status(reply: &str, want: &str, why: &str) {
+/// `code`: 0 for a reply Core could send; IO (32) for one that is not JSON,
+/// since the named helper then gave no usable answer (exit-code spec R9).
+fn assert_status(reply: &str, want: &str, code: i32, why: &str) {
     let (rc, o, e) = inspect_with_indexinfo(reply);
-    assert_eq!(rc, Some(0), "inspect failed:\n{e}");
+    assert_eq!(rc, Some(code), "inspect failed:\n{e}");
     let other = if want == "PENDING" {
         "UNKNOWN"
     } else {
@@ -675,6 +676,7 @@ fn bughunt_mt_05b_txindex_compact_json_synced_is_pending() {
     assert_status(
         r#"{"txindex":{"synced":true,"best_block_height":963832}}"#,
         "PENDING",
+        OK,
         "a synced txindex in compact JSON was not recognised",
     );
 }
@@ -685,6 +687,7 @@ fn bughunt_mt_05c_txindex_truncated_reply_is_unknown() {
     assert_status(
         r#"{"txindex": {"synced": true, "best_block_height": 963832}"#,
         "UNKNOWN",
+        IO,
         "a reply that is not valid JSON was trusted",
     );
 }
@@ -695,6 +698,7 @@ fn bughunt_mt_05d_txindex_nested_synced_true_is_unknown() {
     assert_status(
         r#"{"txindex": {"synced": false, "best_block_height": 10, "detail": {"synced": true}}}"#,
         "UNKNOWN",
+        OK,
         "a nested synced:true was read as txindex's own",
     );
 }
@@ -705,6 +709,7 @@ fn bughunt_mt_05e_txindex_absent_name_in_value_is_unknown() {
     assert_status(
         r#"{"coinstatsindex": {"synced": true, "best_block_height": 963832}, "note": "txindex"}"#,
         "UNKNOWN",
+        OK,
         "a reply with no txindex member was read as a synced txindex",
     );
 }
@@ -715,6 +720,7 @@ fn bughunt_mt_05f_txindex_pretty_synced_true_is_pending() {
     assert_status(
         r#"{"txindex": {"synced": true, "best_block_height": 963832}}"#,
         "PENDING",
+        OK,
         "a synced txindex was not recognised",
     );
 }
@@ -725,6 +731,7 @@ fn bughunt_mt_05g_txindex_synced_string_is_unknown() {
     assert_status(
         r#"{"txindex": {"synced": "true", "best_block_height": 963832}}"#,
         "UNKNOWN",
+        OK,
         "the string \"true\" was read as the boolean",
     );
 }
@@ -734,7 +741,8 @@ fn bughunt_mt_05g_txindex_synced_string_is_unknown() {
 #[test]
 fn bughunt_mt_07_non_ascii_near_line_start_does_not_panic() {
     let out = mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["decode"])
         .write_stdin("MT1aaaaaaa\u{e9}qqqqqqqqqq\n")
         .output()
         .unwrap();

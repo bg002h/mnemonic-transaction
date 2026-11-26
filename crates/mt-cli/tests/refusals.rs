@@ -28,10 +28,6 @@ fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
 
-/// The offline mechanism. Never `PATH`: that is process-global and would
-/// silently change neighbouring tests in the same run.
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 fn base() -> serde_json::Value {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p5_base.json");
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
@@ -104,7 +100,7 @@ fn hex_of(bytes: &[u8]) -> String {
 fn encode(body: &str, extra: &[&str]) -> (String, String, Option<i32>) {
     let f = tmp(body);
     let mut c = mt();
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c.arg("--in").arg(f.path()).output().unwrap();
     (
@@ -365,13 +361,8 @@ fn refuses_a_transaction_passed_as_a_command_line_argument() {
     let v = base();
     let f = tmp(&s(&v, "finalized_psbt_b64"));
     let out = mt()
-        .args([
-            "encode",
-            "--bitcoin-cli",
-            OFFLINE,
-            "--to-label",
-            &s(&v, "raw_hex"),
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--to-label", &s(&v, "raw_hex")])
         .arg("--in")
         .arg(f.path())
         .output()
@@ -455,7 +446,8 @@ fn no_spelling_of_a_bearer_argument_reaches_stderr() {
             ] {
                 rows += 1;
                 let out = mt()
-                    .args([verb, "--bitcoin-cli", OFFLINE])
+                    .env("PATH", "/nonexistent")
+                    .args([verb])
                     .arg(&arg)
                     .output()
                     .unwrap();
@@ -548,7 +540,8 @@ fn the_argv_override_routes_material_through_the_private_path() {
     for (verb, tokens, file_body) in cases {
         let f = tmp(&file_body);
         let via_in = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -560,7 +553,8 @@ fn the_argv_override_routes_material_through_the_private_path() {
         );
 
         let via_argv = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--allow-argv-secret"])
             .args(&tokens)
             .output()
             .unwrap();
@@ -592,7 +586,8 @@ fn the_argv_override_routes_material_through_the_private_path() {
 fn the_argv_override_strips_the_material_from_the_argv_clap_sees() {
     let raw = corpus_vector()["raw_hex"].as_str().unwrap().to_string();
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--allow-argv-secret"])
         .arg(&raw)
         .arg("--nosuchflag")
         .output()
@@ -618,12 +613,14 @@ fn the_argv_override_strips_the_material_from_the_argv_clap_sees() {
 fn the_argv_override_alone_is_the_bare_invocation() {
     let raw = corpus_vector()["raw_hex"].as_str().unwrap().to_string();
     let plain = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(raw.clone())
         .output()
         .unwrap();
     let flagged = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--allow-argv-secret"])
         .write_stdin(raw)
         .output()
         .unwrap();
@@ -653,7 +650,8 @@ fn material_on_argv_beside_an_in_file_is_warned_about_not_dropped() {
     let f = tmp(&other);
 
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--allow-argv-secret"])
         .arg(&raw)
         .arg("--in")
         .arg(f.path())
@@ -1258,7 +1256,8 @@ fn verify_transaction_accepts_a_psbt() {
     let strings = {
         let f = tmp(&s(&v, "finalized_psbt_b64"));
         let out = mt()
-            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["encode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1290,7 +1289,8 @@ fn verify_transaction_refuses_an_unfinalized_psbt() {
     let strings = {
         let f = tmp(&s(&v, "finalized_psbt_b64"));
         let out = mt()
-            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["encode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1324,7 +1324,8 @@ fn a_filename_beginning_mt1_is_not_mistaken_for_a_bearer_string() {
     let strings = {
         let f = tmp(&s(&v, "raw_hex"));
         let out = mt()
-            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["encode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1538,7 +1539,8 @@ fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
     // caller actually receives did not parse at all. A test shaped to the
     // implementation instead of to the consumer.
     let out = mt()
-        .args(["decode", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--json", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -1563,7 +1565,8 @@ fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
     // verify and encode: no report, so the flag must REFUSE rather than sit inert.
     for verb in ["verify", "encode"] {
         let out = mt()
-            .args([verb, "--json", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--json", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1588,7 +1591,8 @@ fn a_pasted_txid_is_named_on_every_verb() {
     for verb in ["decode", "verify", "inspect"] {
         let f = tmp(&txid);
         let out = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1743,7 +1747,8 @@ fn a_sibling_format_is_named_rather_than_called_malformed() {
         );
         let f = tmp(&body);
         let out = mt()
-            .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["decode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1790,7 +1795,7 @@ fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, Option
     std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode)).unwrap();
 
     let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"));
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c
         .arg("--in")
@@ -1879,7 +1884,7 @@ fn does_not_refuse_a_pipe() {
 fn encode_to_sink(body: &str, extra: &[&str], sink: std::fs::File) -> (String, Option<i32>) {
     let f = tmp(body);
     let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"));
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c
         .arg("--in")
@@ -2041,7 +2046,8 @@ fn encode_from_fifo(body: &str, mode: u32) -> (String, Option<i32>) {
     });
 
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .arg("--in")
         .arg(&p)
         .output()
@@ -2123,7 +2129,8 @@ fn a_world_readable_input_file_warns() {
     std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
 
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .arg("--in")
         .arg(f.path())
         .output()
@@ -2220,7 +2227,8 @@ fn the_input_warning_says_what_the_mode_grants_not_what_the_rule_is_called() {
         let f = tmp(&s(&v, "finalized_psbt_b64"));
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(mode)).unwrap();
         let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-            .args(["encode", "--bitcoin-cli", OFFLINE])
+            .env("PATH", "/nonexistent")
+            .args(["encode"])
             .arg("--in")
             .arg(f.path())
             .output()

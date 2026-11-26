@@ -14,8 +14,6 @@ use std::io::Write;
 mod common;
 use common::exit::INVALID;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 /// The remedy texts this FIX sets (PROPOSED, architect confirms). A wording
 /// change updates these constants and nothing else.
 const REMEDY_UNFINALIZED: &str = "Run `bitcoin-cli finalizepsbt <psbt>`. If its answer shows \
@@ -56,7 +54,8 @@ struct Run {
 fn encode_offline(input: &str) -> Run {
     let f = file_with(input);
     let o = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -128,7 +127,8 @@ fn i22_txid_remedy_reading_verbs_point_to_inspect() {
     for verb in ["decode", "verify"] {
         let f = file_with(&own);
         let o = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--in"])
             .arg(f.path())
             .output()
             .unwrap();

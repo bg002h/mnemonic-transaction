@@ -49,8 +49,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Force OFFLINE. Every journey here is air-gapped by design, and a machine that
 # happens to run bitcoind would otherwise take a different path than CI does --
-# so the gate would assert one thing locally and another in CI.
-OFFLINE=(--bitcoin-cli /nonexistent/bitcoin-cli)
+# so the gate would assert one thing locally and another in CI. Offline is "no
+# bitcoin-cli at all": none named, none on PATH. A NAMED path that is missing
+# is a helper gone missing and adds 32 (exit-code spec R9). `mt` is run by its
+# path, so it needs nothing from PATH.
+OFFLINE=(env PATH=/nonexistent)
 
 FAILED=0
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -109,7 +112,7 @@ chmod 600 "$WORK"/*.txt "$WORK"/tx.psbt
 # ── A — encode ───────────────────────────────────────────────────────────────
 say "JOURNEY A — the operator pastes a finalized PSBT and cuts"
 step "\$ mt encode < tx.psbt"
-"$MT" encode "${OFFLINE[@]}" --in "$WORK/tx.psbt" >"$WORK/a.out" 2>"$WORK/a.err"
+"${OFFLINE[@]}" "$MT" encode --in "$WORK/tx.psbt" >"$WORK/a.out" 2>"$WORK/a.err"
 sed 's/^/    | /' "$WORK/a.err"
 step "stdout (the artifact):"
 sed 's/^/    | /' "$WORK/a.out"
@@ -161,7 +164,7 @@ for form in typed typed-elided; do
     typed)        step "\$ mt inspect < typed-from-steel.txt      (full strings)" ;;
     typed-elided) step "\$ mt inspect < typed-from-steel.txt      (--elide-prefix form)" ;;
   esac
-  "$MT" inspect "${OFFLINE[@]}" --in "$WORK/$form.txt" >"$WORK/b.out" 2>"$WORK/b.err"
+  "${OFFLINE[@]}" "$MT" inspect --in "$WORK/$form.txt" >"$WORK/b.out" 2>"$WORK/b.err"
   sed 's/^/    | /' "$WORK/b.out"
   sed 's/^/    | /' "$WORK/b.err"
 

@@ -33,17 +33,30 @@ Releases 0.1.0 and 0.1.1 are described by their tags (`mt-cli-v0.1.0`,
     input (§8.5), a value that disagrees with the chain (§6a).
   - IO is 32: an input that cannot be read (1 before), and a failed stdout or
     `--out` write, which now ADDS 32 to the verb's code instead of turning 0
-    into 1 (R8). A `--bitcoin-cli` the operator named that runs and fails adds
-    32 (0 before, R9); an absent path is still the offline path, exit 0.
+    into 1 (R8). A `--bitcoin-cli` the operator named that is missing, cannot
+    be started, fails, or gives a reply mt cannot use adds 32 (0 before, R9);
+    the run keeps its report and output. Core's real answers (a null
+    `gettxout`, not-found, a `getindexinfo` without a txindex) do not count.
+  - **Offline is now "no `bitcoin-cli` at all"**: do not pass `--bitcoin-cli`
+    and have none on `PATH`. Pointing `--bitcoin-cli` at a path that does not
+    exist is no longer an offline switch; it is a named helper gone missing,
+    32. mt has no other offline flag (an open question for the spec).
   - Repaired is 16: `decode`, `verify` and `inspect` that used a BCH-corrected
     chunk now set 16 (0 before, decision 5), with the same output. Bits sum: a
     `verify --transaction` mismatch on a corrected set is 17.
-  - A codec failure that the checks before it make unreachable is 101.
+  - A codec failure that the checks before it make unreachable is 101, and
+    prints as `mt <verb>: INTERNAL ERROR — …` with a line asking for a bug
+    report, not as a refusal.
+  - Every command-line (64) check runs before the §8.2i same-file refusal,
+    which stats files (R2).
   - The root `--help` ends with the exit-status legend (R11).
 - **FIX-J: printed remedies (bh-mt-I22, I25).** The §8.1 and
   §10.10 remedies tell the operator to pass the `hex` field of `finalizepsbt`'s
   answer, not the whole answer. `scripts/live-smoke-test.sh` sets `umask 077`
   and prints a failing step's stderr.
+
+### Fixed
+- **A closed stdout (`mt decode ... >&-`) no longer exits 0 with the output lost.** std's runtime silently reopens a closed fd 0, 1 or 2 on `/dev/null` before `main`, so a write to it "succeeded". `mt` now notes a closed fd 1 before that and plugs each closed standard fd itself (so a file `mt` opens later, such as an `--out` file, cannot become stdout); a verb that writes to stdout (and `--help`/`--version`) prints `mt: cannot write the output: Bad file descriptor (os error 9)` and adds 32 to the exit status (R8), as for a read-only stdout. `encode --out` with stdout closed is unaffected (exit-code survey 2026-11-26, Defect 1). On Unix targets the probe does not list, std's own plug applies as before.
 
 ## mt-cli [0.2.0] — 2026-11-04
 
@@ -66,7 +79,6 @@ Fixes from the mt bug hunt (FIX-A to FIX-D).
   runtime dependency.
 
 ### Fixed
-- **A closed stdout (`mt decode ... >&-`) no longer exits 0 with the output lost.** std's runtime silently reopens a closed fd 0, 1 or 2 on `/dev/null` before `main`, so a write to it "succeeded". `mt` now notes a closed fd 1 before that and plugs each closed standard fd itself (so a file `mt` opens later, such as an `--out` file, cannot become stdout); a verb that writes to stdout (and `--help`/`--version`) prints `mt: cannot write the output: Bad file descriptor (os error 9)` and exits 1, as for a read-only stdout. `encode --out` with stdout closed is unaffected (exit-code survey 2026-11-26, Defect 1).
 - **FIX-B: chunk-set checks.** Chunks of one set that disagree about the set's
   chunk count are refused (`verify` checks the same count in every chunk), and
   `invariant_prefix` returns `TooShort` for input under 24 symbols.

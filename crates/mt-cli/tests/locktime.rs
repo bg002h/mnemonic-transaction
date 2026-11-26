@@ -14,8 +14,6 @@ fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 fn base_tx() -> bitcoin::Transaction {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p5_base.json");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
@@ -44,7 +42,8 @@ fn locktime_row(tx: &bitcoin::Transaction) -> String {
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -171,7 +170,8 @@ fn a_lock_below_the_reference_height_warns() {
     f.write_all(hex.as_bytes()).unwrap();
     f.flush().unwrap();
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();

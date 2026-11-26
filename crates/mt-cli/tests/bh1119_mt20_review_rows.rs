@@ -2,12 +2,10 @@
 //! because `bh1119_mt_input_parsing.rs` is installed unchanged from the
 //! sha256-pinned FIX sidecar.
 //!
-//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`).
+//! Every run is offline (no `--bitcoin-cli`, no `bitcoin-cli` on `PATH`).
 
 use assert_cmd::Command;
 use std::io::Write;
-
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
@@ -76,7 +74,8 @@ fn bh1119_mt_i1_set_with_wrong_id_and_trailing_byte_reports_the_id() {
             .collect();
     let f = file(strings.as_bytes());
     let out = mt()
-        .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();

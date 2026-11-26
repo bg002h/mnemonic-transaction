@@ -12,10 +12,6 @@ fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
 
-/// The offline mechanism, named so no test reaches for `PATH` — which is
-/// process-global and would silently change neighbouring tests in the same run.
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
-
 fn corpus() -> serde_json::Value {
     let p = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -45,7 +41,8 @@ fn strings_file(label: &str) -> tempfile::NamedTempFile {
 fn inspect_offline(label: &str) -> (String, String) {
     let f = strings_file(label);
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["inspect", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -168,7 +165,8 @@ fn encode_and_inspect_agree_on_the_rows_they_share() {
     txf.flush().unwrap();
 
     let enc = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(txf.path())
         .output()
         .unwrap();
@@ -210,7 +208,8 @@ fn both_vectors_inspect_cleanly() {
 fn an_absent_node_is_never_a_refusal() {
     let f = strings_file("even");
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["inspect", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -234,14 +233,8 @@ fn an_asserted_value_makes_the_fee_say_claimed() {
     txf.flush().unwrap();
 
     let out = mt()
-        .args([
-            "encode",
-            "--bitcoin-cli",
-            OFFLINE,
-            "--input-value",
-            "0:50.0",
-            "--in",
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--input-value", "0:50.0", "--in"])
         .arg(txf.path())
         .output()
         .unwrap();
@@ -267,14 +260,8 @@ fn input_value_must_be_per_input() {
     txf.flush().unwrap();
 
     let out = mt()
-        .args([
-            "encode",
-            "--bitcoin-cli",
-            OFFLINE,
-            "--input-value",
-            "50.0",
-            "--in",
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--input-value", "50.0", "--in"])
         .arg(txf.path())
         .output()
         .unwrap();
@@ -299,7 +286,8 @@ fn encode_appends_its_rows_below_status() {
     txf.flush().unwrap();
 
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(txf.path())
         .output()
         .unwrap();
@@ -487,7 +475,8 @@ fn the_no_node_warning_is_absent_when_a_node_is_there() {
 fn json_output_is_actually_json() {
     let f = strings_file("even");
     let out = mt()
-        .args(["inspect", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["inspect", "--json", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -611,7 +600,8 @@ fn txid_of(label: &str) -> String {
 #[test]
 fn inspect_reads_a_raw_transaction_and_reports_its_txid() {
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["inspect"])
         .write_stdin(raw_hex("even"))
         .output()
         .unwrap();
@@ -666,7 +656,8 @@ fn the_strings_path_is_unchanged_by_the_raw_subject() {
 #[test]
 fn a_refused_raw_subject_names_the_verb_the_operator_typed() {
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["inspect"])
         .write_stdin("abababab")
         .output()
         .unwrap();
@@ -709,7 +700,8 @@ fn refusals_raised_inside_the_sniffer_still_name_inspect() {
         ("70736274ff01007502000000", "hex-encoded PSBT"),
     ] {
         let out = mt()
-            .args(["inspect", "--bitcoin-cli", OFFLINE])
+            .env("PATH", "/nonexistent")
+            .args(["inspect"])
             .write_stdin(input)
             .output()
             .unwrap();
@@ -737,7 +729,8 @@ fn inspect_reads_a_base64_psbt_subject() {
     // The corpus carries raw transactions only, so this asserts the ROUTING:
     // a base64-PSBT-shaped input must not be read as a set of mt1 strings.
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["inspect"])
         .write_stdin("cHNidP8BAHUCAAAA")
         .output()
         .unwrap();
@@ -767,7 +760,8 @@ fn inspect_reads_a_base64_psbt_subject() {
 #[test]
 fn the_no_node_warning_names_the_source_it_actually_read() {
     let raw = mt()
-        .args(["inspect", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["inspect"])
         .write_stdin(raw_hex("even"))
         .output()
         .unwrap();
@@ -804,7 +798,8 @@ fn verify_also_names_its_own_verb_on_a_sniffer_refusal() {
     supplied.flush().unwrap();
     let f = strings_file("even");
     let out = mt()
-        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["verify", "--in"])
         .arg(f.path())
         .arg("--transaction")
         .arg(supplied.path())

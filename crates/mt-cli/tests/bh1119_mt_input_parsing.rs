@@ -6,7 +6,7 @@
 //! prefix that depends on the first key's length). Ruling T23: sniff by
 //! decoding.
 //!
-//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
+//! Every run is offline (no `--bitcoin-cli`, no `bitcoin-cli` on `PATH`). Inputs are
 //! the public fixtures `tests/fixtures/p5_base.json` and the corpus vectors in
 //! `mt-codec/src/test_vectors/mt1_v1.json`.
 
@@ -15,8 +15,6 @@ use std::io::Write;
 
 mod common;
 use common::exit::{INVALID, NO, REFUSED};
-
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
@@ -171,7 +169,8 @@ fn run(verb: &str, extra: &[&str], input: &[u8]) -> Run {
     let out = mt()
         .arg(verb)
         .args(extra)
-        .args(["--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -427,7 +426,8 @@ fn bh1119_mt_i2_verify_refuses_two_psbts_as_transaction_file() {
     let t = file(&two);
     // p5's transaction as a set, so only the supplied file is at fault.
     let strings = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(raw_hex())
         .output()
         .unwrap();
@@ -506,7 +506,8 @@ fn bh1119_mt_i20_encode_names_a_damaged_long_key_base64_psbt() {
 fn bh1119_mt_i20_argv_classifier_refuses_long_key_base64() {
     let text = b64(&long_key_psbt());
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, &text])
+        .env("PATH", "/nonexistent")
+        .args(["encode", &text])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);

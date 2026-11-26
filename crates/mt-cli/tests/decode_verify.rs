@@ -671,7 +671,8 @@ fn decode_emits_nothing_when_the_id_does_not_re_derive() {
 fn inspect_refuses_a_set_that_does_not_re_derive_its_id() {
     let f = tmp_with(&forged_set().join("\n"));
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", "/nonexistent", "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["inspect", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -1406,12 +1407,14 @@ fn a_bare_dash_means_stdin_on_every_reading_verb() {
     let strings = strings_of("even").join("\n");
     for verb in ["decode", "verify", "inspect"] {
         let plain = mt()
-            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+            .env("PATH", "/nonexistent")
+            .args([verb])
             .write_stdin(strings.clone())
             .output()
             .unwrap();
         let dashed = mt()
-            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "-"])
             .write_stdin(strings.clone())
             .output()
             .unwrap();
@@ -1446,7 +1449,8 @@ fn a_dash_does_not_open_the_door_to_other_positionals_on_reading_verbs() {
     let strings = strings_of("even").join("\n");
     for verb in ["decode", "verify", "inspect"] {
         let out = mt()
-            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli", "wat"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "wat"])
             .write_stdin(strings.clone())
             .output()
             .unwrap();
@@ -1487,7 +1491,7 @@ fn decode_to_mode(mode: u32, extra: &[&str]) -> (u64, String, Option<i32>) {
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
         .arg("decode")
         .args(extra)
-        .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .stdout(std::process::Stdio::from(handle))
@@ -1560,12 +1564,8 @@ fn decode_says_nothing_about_an_owner_only_stdout() {
 
     // ...and the pipeline, which `assert_cmd` gives us as an anonymous pipe.
     let piped = mt()
-        .args([
-            "decode",
-            "--quiet",
-            "--bitcoin-cli",
-            "/nonexistent/bitcoin-cli",
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--quiet"])
         .arg("--in")
         .arg(tmp_with(&strings_of("even").join("\n")).path())
         .output()

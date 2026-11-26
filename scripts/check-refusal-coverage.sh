@@ -220,27 +220,68 @@ for c in sorted(cited - set(REQUIRED)):
 
 # 5. EVERY ROW MAPS TO ITS EXIT-CODE CLASS (exit-code spec R13). The class is
 #    the row's `class`; its test must assert it BY NAME (tests/common/mod.rs
-#    `exit::<CLASS>`), in its own body or as an argument to the helper it calls.
-#    A name and not a number, so `Some(2)` beside an unrelated `2` cannot pass.
+#    `exit::<CLASS>`), in an ASSERTING position: `Some(CLASS)` (compared with
+#    the exit code), or as an argument of one of the helpers below, each of
+#    which `assert_eq!`s its class argument against the exit code. A name and
+#    not a number, so `Some(2)` beside an unrelated `2` cannot pass; comments
+#    and string literals are stripped first, so `/* INVALID */` or
+#    "REFUSED —" does not count (review 2026-11-26 M2).
 CLASSES = {"NO", "INVALID", "REFUSED", "IO", "USAGE"}
+ASSERTING_HELPERS = (
+    "assert_refused",            # refusals.rs
+    "assert_refused_with",       # bughunt.rs
+    "assert_same_file_refusal",  # bh1119_mt_output_writes.rs
+    "assert_refusal",            # arg_intake.rs
+    "refused",                   # bh1119_mt_input_parsing.rs, _inspect_routing.rs
+    "assert_newline_separator_refused",  # arg_intake.rs, via assert_refusal
+)
+
+def strip(src):
+    """Comments and string literals out, so only code is matched."""
+    src = re.sub(r"'(?:[^'\\\n]|\\.)'", "' '", src)        # char literals ('"')
+    src = re.sub(r'(?<![A-Za-z0-9_])r(#*)"(?:.|\n)*?"\1', '""', src)  # raw strings
+    src = re.sub(r'"(?:[^"\\]|\\.)*"', '""', src, flags=re.S)
+    src = re.sub(r"/\*(?:.|\n)*?\*/", " ", src)            # block comments
+    src = re.sub(r"//[^\n]*", "", src)                     # line comments
+    return src
+
+def helper_args(body):
+    """The argument text of every call to an asserting helper."""
+    out = []
+    for m in re.finditer(r"\b(" + "|".join(ASSERTING_HELPERS) + r")\s*\(", body):
+        depth, i = 1, m.end()
+        while i < len(body) and depth:
+            depth += {"(": 1, ")": -1}.get(body[i], 0)
+            i += 1
+        out.append(body[m.end():i - 1])
+    return out
+
 for e in entries:
     if e["class"] not in CLASSES:
         problems.append(f"{e['test']}: class {e['class']!r} is not one of {sorted(CLASSES)}")
         continue
-    # String literals out first: "mt encode: REFUSED — §8.2f" names the
-    # refusal FORMAT, not the exit class.
-    body = re.sub(r'"(?:[^"\\]|\\.)*"', '""', declared.get(e["test"], (None, ""))[1], flags=re.S)
-    if not re.search(rf"\b{e['class']}\b", body):
+    body = strip(declared.get(e["test"], (None, ""))[1])
+    args = helper_args(body)
+    def asserted(cls):
+        return bool(re.search(rf"Some\(\s*{cls}\s*\)", body)) or any(
+            re.search(rf"\b{cls}\b", a) for a in args
+        )
+    if not asserted(e["class"]):
         problems.append(
             f"{e['test']}: refusals.toml says class {e['class']}, and the test "
-            f"never asserts `{e['class']}`"
+            f"never asserts `{e['class']}` (as `Some({e['class']})` or a "
+            f"helper's class argument)"
         )
     for other in CLASSES - {e["class"]}:
-        if re.search(rf"Some\({other}\)|, {other},|\({other}, ", body):
+        if asserted(other):
             problems.append(
                 f"{e['test']}: refusals.toml says class {e['class']}, and the "
                 f"test asserts `{other}`"
             )
+    if re.search(r"Some\(\s*\d+\s*\)", body):
+        problems.append(
+            f"{e['test']}: compares with a numeric `Some(<n>)`; name the class"
+        )
 
 seen = {}
 for e in entries:
