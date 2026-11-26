@@ -4,6 +4,9 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+mod common;
+use common::exit::{INVALID, REPAIRED, USAGE};
+
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
@@ -213,13 +216,13 @@ fn bughunt_mt_03_p2sh_multisig_op0_dummy_counts_signatures() {
 
 // ---- FIX-A rows (rulings R1-R3) ------------------------------------------------
 
-/// Asserts exit code 1 and that stderr's FIRST line is exactly `verdict`.
-fn assert_refused_with(out: &std::process::Output, verdict: &str) {
+/// Asserts exit code `class` and that stderr's FIRST line is exactly `verdict`.
+fn assert_refused_with(out: &std::process::Output, class: i32, verdict: &str) {
     let err = s(&out.stderr);
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "expected exit 1 with `{verdict}`, got {:?}:\n{err}",
+        Some(class),
+        "expected exit {class} with `{verdict}`, got {:?}:\n{err}",
         out.status.code()
     );
     assert_eq!(
@@ -271,6 +274,7 @@ fn bughunt_mt_01b_keyless_scriptpath_refusal_text() {
     let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -283,6 +287,7 @@ fn bughunt_mt_01c_keyless_scriptpath_with_annex_refused() {
     let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -314,6 +319,7 @@ fn bughunt_mt_02b_64_byte_ecdsa_sighash_none_refusal_text() {
     let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
     );
 }
@@ -330,6 +336,7 @@ fn bughunt_mt_02c_73_byte_ecdsa_sighash_none_still_refused() {
     let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
     );
 }
@@ -354,6 +361,7 @@ fn bughunt_mt_03b_p2sh_op0_sighash_none_still_refused() {
     let out = encode_psbt(&finalized(spk, Some(script_sig), None));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
     );
 }
@@ -451,6 +459,7 @@ fn p2wsh_keyless(script_len: usize) -> std::process::Output {
 fn bughunt_mt_01e_p2wsh_keyless_64_byte_script_refused() {
     assert_refused_with(
         &p2wsh_keyless(64),
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -461,6 +470,7 @@ fn bughunt_mt_01e_p2wsh_keyless_64_byte_script_refused() {
 fn bughunt_mt_01f_p2wsh_keyless_65_byte_script_refused() {
     assert_refused_with(
         &p2wsh_keyless(65),
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -523,6 +533,7 @@ fn bughunt_mt_01i_p2wsh_keyless_65_byte_script_ending_01_refused() {
     let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -540,6 +551,7 @@ fn bughunt_mt_01j_two_element_scriptpath_der_shaped_script_refused() {
     let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -561,6 +573,7 @@ case "$verb" in
   getindexinfo)  echo '{"txindex": {"synced": false, "best_block_height": 10}, "basic block filter index": {"synced": true, "best_block_height": 963832}}' ;;
   gettxout)      exit 0 ;;
   getrawtransaction) exit 5 ;;
+  getblockchaininfo) echo '{"chain": "regtest", "mediantime": 1700000000}' ;;
   *) exit 1 ;;
 esac
 "#;
@@ -617,6 +630,7 @@ case "$verb" in
   getindexinfo)  echo '@REPLY@' ;;
   gettxout)      exit 0 ;;
   getrawtransaction) exit 5 ;;
+  getblockchaininfo) echo '{"chain": "regtest", "mediantime": 1700000000}' ;;
   *) exit 1 ;;
 esac
 "#
@@ -800,7 +814,7 @@ fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
     c[10] = if c[10] == 'q' { 'p' } else { 'q' };
     bad[0] = c.into_iter().collect();
     let o = run_in("inspect", &["--json"], &bad.join("\n"));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let w = json_warnings(&s(&o.stdout));
     assert!(
         w.iter()
@@ -808,7 +822,7 @@ fn bughunt_mt_10_inspect_json_carries_duplicate_and_correction_notices() {
         "inspect --json omits the correction notice; warnings = {w:?}"
     );
     let o = run_in("decode", &["--json"], &bad.join("\n"));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let w = json_warnings(&s(&o.stderr));
     assert!(
         w.iter()
@@ -876,7 +890,7 @@ fn bughunt_mt_04_cli_count_mismatch_refusal() {
     for verb in ["decode", "verify", "inspect"] {
         let out = run_in(verb, &[], &input);
         let err = s(&out.stderr);
-        assert_eq!(out.status.code(), Some(1), "{verb}: {err}");
+        assert_eq!(out.status.code(), Some(INVALID), "{verb}: {err}");
         assert!(
             out.stdout.is_empty(),
             "{verb} wrote stdout: {}",
@@ -915,6 +929,7 @@ fn bughunt_mt_01k_p2wsh_keyless_der_shaped_64_byte_script_refused() {
     let out = encode_psbt(&finalized(bitcoin::ScriptBuf::from(spk), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -948,6 +963,7 @@ fn bughunt_mt_01m_taproot_scriptpath_65_byte_none_refused() {
     let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
     );
 }
@@ -996,6 +1012,7 @@ fn bughunt_mt_03g_truncated_pushdata4_refused() {
     ));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0's satisfaction carries no signature",
     );
 }
@@ -1026,6 +1043,7 @@ fn s2_a_taproot_65_byte_sighash_none_refused() {
     ));
     assert_refused_with(
         &out,
+        INVALID,
         "mt encode: REFUSED — §8.6, input 0 is signed with sighash 0x02, not SIGHASH_ALL",
     );
 }
@@ -1080,7 +1098,7 @@ fn s2_b3_op_nop_ends_walk_before_sig() {
         Some(bitcoin::ScriptBuf::from(ss)),
         None,
     ));
-    assert_refused_with(&out, NOSIG);
+    assert_refused_with(&out, INVALID, NOSIG);
 }
 
 #[test]
@@ -1091,7 +1109,7 @@ fn s2_c_truncated_pushdata_refuses_not_panics() {
             Some(bitcoin::ScriptBuf::from(ss.clone())),
             None,
         ));
-        assert_refused_with(&out, NOSIG);
+        assert_refused_with(&out, INVALID, NOSIG);
     }
 }
 
@@ -1141,7 +1159,7 @@ fn s2_f_keyless_scriptpath_with_64_and_65_byte_leaf_refused() {
         leaf[n - 1] = 0x51;
         let w = bitcoin::Witness::from_slice(&[leaf, control_block_65()]);
         let out = encode_psbt(&finalized(p2tr_spk(), None, Some(w)));
-        assert_refused_with(&out, NOSIG);
+        assert_refused_with(&out, INVALID, NOSIG);
     }
 }
 // ---- FIX-C rows (design/FIX_bughunt_mt_c.md) ---------------------------------
@@ -1164,7 +1182,7 @@ fn bughunt_mt_07b_non_ascii_cut_point_is_an_unreadable_string() {
         let e = s(&out.stderr);
         assert_eq!(
             out.status.code(),
-            Some(1),
+            Some(INVALID),
             "{verb}: rc {:?}\n{e}",
             out.status.code()
         );
@@ -1197,7 +1215,7 @@ fn bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses() {
         assert!(!e.contains("panicked"), "{verb} panicked:\n{e}");
         assert_eq!(
             out.status.code(),
-            Some(1),
+            Some(INVALID),
             "{verb}: rc {:?}\n{e}",
             out.status.code()
         );
@@ -1227,7 +1245,7 @@ fn bughunt_mt_07d_second_full_line_supplies_the_prefix() {
     assert!(!e.contains("panicked"), "decode panicked:\n{e}");
     assert_eq!(
         out.status.code(),
-        Some(1),
+        Some(INVALID),
         "rc {:?}\n{e}",
         out.status.code()
     );
@@ -1298,7 +1316,7 @@ fn bughunt_mt_10c_json_correction_text_is_exact() {
     let want = "chunk 1 needed 1 of 4 corrections";
     for verb in ["inspect", "decode"] {
         let o = run_in(verb, &["--json"], &bad.join("\n"));
-        assert!(o.status.success(), "{verb}: {}", s(&o.stderr));
+        assert_eq!(o.status.code(), Some(REPAIRED), "{verb}: {}", s(&o.stderr));
         let doc = if verb == "inspect" {
             s(&o.stdout)
         } else {
@@ -1329,7 +1347,7 @@ fn bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left() {
     ];
     let is_needed = |x: &String| x.starts_with("chunk ") && x.contains(" needed ");
     let o = run_in("inspect", &["--json"], &bad.join("\n"));
-    assert!(o.status.success(), "inspect: {}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "inspect: {}", s(&o.stderr));
     assert_eq!(
         exact_warnings(&s(&o.stdout)),
         vec![
@@ -1344,7 +1362,7 @@ fn bughunt_mt_10d_json_correction_entries_ordered_and_no_margin_left() {
     dup.push(even_strings()[2].clone());
     for (k, input) in [&bad, &dup].into_iter().enumerate() {
         let o = run_in("decode", &["--json"], &input.join("\n"));
-        assert!(o.status.success(), "decode: {}", s(&o.stderr));
+        assert_eq!(o.status.code(), Some(REPAIRED), "decode: {}", s(&o.stderr));
         let w = exact_warnings(&s(&o.stderr));
         let hits: Vec<String> = w.iter().filter(|x| is_needed(x)).cloned().collect();
         assert_eq!(hits, want, "decode --json correction entries: {w:?}");
@@ -1368,7 +1386,7 @@ fn bughunt_mt_11b_decode_json_quiet_is_refused() {
     let e = s(&out.stderr);
     assert_eq!(
         out.status.code(),
-        Some(1),
+        Some(USAGE),
         "rc {:?}\n{e}",
         out.status.code()
     );
@@ -1398,7 +1416,7 @@ fn bughunt_mt_r11_quiet_on_inspect_and_verify_is_refused() {
         let e = s(&out.stderr);
         assert_eq!(
             out.status.code(),
-            Some(1),
+            Some(USAGE),
             "{verb}: rc {:?}\n{e}",
             out.status.code()
         );
@@ -1426,7 +1444,7 @@ fn bughunt_mt_r11_json_quiet_on_inspect_and_verify_gets_the_quiet_refusal() {
         let e = s(&out.stderr);
         assert_eq!(
             out.status.code(),
-            Some(1),
+            Some(USAGE),
             "{verb}: rc {:?}\n{e}",
             out.status.code()
         );

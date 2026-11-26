@@ -17,6 +17,25 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static NAMED: AtomicBool = AtomicBool::new(false);
+
+/// The operator named `--bitcoin-cli` on the command line (exit-code spec R9).
+/// From here on, a `bitcoin-cli` that runs and does not answer adds IO (32) to
+/// the exit code. An absent one does not: pointing the flag at nothing is the
+/// documented way to force the offline path, and that is "no node", not a
+/// failing one.
+pub fn helper_named() {
+    NAMED.store(true, Ordering::Relaxed);
+}
+
+/// A call to a named helper failed: note IO, once is enough.
+fn helper_failed() {
+    if NAMED.load(Ordering::Relaxed) {
+        crate::out::note(crate::exit::Exit::IO);
+    }
+}
 
 /// A node, or the absence of one.
 #[derive(Debug, Clone)]
@@ -101,30 +120,45 @@ impl Node {
     /// Run `bitcoin-cli -stdin`, passing every argument on **stdin**.
     fn call(&self, args: &[&str]) -> Reply {
         use std::io::Write;
-        let Ok(mut child) = Command::new(&self.cli)
+        let mut child = match Command::new(&self.cli)
             .arg("-stdin")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-        else {
-            return Reply::Failed(None);
+        {
+            Ok(c) => c,
+            // Absent: the offline path, not a failure (R9).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Reply::Failed(None),
+            Err(_) => {
+                helper_failed();
+                return Reply::Failed(None);
+            }
         };
         {
             let Some(stdin) = child.stdin.as_mut() else {
+                helper_failed();
                 return Reply::Failed(None);
             };
             for a in args {
                 if writeln!(stdin, "{a}").is_err() {
                     let _ = child.wait();
+                    helper_failed();
                     return Reply::Failed(None);
                 }
             }
         }
         let Ok(out) = child.wait_with_output() else {
+            helper_failed();
             return Reply::Failed(None);
         };
         if !out.status.success() {
+            // Core's own error replies are answers, not a failing helper:
+            // 5 is not-found (RPC_INVALID_ADDRESS_OR_KEY), 89 is an older
+            // Core's method-not-found (-32601) for `getindexinfo`.
+            if !matches!(out.status.code(), Some(5 | 89)) {
+                helper_failed();
+            }
             return Reply::Failed(out.status.code());
         }
         Reply::Answered(String::from_utf8_lossy(&out.stdout).trim().to_string())

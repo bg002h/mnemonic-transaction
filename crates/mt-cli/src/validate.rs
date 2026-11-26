@@ -10,6 +10,7 @@
 //! are warnings *by name in the spec* — §8.4 says **"never refuse"** — and a
 //! warning printed in the shape of a refusal teaches operators to skim both.
 
+use crate::exit::Exit;
 use crate::refusal::{Refusal, Warning};
 use bitcoin::{Transaction, TxOut, Txid};
 
@@ -65,6 +66,7 @@ pub fn finalized_guard_psbt(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.1",
         format!(
@@ -107,6 +109,7 @@ pub fn finalized_guard_raw(tx: &Transaction) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.3",
         format!(
@@ -192,6 +195,7 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
     // `vin` non-empty.
     if tx.input.is_empty() {
         return Err(Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2b",
             "the transaction has 0 inputs",
@@ -204,6 +208,7 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
     // before the "values unknown" skip below so it holds on every input form.
     if let Some(v) = output_range_verdict(tx) {
         return Err(Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2b",
             v,
@@ -221,6 +226,7 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
     for (n, i) in tx.input.iter().enumerate() {
         if !seen.insert(i.previous_output) {
             return Err(Refusal::new(
+                Exit::INVALID,
                 "encode",
                 "§8.2b",
                 format!("input {n} repeats outpoint {}", i.previous_output),
@@ -247,6 +253,7 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
 
     if in_total < out_total {
         return Err(Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2b",
             format!(
@@ -269,6 +276,7 @@ pub fn value_guard(tx: &Transaction, input_values: &[Option<u64>]) -> Result<(),
     let rate = fee as f64 / vb.max(1) as f64;
     if fee > MAX_FEE_RATE_SAT_VB * vb.max(1) as u64 {
         return Err(Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2b",
             format!(
@@ -358,6 +366,7 @@ pub fn non_witness_utxo_guard(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
             None => {}
             Some(RecordFault::HashMismatch { got, want }) => {
                 return Err(Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2d",
                     format!("input {n}'s non_witness_utxo hashes to {got}, not {want}"),
@@ -375,6 +384,7 @@ pub fn non_witness_utxo_guard(psbt: &bitcoin::Psbt) -> Result<(), Refusal> {
                 outputs,
             }) => {
                 return Err(Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2d",
                     format!(
@@ -609,6 +619,7 @@ pub fn require_psbt_input_values(
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2c",
         format!(
@@ -838,6 +849,7 @@ pub fn utf8_argv_guard(args: Vec<std::ffi::OsString>) -> Result<Vec<String>, Ref
                     .cloned()
                     .unwrap_or_else(|| "encode".to_string());
                 return Err(Refusal::new(
+                    Exit::USAGE,
                     verb,
                     "§10.10",
                     format!("argument {n} is not valid UTF-8"),
@@ -919,6 +931,7 @@ pub fn command_line_guard(args: &[String]) -> Result<(), Refusal> {
             "a transaction"
         };
         return Err(Refusal::new(
+            Exit::REFUSED,
             verb,
             "§8.2f",
             format!(
@@ -1277,6 +1290,7 @@ pub fn world_readable_stdout_guard(allow: bool, form: crate::blocks::Form) -> Re
             }
         };
         return Err(Refusal::new(
+            Exit::REFUSED,
             "encode",
             "§8.2h",
             format!(
@@ -1413,6 +1427,7 @@ pub fn spent_input_guard(n: usize, outpoint: &str, parent_confirmed: bool) -> Re
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::NO,
         "encode",
         "§8.5",
         format!("input {n} ({outpoint}) is not in the UTXO set"),
@@ -1440,6 +1455,7 @@ pub fn value_mismatch_guard(n: usize, claimed_sat: u64, chain_sat: u64) -> Resul
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::NO,
         "encode",
         "§6a",
         format!(
@@ -1639,6 +1655,7 @@ pub fn has_signature_guard(tx: &Transaction) -> Result<(), Refusal> {
             continue;
         }
         return Err(Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.6",
             format!("input {n}'s satisfaction carries no signature"),
@@ -1668,6 +1685,7 @@ pub fn sighash_all_guard(tx: &Transaction) -> Result<(), Refusal> {
             let Some(byte) = s.sighash() else { continue }; // SIGHASH_DEFAULT
             if byte != 0x01 {
                 return Err(Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.6",
                     format!("input {n} is signed with sighash 0x{byte:02x}, not SIGHASH_ALL"),
@@ -1713,6 +1731,7 @@ pub fn chunk_ceiling_guard(chunks: usize) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.7b",
         format!(
@@ -1754,6 +1773,7 @@ pub fn secret_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
     // characters, not "what was seen" -- an ms1 body is secret seed entropy and
     // this message is the second place it would land.
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§8.9",
         "the input is ms1 — SECRET seed entropy",
@@ -1828,6 +1848,7 @@ pub fn same_file_guard(
          what you expect."
     };
     Err(Refusal::new(
+        Exit::REFUSED,
         verb,
         "§8.2i",
         format!("{out} is the same file as {inp}"),

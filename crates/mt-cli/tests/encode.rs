@@ -9,6 +9,9 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+mod common;
+use common::exit::INVALID;
+
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
@@ -276,7 +279,7 @@ fn refuses_a_hex_encoded_psbt_by_name() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.starts_with("mt encode: REFUSED — §8.2e,"), "got: {err}");
     assert!(
@@ -295,7 +298,7 @@ fn unrecognised_input_shows_the_bytes() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("REFUSED — §8.2e"), "got: {err}");
     assert!(

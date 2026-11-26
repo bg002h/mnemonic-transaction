@@ -18,6 +18,7 @@
 #![allow(clippy::result_large_err)]
 
 mod blocks;
+mod exit;
 mod input;
 mod locktime;
 mod node;
@@ -27,7 +28,8 @@ mod refusal;
 mod report;
 mod validate;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use exit::Exit;
 use std::io::{Read, Write};
 
 use mt_codec::string_layer::pipeline;
@@ -35,7 +37,7 @@ use refusal::Refusal;
 
 /// Engravable codex32 backups of signed Bitcoin transactions.
 #[derive(Parser)]
-#[command(name = "mt", version, about, long_about = None)]
+#[command(name = "mt", version, about, long_about = None, after_help = exit::LEGEND)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -127,6 +129,9 @@ struct ReadArgs {
     /// OFFLINE path — the mechanism every air-gapped gate and journey uses,
     /// because the alternative an implementer reaches for is editing `PATH`,
     /// which is process-global and would silently change neighbouring tests.
+    ///
+    /// A path you name that runs and does not answer adds 32 to the exit
+    /// status (the report still prints); an absent path does not.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
 }
@@ -290,6 +295,9 @@ struct EncodeArgs {
     /// Pointing this at something that does not exist is how a run is forced
     /// **offline** — the mechanism every gate and journey that must run
     /// air-gapped uses.
+    ///
+    /// A path you name that runs and does not answer adds 32 to the exit
+    /// status (the strings still print); an absent path does not.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
 }
@@ -301,7 +309,7 @@ fn main() -> std::process::ExitCode {
         Ok(argv) => argv,
         Err(refusal) => {
             out::stderr_write(format_args!("{refusal}"));
-            return std::process::ExitCode::from(64);
+            return std::process::ExitCode::from(refusal.class.to_exit_code());
         }
     };
 
@@ -339,14 +347,19 @@ fn main() -> std::process::ExitCode {
     // and anything it did not admit still is.
     if let Err(refusal) = validate::command_line_guard(&intake.argv) {
         out::stderr_write(format_args!("{refusal}"));
-        return std::process::ExitCode::FAILURE;
+        return std::process::ExitCode::from(out::exit_code(refusal.class));
     }
 
-    let cli = match Cli::try_parse_from(&intake.argv) {
-        Ok(cli) => cli,
+    let parsed = Cli::command()
+        .try_get_matches_from(&intake.argv)
+        .and_then(|m| Cli::from_arg_matches(&m).map(|cli| (cli, m)));
+    let (cli, matches) = match parsed {
+        Ok(p) => p,
         Err(e) => {
             // S1: `--help` and `--version` go to stdout under the same write
-            // rule as the verbs; a usage error keeps clap's stderr text, exit 2.
+            // rule as the verbs; a usage error keeps clap's stderr text, and
+            // exits 64 (exit-code spec decision 2: mt's clap arguments are all
+            // settings or paths, none an input value).
             if e.use_stderr() || !out::read_only() {
                 if let Err(w) = e.print() {
                     if !e.use_stderr() {
@@ -354,10 +367,24 @@ fn main() -> std::process::ExitCode {
                     }
                 }
             }
-            let code = u8::try_from(e.exit_code()).unwrap_or(2);
-            return std::process::ExitCode::from(out::exit_code(code));
+            let outcome = if e.use_stderr() {
+                Exit::USAGE
+            } else {
+                Exit::OK
+            };
+            return std::process::ExitCode::from(out::exit_code(outcome));
         }
     };
+    // R9: a `--bitcoin-cli` the operator NAMED is a helper they asked for, so
+    // its failure is IO (32). The default is not; neither is an absent path,
+    // which is the documented way to force the offline path.
+    if matches
+        .subcommand()
+        .and_then(|(_, m)| m.value_source("bitcoin_cli"))
+        == Some(clap::parser::ValueSource::CommandLine)
+    {
+        node::helper_named();
+    }
     match cli.command {
         Command::Encode(args) => run(encode(args, intake.material)),
         Command::Decode(args) => run(decode(args, intake.material)),
@@ -367,13 +394,14 @@ fn main() -> std::process::ExitCode {
 }
 
 /// Exit 0 means every check passed; non-zero otherwise. `mt decode`'s
-/// documented pipeline depends on it.
+/// documented pipeline depends on it. A refusal exits with its class, plus
+/// every bit the run reported before it (exit-code spec R1).
 fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
     match r {
-        Ok(()) => std::process::ExitCode::from(out::exit_code(0)),
+        Ok(()) => std::process::ExitCode::from(out::exit_code(Exit::OK)),
         Err(refusal) => {
             out::stderr_write(format_args!("{refusal}"));
-            std::process::ExitCode::from(out::exit_code(1))
+            std::process::ExitCode::from(out::exit_code(refusal.class))
         }
     }
 }
@@ -383,6 +411,7 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 fn read_encode_file(path: &std::path::Path) -> Result<Vec<u8>, Refusal> {
     std::fs::read(path).map_err(|e| {
         Refusal::new(
+            Exit::IO,
             "encode",
             "§8.2e",
             format!("cannot read {}", path.display()),
@@ -408,6 +437,9 @@ fn input_endpoint(
 fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
+    // A setting, judged from the command line alone, so before any input is
+    // read (exit-code spec R2).
+    separator_guard(&args.separator)?;
     // §8.2i: the output is never one of the inputs (Q1c: before any read).
     validate::same_file_guard(
         "encode",
@@ -445,6 +477,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
             let mut buf = Vec::new();
             std::io::stdin().read_to_end(&mut buf).map_err(|e| {
                 Refusal::new(
+                    Exit::IO,
                     "encode",
                     "§8.2e",
                     "cannot read stdin",
@@ -467,8 +500,6 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         let _ = writeln!(stderr, "{w}");
     }
 
-    separator_guard(&args.separator)?;
-
     txid_paste_guard(&raw, "encode")?;
     let sniffed = input::sniff(&raw)?;
     let asserted = parse_input_values(&args.input_value)?;
@@ -479,6 +510,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         input::Input::Psbt(bytes) => {
             let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                 Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2e",
                     "input carries the PSBT magic but does not parse",
@@ -662,6 +694,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     let txid = tx.compute_txid().to_string();
     let strings = pipeline::encode(&tx_bytes, &txid).map_err(|e| {
         Refusal::new(
+            Exit::INTERNAL,
             "encode",
             "§3b",
             "transaction cannot be chunked",
@@ -1084,6 +1117,7 @@ fn txid_partial(bytes: &[u8], verb: &str) -> Result<(String, usize), Refusal> {
     let (tx, used) = bitcoin::consensus::encode::deserialize_partial::<bitcoin::Transaction>(bytes)
         .map_err(|e| {
             Refusal::new(
+                Exit::INVALID,
                 verb,
                 "§8.2e",
                 "input is not a decodable Bitcoin transaction",
@@ -1258,6 +1292,7 @@ fn read_input_bytes(
     let read_file = |p: &std::path::PathBuf| -> Result<Vec<u8>, Refusal> {
         std::fs::read(p).map_err(|e| {
             Refusal::new(
+                Exit::IO,
                 verb,
                 "§1.1e",
                 format!("cannot read {}", p.display()),
@@ -1282,9 +1317,9 @@ fn read_input_bytes(
         (None, Some(material)) => material,
         (None, None) => {
             let mut buf = Vec::new();
-            std::io::stdin()
-                .read_to_end(&mut buf)
-                .map_err(|e| Refusal::new(verb, "§1.1e", "cannot read stdin", format!("{e}")))?;
+            std::io::stdin().read_to_end(&mut buf).map_err(|e| {
+                Refusal::new(Exit::IO, verb, "§1.1e", "cannot read stdin", format!("{e}"))
+            })?;
             buf
         }
     };
@@ -1300,10 +1335,22 @@ fn read_input_bytes(
     Ok(bytes)
 }
 
+/// Exit-code spec R6 (decision 5): a verb that USED a BCH-corrected chunk
+/// says so in its code (REPAIRED, 16), not only on stderr: the plate is
+/// damaged. The set's content id is the oracle (`content_id_guard`), so the
+/// correction is verified when the verb succeeds. A refusal after this point
+/// keeps the bit (R1), because the margin report still names the corrections.
+fn note_corrections(chunks: &[mt_codec::DecodedChunk]) {
+    if chunks.iter().any(|c| c.corrected > 0) {
+        out::note(Exit::REPAIRED);
+    }
+}
+
 /// The UTF-8 step of `read_input`.
 fn input_text(bytes: Vec<u8>, verb: &str) -> Result<String, Refusal> {
     String::from_utf8(bytes).map_err(|_| {
         Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1e",
             "input is not text",
@@ -1619,6 +1666,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
+    note_corrections(&set.chunks);
 
     // §1.1's LAST CHECK, before anything reaches stdout.
     content_id_guard(&set.bytes, &set.chunks, "decode")?;
@@ -1781,6 +1829,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     let read = read_strings::read(&text, "verify")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
+    note_corrections(&set.chunks);
 
     // ...AND the reassembled transaction re-derives that id. This is the check
     // the OK line has always claimed; until it existed, the claim was a
@@ -1798,6 +1847,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         if let Some(path) = &args.transaction {
             let supplied = std::fs::read(path).map_err(|e| {
                 Refusal::new(
+                    Exit::IO,
                     "verify",
                     "§1.1",
                     format!("cannot read {}", path.display()),
@@ -1821,6 +1871,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                 input::Input::Psbt(bytes) => {
                     let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                         Refusal::new(
+                            Exit::INVALID,
                             "verify",
                             "§1.1",
                             "the supplied PSBT does not parse",
@@ -1834,6 +1885,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     // it would report a match for something unbroadcastable.
                     validate::finalized_guard_psbt(&psbt).map_err(|r| {
                         Refusal::new(
+                            Exit::INVALID,
                             "verify",
                             "§1.1",
                             "the supplied PSBT is not finalized",
@@ -1855,6 +1907,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
             let got = txid_display(&supplied, "verify", Subject::Input)?;
             if want != got {
                 return Err(Refusal::new(
+                    Exit::NO,
                     "verify",
                     "§1.1",
                     "the supplied transaction is not the one on these strings",
@@ -1943,6 +1996,7 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
         input::Input::Psbt(bytes) => {
             let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                 Refusal::new(
+                    Exit::INVALID,
                     "inspect",
                     "§8.2e",
                     "input carries the PSBT magic but does not parse",
@@ -2102,6 +2156,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
     let read = read_strings::read(&text, "inspect")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
+    note_corrections(&set.chunks);
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
 
@@ -2302,6 +2357,7 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         };
 
         return Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1",
             format!(
@@ -2323,6 +2379,7 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         );
     }
     Refusal::new(
+        Exit::INVALID,
         verb,
         "§1.1",
         "the set does not verify",
@@ -2358,8 +2415,15 @@ fn content_id_guard(
 ) -> Result<(), Refusal> {
     let expected = chunks[0].header.chunk_set_id;
     let (txid, used) = txid_partial(bytes, verb)?;
-    let derived = pipeline::content_id_from_txid_display(&txid)
-        .map_err(|e| Refusal::new(verb, "§1.1", "cannot derive the content id", format!("{e}")))?;
+    let derived = pipeline::content_id_from_txid_display(&txid).map_err(|e| {
+        Refusal::new(
+            Exit::INTERNAL,
+            verb,
+            "§1.1",
+            "cannot derive the content id",
+            format!("{e}"),
+        )
+    })?;
     if derived == expected {
         // Content id first (a mismatch is the louder fault); bytes left after
         // the transaction are refused only once the id has matched (bh-mt-I1).
@@ -2431,6 +2495,7 @@ fn content_id_guard(
     };
 
     let refusal = Refusal::new(
+        Exit::INVALID,
         verb,
         "§1.1",
         format!(
@@ -2464,6 +2529,7 @@ fn txid_paste_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§10.10",
         "this is a transaction ID (64 hex characters), not a transaction",
@@ -2497,6 +2563,7 @@ fn json_quiet_guard(json: bool, quiet: bool, verb: &str) -> Result<(), Refusal> 
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         "--json and --quiet contradict each other",
@@ -2520,6 +2587,7 @@ fn transaction_unsupported_guard(
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         format!("--transaction has no meaning for `{verb}`"),
@@ -2544,6 +2612,7 @@ fn in_with_dash_guard(has_in: bool, dash: bool, verb: &str) -> Result<(), Refusa
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         "--in and `-` name two different inputs",
@@ -2563,6 +2632,7 @@ fn quiet_unsupported_guard(quiet: bool, verb: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         format!("--quiet has no meaning for `{verb}`"),
@@ -2587,6 +2657,7 @@ fn json_unsupported_guard(json: bool, verb: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         format!("--json has no meaning for `{verb}`"),
@@ -2632,6 +2703,7 @@ fn set_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal> {
     }
     let n = total - used;
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§1.1",
         format!(
@@ -2665,6 +2737,7 @@ fn decode_tx(bytes: &[u8], verb: &str, subject: Subject) -> Result<bitcoin::Tran
     let (tx, used) = bitcoin::consensus::encode::deserialize_partial::<bitcoin::Transaction>(bytes)
         .map_err(|e| {
             Refusal::new(
+                Exit::INVALID,
                 verb,
                 "§8.2e",
                 "the reassembled bytes are not a Bitcoin transaction",
@@ -2703,6 +2776,7 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
         .map(|s| {
             let (i, v) = s.split_once(':').ok_or_else(|| {
                 Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2c",
                     format!("--input-value {s:?} is not <index>:<amount>"),
@@ -2713,6 +2787,7 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
             })?;
             let idx: u32 = i.parse().map_err(|_| {
                 Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2c",
                     format!("--input-value index {i:?} is not a number"),
@@ -2741,6 +2816,7 @@ fn separator_guard(sep: &str) -> Result<(), Refusal> {
     // whitespace separator holding a newline gives N1.
     if sep.chars().all(char::is_whitespace) {
         return Err(Refusal::new(
+            Exit::USAGE,
             "encode",
             "§1.1e",
             format!("--separator {sep:?} contains a newline"),
@@ -2753,6 +2829,7 @@ fn separator_guard(sep: &str) -> Result<(), Refusal> {
         .with_remedy("Use a space, a tab, or omit --separator (a space is the default)."));
     }
     Err(Refusal::new(
+        Exit::USAGE,
         "encode",
         "§1.1e",
         format!("--separator {sep:?} is not whitespace"),
@@ -2777,6 +2854,7 @@ fn input_index_range_guard(asserted: &[(u32, u64)], inputs: usize) -> Result<(),
         return Ok(());
     };
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2c",
         format!("--input-value names input {i}, but this transaction has {inputs} input(s)"),
@@ -2802,6 +2880,7 @@ fn check_input_value_indices(asserted: &[(u32, u64)], _args: &EncodeArgs) -> Res
     for (i, _) in asserted {
         if !seen.insert(*i) {
             return Err(Refusal::new(
+                Exit::INVALID,
                 "encode",
                 "§8.2c",
                 format!("--input-value names input {i} more than once"),
@@ -2825,6 +2904,7 @@ fn fmt_btc(sats: u64) -> String {
 fn parse_btc(v: &str) -> Result<u64, Refusal> {
     let bad = |why: &str| {
         Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2c",
             format!("--input-value amount {v:?} is not a BTC amount"),

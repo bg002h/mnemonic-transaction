@@ -40,6 +40,9 @@
 
 use std::process::Command;
 
+mod common;
+use common::exit::INVALID;
+
 const OFFLINE: &[&str] = &["--bitcoin-cli", "/nonexistent/bitcoin-cli"];
 
 fn corpus() -> serde_json::Value {
@@ -149,8 +152,8 @@ fn every_reading_verb_still_refuses_empty_input_in_mts_own_words() {
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         assert_eq!(
             out.status.code(),
-            Some(1),
-            "{verb}: mt's own empty-input refusal exits 1: {err}"
+            Some(INVALID),
+            "{verb}: mt's own empty-input refusal is INVALID (2): {err}"
         );
         assert!(
             err.contains("§1.1e") && err.contains("no strings found in the input"),

@@ -19,9 +19,14 @@
 
 use std::fmt;
 
+use crate::exit::Exit;
+
 /// A refusal, in the ruled shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
+    /// The exit-code class this refusal falls in (exit-code spec §3), chosen
+    /// where the refusal is built so no refusal goes unclassified (R13).
+    pub class: Exit,
     /// The verb that refused, e.g. `encode`.
     pub verb: String,
     /// The spec reference, e.g. `§8.2b`.
@@ -43,14 +48,16 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    /// Build a refusal.
+    /// Build a refusal of exit-code class `class`.
     pub fn new(
+        class: Exit,
         verb: impl Into<String>,
         section: impl Into<String>,
         verdict: impl Into<String>,
         mechanism: impl Into<String>,
     ) -> Self {
         Self {
+            class,
             verb: verb.into(),
             section: section.into(),
             verdict: verdict.into(),
@@ -158,6 +165,7 @@ mod tests {
     #[test]
     fn verdict_line_is_machine_parseable() {
         let r = Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2b",
             "fee rate 31,250 sat/vB exceeds 25,000",
@@ -190,7 +198,13 @@ mod tests {
 
     #[test]
     fn a_refusal_with_nothing_to_suggest_says_nothing() {
-        let r = Refusal::new("encode", "§8.1", "not finalized", "mechanism");
+        let r = Refusal::new(
+            Exit::INVALID,
+            "encode",
+            "§8.1",
+            "not finalized",
+            "mechanism",
+        );
         assert!(
             !r.to_string().contains("Consider"),
             "an absent remedy must not be padded with advice"

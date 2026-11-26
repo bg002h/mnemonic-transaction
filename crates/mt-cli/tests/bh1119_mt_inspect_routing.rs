@@ -19,6 +19,9 @@ use assert_cmd::Command;
 use bitcoin::consensus::deserialize;
 use std::io::Write;
 
+mod common;
+use common::exit::INVALID;
+
 const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn mt() -> Command {
@@ -245,11 +248,16 @@ fn accepted(r: &Run) {
     assert_eq!(r.code, Some(0), "expected exit 0\nstderr:\n{}", r.err);
 }
 
-/// Exit 1, nothing on stdout, and stderr's first line is
+/// Exit `class`, nothing on stdout, and stderr's first line is
 /// `mt <verb>: REFUSED — <rest>`. Rows name the section and verdict only.
-fn refused(r: &Run, verb: &str, rest: &str) {
+fn refused(r: &Run, class: i32, verb: &str, rest: &str) {
     let first_line = format!("mt {verb}: REFUSED — {rest}");
-    assert_eq!(r.code, Some(1), "expected exit 1\nstderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(class),
+        "expected exit {class}\nstderr:\n{}",
+        r.err
+    );
     assert!(
         r.out.is_empty(),
         "a refusal writes nothing on stdout:\n{}",
@@ -649,7 +657,7 @@ fn bh1119_mt_i3_encode_refuses_a_non_witness_utxo_without_the_spent_output() {
         prev.output.len()
     );
     let r = run("encode", &[], b64(&psbt.serialize()).as_bytes());
-    refused(&r, "encode", &rest);
+    refused(&r, INVALID, "encode", &rest);
 }
 
 /// Q3 (ruled): `encode --qr` is an engrave path too, and refuses the same.
@@ -663,7 +671,7 @@ fn bh1119_mt_i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output() 
         prev.output.len()
     );
     let r = run("encode", &["--qr"], b64(&psbt.serialize()).as_bytes());
-    refused(&r, "encode", &rest);
+    refused(&r, INVALID, "encode", &rest);
 }
 
 // ── Q4: every report JSON carries `txid_provisional` ──────────────────────
@@ -724,6 +732,7 @@ fn bh1119_mt_i5_inspect_names_non_text_junk_by_the_sniffer() {
     let r = run("inspect", &[], b"\xfe\xfd\x00junkjunk");
     refused(
         &r,
+        INVALID,
         "inspect",
         "§8.2e, input is not a PSBT or a raw transaction (11 bytes)",
     );
@@ -733,7 +742,7 @@ fn bh1119_mt_i5_inspect_names_non_text_junk_by_the_sniffer() {
 #[test]
 fn bh1119_mt_i5_decode_still_refuses_non_text() {
     let r = run("decode", &[], b"\xfe\xfd\x00junkjunk");
-    refused(&r, "decode", "§1.1e, input is not text");
+    refused(&r, INVALID, "decode", "§1.1e, input is not text");
 }
 
 // ── I6: recoverable string syntax reaches the strings reader ──────────────
@@ -778,7 +787,7 @@ fn bh1119_mt_i6_inspect_reads_an_elided_first_line() {
 fn bh1119_mt_i6_a_lone_mtl_string_reaches_the_strings_reader() {
     let s = &even_lines()[0];
     let r = run("inspect", &[], format!("mtl{}", &s[3..]).as_bytes());
-    assert_eq!(r.code, Some(1), "stderr:\n{}", r.err);
+    assert_eq!(r.code, Some(INVALID), "stderr:\n{}", r.err);
     assert!(
         !r.err.contains("input is not a PSBT or a raw transaction"),
         "stderr:\n{}",
@@ -792,6 +801,7 @@ fn bh1119_mt_i6_foreign_text_keeps_the_sniffer_refusal() {
     let r = run("inspect", &[], b"hello world\n");
     refused(
         &r,
+        INVALID,
         "inspect",
         "§8.2e, input is not a PSBT or a raw transaction (11 bytes)",
     );
@@ -802,6 +812,7 @@ fn bh1119_mt_i6_damaged_base64_psbt_containing_mt1_keeps_the_psbt_refusal() {
     let r = run("inspect", &[], b"cHNidP8BAHUCAAAAmt1*AAAA");
     refused(
         &r,
+        INVALID,
         "inspect",
         "§8.2e, input looks like a base64 PSBT but does not decode",
     );
@@ -818,7 +829,7 @@ fn bh1119_mt_i6_wrapped_base64_containing_mt1_keeps_the_sniffer_refusal() {
         &b[203..]
     );
     let r = run("inspect", &[], text.as_bytes());
-    assert_eq!(r.code, Some(1), "stderr:\n{}", r.err);
+    assert_eq!(r.code, Some(INVALID), "stderr:\n{}", r.err);
     assert!(
         r.err
             .lines()
@@ -833,5 +844,10 @@ fn bh1119_mt_i6_wrapped_base64_containing_mt1_keeps_the_sniffer_refusal() {
 #[test]
 fn bh1119_mt_i6_empty_input_stays_on_the_strings_path() {
     let r = run("inspect", &[], b"\n");
-    refused(&r, "inspect", "§1.1e, no strings found in the input");
+    refused(
+        &r,
+        INVALID,
+        "inspect",
+        "§1.1e, no strings found in the input",
+    );
 }

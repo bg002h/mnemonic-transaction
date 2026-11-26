@@ -12,6 +12,7 @@ use assert_cmd::Command;
 use std::io::Write;
 
 mod common;
+use common::exit::INVALID;
 
 const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
@@ -87,7 +88,12 @@ fn remedy_of(err: &str, header: &str) -> String {
 #[test]
 fn i22_unfinalized_psbt_remedy_names_hex_field() {
     let r = encode_offline(base()["unfinalized_psbt_b64"].as_str().unwrap());
-    assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(INVALID),
+        "encode did not refuse; stderr:\n{}",
+        r.err
+    );
     assert!(r.out.is_empty(), "a refused encode wrote stdout: {}", r.out);
     assert_eq!(
         remedy_of(&r.err, "mt encode: REFUSED — §8.1, "),
@@ -101,7 +107,12 @@ fn i22_unfinalized_psbt_remedy_names_hex_field() {
 fn i22_txid_remedy_names_hex_field() {
     let (own, _) = common::fixture_txids(&base());
     let r = encode_offline(&own);
-    assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(INVALID),
+        "encode did not refuse; stderr:\n{}",
+        r.err
+    );
     assert!(r.out.is_empty(), "a refused encode wrote stdout: {}", r.out);
     assert_eq!(
         remedy_of(&r.err, "mt encode: REFUSED — §10.10, "),
@@ -124,7 +135,7 @@ fn i22_txid_remedy_reading_verbs_point_to_inspect() {
         let err = String::from_utf8_lossy(&o.stderr).into_owned();
         assert_eq!(
             o.status.code(),
-            Some(1),
+            Some(INVALID),
             "{verb} did not refuse; stderr:\n{err}"
         );
         assert_eq!(

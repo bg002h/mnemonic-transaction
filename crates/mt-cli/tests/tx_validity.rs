@@ -11,6 +11,7 @@ use assert_cmd::Command;
 use std::io::Write;
 
 mod common;
+use common::exit::INVALID;
 use common::hex_to_bytes;
 
 const OFFLINE: &str = "/nonexistent/bitcoin-cli";
@@ -97,9 +98,14 @@ fn encode_offline_with(input: &str, cli: &str) -> Run {
     run(&["encode", "--bitcoin-cli", cli], input)
 }
 
-fn assert_refused_with(r: &Run, line: &str) {
+fn assert_refused_with(r: &Run, class: i32, line: &str) {
     assert_ne!(r.code, Some(101), "mt panicked: {}", r.err);
-    assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(class),
+        "encode did not refuse; stderr:\n{}",
+        r.err
+    );
     assert!(
         r.err.lines().any(|l| l == line),
         "missing refusal line {line:?}; stderr:\n{}",
@@ -137,7 +143,7 @@ const MAX_MONEY: u64 = 2_100_000_000_000_000;
 fn bh1119_mt_i16_encode_refuses_zero_outputs() {
     let hex = mutated_raw_hex(|tx| tx.output.clear());
     let r = encode_offline(&hex, &[]);
-    assert_refused_with(&r, &refused(ZERO_OUT, "§8.2b"));
+    assert_refused_with(&r, INVALID, &refused(ZERO_OUT, "§8.2b"));
 }
 
 #[test]
@@ -146,6 +152,7 @@ fn bh1119_mt_i16_encode_refuses_output_above_money_range() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "output 0 pays 2100000000000001 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -163,6 +170,7 @@ fn bh1119_mt_i16_encode_refuses_output_total_above_money_range() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "outputs 0 to 1 total 2200000000000000 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -180,6 +188,7 @@ fn bh1119_mt_i16_encode_output_sum_overflow_refuses_not_panics() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "output 0 pays 9223372036854775808 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -198,6 +207,7 @@ fn bh1119_mt_i16_encode_output_range_checked_before_duplicate_inputs() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "output 0 pays 2100000000000001 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -436,19 +446,19 @@ fn i17_verdict(n: usize, vout: u32) -> String {
 #[test]
 fn bh1119_mt_i17_encode_refuses_missing_vout_with_input_value() {
     let r = encode_offline(&legacy_psbt(&[99], None, false), &["--input-value", "0:10"]);
-    assert_refused_with(&r, &refused(&i17_verdict(0, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(0, 99), "§8.2d"));
 }
 
 #[test]
 fn bh1119_mt_i17_encode_refuses_missing_vout_with_witness_utxo() {
     let r = encode_offline(&legacy_psbt(&[99], None, true), &[]);
-    assert_refused_with(&r, &refused(&i17_verdict(0, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(0, 99), "§8.2d"));
 }
 
 #[test]
 fn bh1119_mt_i17_encode_refuses_missing_vout_without_any_value() {
     let r = encode_offline(&legacy_psbt(&[99], None, false), &[]);
-    assert_refused_with(&r, &refused(&i17_verdict(0, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(0, 99), "§8.2d"));
 }
 
 #[test]
@@ -458,7 +468,7 @@ fn bh1119_mt_i17_encode_names_the_first_offending_input() {
         &legacy_psbt(&[real_vout, 99], None, false),
         &["--input-value", "1:10"],
     );
-    assert_refused_with(&r, &refused(&i17_verdict(1, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(1, 99), "§8.2d"));
 }
 
 /// Guard: a record whose hash does not match keeps the existing refusal, which
@@ -472,7 +482,7 @@ fn bh1119_mt_i17_hash_mismatch_still_refused_first() {
         &legacy_psbt(&[99], Some(other), false),
         &["--input-value", "0:10"],
     );
-    assert_eq!(r.code, Some(1), "stderr:\n{}", r.err);
+    assert_eq!(r.code, Some(INVALID), "stderr:\n{}", r.err);
     let (prev, _) = legacy_parent();
     let want = refused(
         &format!(

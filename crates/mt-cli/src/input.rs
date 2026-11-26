@@ -11,6 +11,7 @@
 //! a trailing newline is what every `.psbt` file and terminal paste carries, and
 //! uppercase hex with an `0x` prefix is plausible from a person.
 
+use crate::exit::Exit;
 use crate::refusal::Refusal;
 
 /// What the operator gave us, after sniffing.
@@ -116,6 +117,7 @@ pub fn hex_psbt_guard(bytes: &[u8]) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2e",
         "input is a hex-encoded PSBT, not a raw transaction",
@@ -151,6 +153,7 @@ fn unrecognised(bytes: &[u8]) -> Refusal {
         .collect::<Vec<_>>()
         .join(" ");
     Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2e",
         format!(
@@ -173,6 +176,7 @@ fn unrecognised(bytes: &[u8]) -> Refusal {
 /// prints none of them.
 fn pasted_mt1(n: usize) -> Refusal {
     Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2e",
         format!(
@@ -205,6 +209,7 @@ raw hex you started from, not what it produced.",
 /// exists to prevent.
 fn pasted_tx_record() -> Refusal {
     Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2e",
         "input is a `tx:` record — that is mt encode --qr's OUTPUT, not its input",
@@ -230,6 +235,7 @@ pub fn base64_psbt_guard(text: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2e",
         "input looks like a base64 PSBT but does not decode",
@@ -255,6 +261,7 @@ pub fn psbt_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refus
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§8.2e",
         format!(
@@ -277,6 +284,7 @@ pub fn tx_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§8.2e",
         format!(

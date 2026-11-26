@@ -10,11 +10,20 @@
 //! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
 //! the corpus vector `even` in `mt-codec/src/test_vectors/mt1_v1.json`. Unix
 //! only: /dev/full, `ulimit -f`, hard links and symlinks.
+//!
+//! Exit codes follow the constellation exit-code spec (mnemonic-engrave
+//! `SPEC_constellation_exit_codes.md`): a failed write ADDS IO (32, R8), an
+//! output naming an input is REFUSED (8), usage is 64. Test names that say
+//! `exits_1` / `exit_2` predate it and are kept, because the FIX document's
+//! row table cites them.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+mod common;
+use common::exit::{INVALID, IO, REFUSED, USAGE};
 
 const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 const FULL: &str = "mt: cannot write the output: No space left on device (os error 28)";
@@ -122,9 +131,16 @@ fn norm(s: &str) -> String {
 
 /// The same-file refusal as printed: the first line exact, the rest compared
 /// with whitespace collapsed (the mechanism and remedy wrap at 68 columns).
-fn assert_same_file_refusal(o: &Output, verb: &str, output: &str, input: &str, stdout_form: bool) {
+fn assert_same_file_refusal(
+    class: i32,
+    o: &Output,
+    verb: &str,
+    output: &str,
+    input: &str,
+    stdout_form: bool,
+) {
     let e = err(o);
-    assert_eq!(o.status.code(), Some(1), "exit code; stderr:\n{e}");
+    assert_eq!(o.status.code(), Some(class), "exit code; stderr:\n{e}");
     let first = e.lines().next().unwrap_or("");
     assert_eq!(
         first,
@@ -141,7 +157,7 @@ fn assert_same_file_refusal(o: &Output, verb: &str, output: &str, input: &str, s
 
 fn assert_write_failure(o: &Output, line: &str) {
     let e = err(o);
-    assert_eq!(o.status.code(), Some(1), "exit code; stderr:\n{e}");
+    assert_eq!(o.status.code(), Some(IO), "exit code; stderr:\n{e}");
     assert_eq!(last_line(o), line, "last stderr line; stderr:\n{e}");
     assert_eq!(
         e.matches(WRITE_LINE_PREFIX).count(),
@@ -312,16 +328,16 @@ fn bh1119_mt_c2_refused_verb_keeps_exit_1_and_says_no_write_line() {
         .arg(&g)
         .stdout(full()));
     let e = err(&o);
-    assert_eq!(o.status.code(), Some(1), "stderr:\n{e}");
+    assert_eq!(o.status.code(), Some(INVALID), "stderr:\n{e}");
     assert!(e.contains("REFUSED"), "stderr:\n{e}");
     assert!(!e.contains(WRITE_LINE_PREFIX), "stderr:\n{e}");
 }
 
-/// Guard: a usage error keeps clap's exit 2.
+/// Guard: a usage error exits 64, with no write line.
 #[test]
 fn bh1119_mt_c2_usage_error_keeps_exit_2() {
     let o = run(mt().args(["decode", "--no-such-flag"]).stdout(full()));
-    assert_eq!(o.status.code(), Some(2), "stderr:\n{}", err(&o));
+    assert_eq!(o.status.code(), Some(USAGE), "stderr:\n{}", err(&o));
     assert!(!err(&o).contains(WRITE_LINE_PREFIX));
 }
 
@@ -341,7 +357,7 @@ fn bh1119_mt_c3_failed_replacement_keeps_the_previous_file() {
         "--out".as_ref(),
         out.as_os_str(),
     ]);
-    assert_eq!(o.status.code(), Some(1), "stderr:\n{}", err(&o));
+    assert_eq!(o.status.code(), Some(IO), "stderr:\n{}", err(&o));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "OLD BACKUP\n");
     let mut names: Vec<String> = std::fs::read_dir(d.path())
         .unwrap()
@@ -440,7 +456,7 @@ fn bh1119_mt_c3_device_target_names_no_state() {
         .arg(&tx)
         .args(["--out", "/dev/full"]));
     let e = err(&o);
-    assert_eq!(o.status.code(), Some(1), "stderr:\n{e}");
+    assert_eq!(o.status.code(), Some(IO), "stderr:\n{e}");
     let last = last_line(&o);
     assert!(
         last.starts_with("mt: cannot write the output: /dev/full: "),
@@ -473,7 +489,7 @@ fn bh1119_mt_c3_stdio_alias_onto_a_file_names_no_state() {
         .args(["--out", "/dev/stdout"])
         .stdout(append_to(&s)));
     let e = err(&o);
-    assert_eq!(o.status.code(), Some(1), "stderr:\n{e}");
+    assert_eq!(o.status.code(), Some(IO), "stderr:\n{e}");
     let last = last_line(&o);
     assert!(
         last.starts_with("mt: cannot write the output: /dev/stdout: "),
@@ -524,6 +540,7 @@ fn bh1119_mt_i4_encode_in_equals_out_refused() {
         .arg(&tx));
     let p = tx.display();
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "encode",
         &format!("--out {p}"),
@@ -544,6 +561,7 @@ fn bh1119_mt_i4_encode_out_hard_link_to_in_refused() {
         .arg("--out")
         .arg(&link));
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "encode",
         &format!("--out {}", link.display()),
@@ -564,6 +582,7 @@ fn bh1119_mt_i4_encode_out_symlink_to_in_refused() {
         .arg("--out")
         .arg(&link));
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "encode",
         &format!("--out {}", link.display()),
@@ -581,6 +600,7 @@ fn bh1119_mt_i4_encode_out_equals_stdin_refused() {
         .arg(&tx)
         .stdin(read_from(&tx)));
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "encode",
         &format!("--out {}", tx.display()),
@@ -598,6 +618,7 @@ fn bh1119_mt_i4_encode_stdout_appends_to_in_refused() {
         .arg(&tx)
         .stdout(append_to(&tx)));
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "encode",
         "standard output",
@@ -615,6 +636,7 @@ fn bh1119_mt_i4_decode_stdout_appends_to_in_refused() {
         .arg(&s)
         .stdout(append_to(&s)));
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "decode",
         "standard output",
@@ -632,6 +654,7 @@ fn bh1119_mt_i4_inspect_stdout_appends_to_in_refused() {
         .arg(&s)
         .stdout(append_to(&s)));
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "inspect",
         "standard output",
@@ -648,7 +671,14 @@ fn bh1119_mt_i4_decode_stdin_and_stdout_one_file_refused() {
         .args(["decode", "--bitcoin-cli", OFFLINE])
         .stdin(read_from(&s))
         .stdout(append_to(&s)));
-    assert_same_file_refusal(&o, "decode", "standard output", "standard input", true);
+    assert_same_file_refusal(
+        REFUSED,
+        &o,
+        "decode",
+        "standard output",
+        "standard input",
+        true,
+    );
     assert_eq!(std::fs::read_to_string(&s).unwrap(), even_strings());
 }
 
@@ -664,6 +694,7 @@ fn bh1119_mt_i4_refused_before_the_input_is_read() {
         .arg(&g));
     let p = g.display();
     assert_same_file_refusal(
+        REFUSED,
         &o,
         "encode",
         &format!("--out {p}"),

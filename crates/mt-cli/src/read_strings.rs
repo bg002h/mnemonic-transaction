@@ -8,6 +8,7 @@
 //! Then: normalise to lowercase, restore any elided prefix, and only then hand
 //! anything to the codec.
 
+use crate::exit::Exit;
 use crate::refusal::Refusal;
 use mt_codec::consts::INVARIANT_PREFIX_SYMBOLS;
 use mt_codec::string_layer::pipeline;
@@ -103,6 +104,7 @@ pub fn read(raw: &str, verb: &str) -> Result<ReadStrings, Refusal> {
 
     if candidates.is_empty() {
         return Err(Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1e",
             "no strings found in the input",
@@ -434,6 +436,7 @@ pub fn length_report(strings: &[String], failed: &[usize], verb: &str) -> Option
 
     Some(
         Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1e",
             if ambiguous {
@@ -542,6 +545,7 @@ fn restore_elided(
             && looks_full(c.chars().count())
     }) {
         return Err(Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1e",
             format!(
@@ -578,6 +582,7 @@ fn restore_elided(
         // free: an elided mt1 line is 5-bit symbols and nothing else.
         if !candidates.iter().any(|c| looks_like_mt1_material(c)) {
             return Err(Refusal::new(
+                Exit::INVALID,
                 verb,
                 "§1.1e",
                 format!(
@@ -613,6 +618,7 @@ fn restore_elided(
             }));
         }
         return Err(Refusal::new(
+            Exit::INVALID,
             verb,
             "§3b",
             format!(
@@ -632,6 +638,7 @@ fn restore_elided(
 
     if full.len() < ELIDED_DROP {
         return Err(Refusal::new(
+            Exit::INVALID,
             verb,
             "§3b",
             format!("the full string is only {} characters", full.len()),
@@ -658,6 +665,7 @@ fn restore_elided(
             .position(|c| c == full)
             .map_or(1, |i| i + 1);
         return Err(Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1",
             format!(

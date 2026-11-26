@@ -7,6 +7,9 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+mod common;
+use common::exit::{INVALID, REPAIRED};
+
 fn mt() -> Command {
     Command::cargo_bin("mt").unwrap()
 }
@@ -202,7 +205,7 @@ fn decode_refuses_all_elided_input() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("REFUSED — §3b"), "got: {err}");
     assert!(
@@ -286,9 +289,10 @@ fn verify_reports_its_margin_not_just_a_verdict() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "one damaged symbol must still verify OK"
+    assert_eq!(
+        out.status.code(),
+        Some(REPAIRED),
+        "one damaged symbol must still verify, with REPAIRED set (exit-code spec R6)"
     );
 
     let err = String::from_utf8(out.stderr).unwrap();
@@ -551,7 +555,8 @@ fn the_margin_report_gives_before_and_after_values() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(out.status.success());
+    // A correction was used: REPAIRED (16), exit-code spec R6.
+    assert_eq!(out.status.code(), Some(REPAIRED));
     let err = String::from_utf8(out.stderr).unwrap();
 
     assert!(err.contains("2 of 4 symbols"), "{err}");
@@ -610,8 +615,9 @@ fn verify_refuses_a_set_that_does_not_re_derive_its_id() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(
-        !out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(INVALID),
         "verify accepted a set whose payload is a DIFFERENT transaction"
     );
     let err = String::from_utf8(out.stderr).unwrap();
@@ -790,7 +796,7 @@ fn a_dropped_character_is_named_as_a_length_error_not_a_missing_plate() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
 
     assert!(err.contains("REFUSED — §1.1e,"), "got: {err}");
@@ -1140,8 +1146,10 @@ fn an_elided_line_that_happens_to_begin_mtl_is_left_alone() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
+    // The altered symbols are repaired by BCH, so REPAIRED (16), not 0.
+    assert_eq!(
+        out.status.code(),
+        Some(REPAIRED),
         "an elided line beginning `mtl` was corrupted by the separator repair:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );

@@ -90,7 +90,7 @@ fn assert_refused(verb: &str, strings: &[String]) {
     let (code, stdout, stderr) = run(verb, strings);
     let head = format!("mt {verb}: REFUSED — §1.1, the set does not verify");
     assert!(
-        code == Some(1)
+        code == Some(2) // INVALID: the input is wrong for the verb
             && stdout.is_empty()
             && stderr.starts_with(&head)
             && flat(&stderr).contains(DETAIL),

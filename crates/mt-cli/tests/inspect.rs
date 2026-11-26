@@ -278,7 +278,11 @@ fn input_value_must_be_per_input() {
         .arg(txf.path())
         .output()
         .unwrap();
-    assert!(!out.status.success(), "a bare total was accepted");
+    assert_eq!(
+        out.status.code(),
+        Some(INVALID),
+        "a bare total was accepted"
+    );
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("REFUSED — §8.2c"), "got: {err}");
     assert!(err.contains("PER INPUT"), "the refusal must say why: {err}");
@@ -319,6 +323,7 @@ fn encode_appends_its_rows_below_status() {
 // this was the untested half of the tool's whole purpose.
 
 mod common;
+use common::exit::INVALID;
 use common::{fixture_txids, node_stub};
 
 fn inspect_with_node(label: &str, node: &std::path::Path) -> (String, String) {
@@ -551,12 +556,11 @@ fn the_set_row_names_the_set_the_way_the_steel_does() {
 fn addresses_are_rendered_for_the_network_the_node_reports() {
     let stub = node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
     let (out, _) = inspect_with_node("even", stub.path());
-    // The stub answers `getblockchaininfo` with a mainnet-shaped reply and no
-    // `chain` field, so mt must fall back and SAY it fell back.
-    assert!(
-        out.contains("bc1q") || out.contains("addresses shown as MAINNET"),
-        "{out}"
-    );
+    // The stub answers `getblockchaininfo` as a regtest node (a stub that
+    // does not answer it is a named `bitcoin-cli` failing, exit-code spec R9),
+    // so the outputs render with regtest's HRP.
+    assert!(out.contains("bcrt1q"), "{out}");
+    assert!(!out.contains("addresses shown as MAINNET"), "{out}");
 }
 
 /// Offline, mt cannot know — and says so rather than printing an address that

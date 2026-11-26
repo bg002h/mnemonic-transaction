@@ -9,6 +9,9 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+mod common;
+use common::exit::{INVALID, REPAIRED};
+
 const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 const ELIDED_DROP: usize = 11;
 const CS: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
@@ -114,7 +117,7 @@ fn join(lines: &[String]) -> String {
 #[test]
 fn bh1119_mt_f_decode_prefix_is_corrected() {
     let o = run("decode", &[], &join(&even_prefix_damaged()));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let err = s(&o.stderr);
     assert!(
         err.contains("mt1 SET   6 strings, 1..6 all present, all begin mt1p9h8jqq9\n"),
@@ -126,7 +129,7 @@ fn bh1119_mt_f_decode_prefix_is_corrected() {
 #[test]
 fn bh1119_mt_f_decode_json_prefix_is_corrected() {
     let o = run("decode", &["--json"], &join(&even_prefix_damaged()));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let all = s(&o.stdout) + &s(&o.stderr);
     assert!(
         all.contains("\"set_prefix\": \"p9h8jqq9\","),
@@ -137,7 +140,7 @@ fn bh1119_mt_f_decode_json_prefix_is_corrected() {
 #[test]
 fn bh1119_mt_f_inspect_prefix_is_corrected() {
     let o = run("inspect", &[], &join(&even_prefix_damaged()));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let all = s(&o.stdout) + &s(&o.stderr);
     assert!(
         all.contains("mt1 SET   6 strings, 1..6 all present, all begin mt1p9h8jqq9\n"),
@@ -149,7 +152,7 @@ fn bh1119_mt_f_inspect_prefix_is_corrected() {
 #[test]
 fn bh1119_mt_f_inspect_json_prefix_is_corrected() {
     let o = run("inspect", &["--json"], &join(&even_prefix_damaged()));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let all = s(&o.stdout) + &s(&o.stderr);
     assert!(
         all.contains("\"set_prefix\": \"p9h8jqq9\","),
@@ -191,7 +194,7 @@ fn elided_after(full: &str) -> Vec<String> {
 fn bh1119_mt_f_elided_restore_uses_corrected_prefix() {
     let lines = elided_after(&even_prefix_damaged()[0]);
     let o = run("decode", &[], &join(&lines));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let err = s(&o.stderr);
     assert!(
         err.contains("CORRECTION APPLIED. 1 chunk needed repair:\n"),
@@ -213,8 +216,9 @@ fn bh1119_mt_f_full_plate_prefix_damage_does_not_spend_elided_budget() {
     let mut lines = elided_after(&even_prefix_damaged()[0]);
     lines[1] = damage(&lines[1], &[5, 10, 15, 20]);
     let o = run("decode", &[], &join(&lines));
-    assert!(
-        o.status.success(),
+    assert_eq!(
+        o.status.code(),
+        Some(REPAIRED),
         "each plate is within its 4-symbol budget:\n{}",
         s(&o.stderr)
     );
@@ -238,8 +242,9 @@ fn bh1119_mt_f_verify_full_plate_prefix_damage_within_budget() {
     lines[1] = damage(&lines[1], &[5, 10, 15, 20]);
     let o = run("verify", &[], &join(&lines));
     let err = s(&o.stderr);
-    assert!(
-        o.status.success(),
+    assert_eq!(
+        o.status.code(),
+        Some(REPAIRED),
         "each plate is within its 4-symbol budget:\n{err}"
     );
     assert!(
@@ -373,8 +378,9 @@ fn bh1119_mt_f_second_full_copy_supplies_prefix() {
     lines.extend(st[1..].iter().map(|l| l[ELIDED_DROP..].to_string()));
     lines[2] = damage(&lines[2], &[5, 10, 15, 20]);
     let o = run("decode", &[], &join(&lines));
-    assert!(
-        o.status.success(),
+    assert_eq!(
+        o.status.code(),
+        Some(REPAIRED),
         "the clean copy supplies the prefix:\n{}",
         s(&o.stderr)
     );
@@ -403,7 +409,7 @@ fn bh1119_mt_f_elided_correction_prints_plate_position() {
     assert_eq!(&lines[1][5..6], "d");
     lines[1] = damage(&lines[1], &[5]);
     let o = run("decode", &[], &join(&lines));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let err = s(&o.stderr);
     assert!(
         err.contains("              pos   6   read w, corrected to d\n"),
@@ -436,7 +442,7 @@ fn bh1119_mt_f_full_plate_correction_keeps_string_position() {
     assert_eq!(&st[1][16..17], "d");
     st[1] = damage(&st[1], &[16]);
     let o = run("decode", &[], &join(&st));
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let err = s(&o.stderr);
     assert!(
         err.contains("              pos  17   read w, corrected to d\n"),
@@ -450,7 +456,7 @@ fn bh1119_mt_f_full_plate_correction_keeps_string_position() {
 fn bh1119_mt_f_all_elided_still_names_the_prefix() {
     let lines: Vec<String> = even_elided()[1..].to_vec();
     let o = run("decode", &[], &join(&lines));
-    assert_eq!(o.status.code(), Some(1), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(INVALID), "{}", s(&o.stderr));
     assert!(o.stdout.is_empty());
     assert!(
         flat(&s(&o.stderr)).contains(
@@ -643,21 +649,21 @@ fn assert_q3_block(err: &str) {
 #[test]
 fn bh1119_mt_f_unreadable_full_plate_prefix_correction_prints_once() {
     let o = run("decode", &[], &unreadable_full_prefix_n_then_all_elided());
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     assert_q3_block(&s(&o.stderr));
 }
 
 #[test]
 fn bh1119_mt_f_verify_unreadable_full_plate_prefix_correction_prints_once() {
     let o = run("verify", &[], &unreadable_full_prefix_n_then_all_elided());
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     assert_q3_block(&s(&o.stderr));
 }
 
 #[test]
 fn bh1119_mt_f_inspect_unreadable_full_plate_prefix_correction_prints_once() {
     let o = run("inspect", &[], &unreadable_full_prefix_n_then_all_elided());
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     assert_q3_block(&s(&o.stderr));
 }
 
@@ -670,7 +676,7 @@ fn bh1119_mt_f_decode_json_unreadable_full_plate_correction_warnings_unchanged()
         &["--json"],
         &unreadable_full_prefix_n_then_all_elided(),
     );
-    assert!(o.status.success(), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     assert_eq!(
         json_warnings(&s(&o.stderr)),
         [

@@ -9,15 +9,22 @@
 //! A reader that closed the pipe (`ErrorKind::BrokenPipe`) only stops the
 //! output: the exit code is the verb's own (S1b). Any other error is kept, and
 //! [`exit_code`] prints `mt: cannot write the output: <error>` once, as the last
-//! stderr line, and turns an exit code of 0 into 1 (S1c). A failed stderr write
-//! is ignored and never changes the exit code (S1e).
+//! stderr line, and adds IO (32) to the verb's own bits (exit-code spec R8). A
+//! failed stderr write is ignored and never changes the exit code (S1e).
+//!
+//! [`note`] records a bit a verb has reported without stopping (REPAIRED when
+//! it used a corrected chunk, IO when a named helper failed); [`exit_code`]
+//! sums it into the run's status.
 //!
 //! `encode --out` failures reach the same line through [`failed_text`] (W3).
 
 use std::io::Write;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+use crate::exit::Exit;
+
+static NOTED: AtomicU8 = AtomicU8::new(0);
 static CLOSED: AtomicBool = AtomicBool::new(false);
 static WRITE_ERROR: OnceLock<String> = OnceLock::new();
 
@@ -145,15 +152,39 @@ pub(crate) fn stderr_write(args: std::fmt::Arguments<'_>) {
     let _ = std::io::stderr().lock().write_fmt(args);
 }
 
-/// The process exit code: `code`, unless an output write failed for a reason
-/// other than a closed pipe. Then the line is printed, as the last stderr line,
-/// and 0 becomes 1; a failing code is kept.
-pub(crate) fn exit_code(code: u8) -> u8 {
-    match WRITE_ERROR.get() {
-        None => code,
-        Some(e) => {
-            stderr_write(format_args!("mt: cannot write the output: {e}\n"));
-            if code == 0 { 1 } else { code }
-        }
+/// Records a bit the run has reported without stopping on it (R1: the status
+/// is the sum of what the reported outcome contains).
+pub(crate) fn note(bit: Exit) {
+    NOTED.fetch_or(bit.to_exit_code(), Ordering::Relaxed);
+}
+
+/// The process exit code: `outcome` plus every [`note`]d bit, plus IO (32) if
+/// an output write failed for a reason other than a closed pipe; then the line
+/// is printed, as the last stderr line. A code that never combines (usage,
+/// internal) is kept as it is.
+pub(crate) fn exit_code(outcome: Exit) -> u8 {
+    let mut code = outcome;
+    if outcome != Exit::USAGE {
+        code |= noted();
     }
+    if let Some(e) = WRITE_ERROR.get() {
+        stderr_write(format_args!("mt: cannot write the output: {e}\n"));
+        code |= Exit::IO;
+    }
+    code.to_exit_code()
+}
+
+fn noted() -> Exit {
+    let n = NOTED.load(Ordering::Relaxed);
+    [
+        Exit::NO,
+        Exit::INVALID,
+        Exit::UNVERIFIED,
+        Exit::REFUSED,
+        Exit::REPAIRED,
+        Exit::IO,
+    ]
+    .into_iter()
+    .filter(|b| n & b.to_exit_code() != 0)
+    .fold(Exit::OK, |a, b| a | b)
 }
