@@ -2611,7 +2611,7 @@ exactly as permanent, as a machine-engraved one.
    whole of the remedy. **You warn about damage done and refuse damage you are
    about to do.**
 
-   **`mt encode` HAS `--out` — REVERSED 2026-08-27 by §6b of
+   **`mt encode` HAS `--out` — REVERSED 2026-08-27 by section 6b of
    `SPEC_constellation_cli_uniformity`, built as P1 row 10.** This paragraph
    used to read *"the remedies are the shell's, because `mt encode` has no
    `--out`"*, and argued from `mt`'s stdout being the strings *by ruling (§3b)*.
@@ -2642,7 +2642,7 @@ exactly as permanent, as a machine-engraved one.
    place) it says nothing about the disk.
 
    **It OVERWRITES**, ruled by the operator 2026-08-26, and **it is on `encode`
-   alone**: §6b's reasoning is entirely about the refusal this section defines,
+   alone**: the uniformity spec's section 6b reasons entirely about the refusal this section defines,
    and that refusal fires from `encode`.
 
    The shell remedies stay, below `--out`, for an operator who cannot change the
@@ -3529,6 +3529,11 @@ signed PSBT.
        > than with an RPC error reply mt already interprets, when it breaks
        > the pipe, or when its reply cannot be parsed. Naming a path that does
        > not exist is therefore not an offline switch.
+       >
+       > A **default** `bitcoin-cli`, found on `PATH` without being named,
+       > that then fails (the node is down, the call errors, the reply cannot
+       > be read) is an optional helper the operator did not ask for: mt
+       > warns that it has no answer and the exit status is unaffected (R9).
 
     b2. **`--elide-prefix` (`mt encode`) emits the set's invariant 8 characters
        on the first string only** (§3b). It changes the **display** form, never
@@ -3593,8 +3598,11 @@ signed PSBT.
     with any other bit (a corrected set that then fails a check is 17 or 18).
     A flag combination that is wrong on the command line alone is usage (64),
     checked before input is read; a malformed input (a pasted txid, an
-    unparseable PSBT) is 2; a refusal a flag waives is 8; a failed write adds
-    32.
+    unparseable PSBT) is 2; a check that came out no (`mt verify --transaction`
+    naming another transaction; `mt encode` when the node proves an input
+    spent or contradicts a value) is 1; a refusal a flag waives is 8; a failed
+    write adds 32; a bug is 101. The list is a summary; the exit-code spec's
+    ordered tests decide.
     **The refusal-message format is RULED** — §8's preamble, three parts, with a
     machine-parseable verdict line. It was declared unspecified here while being
     the one item P5's tests assert against (R11 I4). Each input the table above requires needs some flag —
