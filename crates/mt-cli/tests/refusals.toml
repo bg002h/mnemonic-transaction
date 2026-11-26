@@ -142,6 +142,15 @@ spec  = "§8.9"
 test  = "refuses_ms1_without_echoing_any_of_it"
 check = "src/validate.rs::secret_guard"
 
+# Bug hunt 2026-11-25 T2: secret_guard looked only at the first 64 bytes, so an
+# ms1 string after a valid mt1 set, after a long comment line, or mid-line was
+# not refused (`verify` printed OK). The same §8.9 rule ("Secrets -> refuse"),
+# now held wherever ms1 sits in the input, on every verb.
+[[refusal]]
+spec  = "§8.9"
+test  = "bh1125_t2_ms1_anywhere_in_the_input_is_refused"
+check = "src/validate.rs::secret_guard"
+
 # NORMATIVE AND OUTSIDE §8's NUMBERING. §6a rules that mt compares the value
 # gettxout returns against the PSBT's own UTXO record and refuses on mismatch,
 # naming both numbers. Since §8.2's removal the chain's answer is the only value
