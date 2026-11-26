@@ -3564,6 +3564,7 @@ signed PSBT.
        the report as a document and the other for no report. **`--quiet` on
        `inspect` or `verify` is refused** (§10.10, exit 64, usage), with or without
        `--json`: their output is their report.
+       `mt verify --bitcoin-cli` is refused as usage (exit 64): verify never asks a node.
 
     **THE FLAG SPELLINGS — RULED 2026-08-23.** Operator-approved; sibling
     precedent taken verbatim wherever it exists, so an operator who knows `md`
