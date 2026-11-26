@@ -124,7 +124,8 @@ fn a_locktime_no_input_enforces_is_reported_as_not_enforced() {
     );
 }
 
-/// §8.4's five spellings and no sixth. The row is bound to the section's set,
+/// §8.4's spellings: five for `nLockTime`, plus `RELATIVE LOCK` (amended
+/// 2026-11-25, bug hunt T1), and no other. The row is bound to the section's set,
 /// and `mt` may not invent one — two `mt` versions would otherwise cut different
 /// plates for one transaction, and a recoverer matching against documentation
 /// would find neither.
@@ -135,11 +136,13 @@ fn the_row_uses_only_the_ruled_spellings() {
         locktime_row(&with_locktime(96)),
         locktime_row(&with_locktime(1_800_000_000)),
         locktime_row(&all_inputs_final(with_locktime(96))),
+        locktime_row(&with_relative(0x0000_8000, 0)),
     ];
     for row in &rows {
         let body = row.trim_start_matches("LOCKTIME").trim();
         assert!(
             body.starts_with("NO TIMELOCK")
+                || body.starts_with("RELATIVE LOCK ")
                 || body.starts_with("LOCKED TO BLOCK ")
                 || body.starts_with("LOCKED UNTIL ")
                 || body.starts_with("nLockTime "),
@@ -186,4 +189,117 @@ fn a_lock_below_the_reference_height_warns() {
         "the warning must say what it means: {err}"
     );
     assert!(!err.contains("REFUSED"), "§8.4 says NEVER REFUSE: {err}");
+}
+
+/// Encode a transaction offline and return the whole `stderr`.
+fn encode_stderr(tx: &bitcoin::Transaction) -> String {
+    use core::fmt::Write as _;
+    let mut hex = String::new();
+    for b in serialize(tx) {
+        let _ = write!(hex, "{b:02x}");
+    }
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(hex.as_bytes()).unwrap();
+    f.flush().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = mt()
+        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stderr).unwrap()
+}
+
+/// The `SUGGESTED LEGEND` block's lines, from the header to the first blank
+/// line after the fields.
+fn legend_lines(err: &str) -> Vec<String> {
+    let start = err
+        .lines()
+        .position(|l| l.starts_with("SUGGESTED LEGEND"))
+        .unwrap_or_else(|| panic!("no legend:\n{err}"));
+    err.lines()
+        .skip(start)
+        .skip_while(|l| !l.contains("BEARER"))
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+fn with_relative(seq: u32, locktime: u32) -> bitcoin::Transaction {
+    let mut tx = with_locktime(locktime);
+    assert_eq!(tx.version, bitcoin::transaction::Version::TWO);
+    for i in &mut tx.input {
+        i.sequence = bitcoin::Sequence(seq);
+    }
+    tx
+}
+
+/// Bug hunt 2026-11-25 T1 (engrave E2). A pre-signed recovery spend through an
+/// `older(32768)` path has `nLockTime = 0` and `nSequence = 0x00008000`: BIP-68
+/// keeps it out of every block until 32,768 blocks after its input confirmed.
+/// `mt` reported and suggested engraving `NO TIMELOCK`.
+#[test]
+fn bh1125_t1_a_bip68_relative_lock_is_never_engraved_no_timelock() {
+    let err = encode_stderr(&with_relative(0x0000_8000, 0));
+    let row = err.lines().find(|l| l.starts_with("LOCKTIME")).unwrap();
+    assert!(
+        row.contains("RELATIVE LOCK 32768 BLOCKS ON INPUT 0"),
+        "the relative lock is not reported: {row}"
+    );
+    let legend = legend_lines(&err);
+    assert!(
+        legend
+            .iter()
+            .any(|l| l == "RELATIVE LOCK 32768 BLOCKS ON INPUT 0"),
+        "the legend does not carry the relative lock: {legend:?}"
+    );
+    assert!(
+        !err.contains("NO TIMELOCK"),
+        "NO TIMELOCK printed for a relative-locked transaction:\n{err}"
+    );
+
+    // The contrast, one bit apart: the disable flag set, nothing locks.
+    let err = encode_stderr(&with_relative(0x8000_8000, 0));
+    assert!(
+        legend_lines(&err).iter().any(|l| l == "NO TIMELOCK"),
+        "{err}"
+    );
+    assert!(!err.contains("RELATIVE LOCK"), "{err}");
+}
+
+/// Both locks: the `nLockTime` row stays and the relative row follows it, on
+/// the report and on the legend.
+#[test]
+fn bh1125_t1_absolute_and_relative_rows_both_print() {
+    let err = encode_stderr(&with_relative(0x0040_0064, 96));
+    let at = err.lines().position(|l| l.starts_with("LOCKTIME")).unwrap();
+    let lines: Vec<&str> = err.lines().collect();
+    assert!(lines[at].contains("LOCKED TO BLOCK 96"), "{}", lines[at]);
+    assert!(
+        lines[at + 1]
+            .trim_start()
+            .starts_with("RELATIVE LOCK 51200 SECONDS ON INPUT 0"),
+        "{}",
+        lines[at + 1]
+    );
+    let legend = legend_lines(&err);
+    assert!(
+        legend.iter().any(|l| l == "LOCKED TO BLOCK 96"),
+        "{legend:?}"
+    );
+    assert!(
+        legend
+            .iter()
+            .any(|l| l == "RELATIVE LOCK 51200 SECONDS ON INPUT 0"),
+        "{legend:?}"
+    );
 }

@@ -687,7 +687,7 @@ overturned an earlier assumption and are marked.
    | `TX` | **always** | the **txid** — double-SHA-256 of the decoded transaction **with marker, flag and witnesses stripped**. Needs no node and no network. **Not** a hash of the engraved bytes; see the note below |
    | `OUT` | **always** | the transaction itself |
    | `FEE` | a node is reachable, **or** the input was a PSBT carrying values | inputs minus outputs — the transaction alone carries no input values (§6a). **Carries the WEAKEST provenance of any input, inline**: `(CLAIMED — no input value verified)` when any input's value is neither chain-fetched nor txid-bound |
-   | `LOCKTIME` | **always**; the `current height` clause needs a node | `nLockTime`, plus §8.4's threshold rule and the season projection. **Wording is §8.4's five normative spellings, by reference — this row may not invent a sixth** |
+   | `LOCKTIME` | **always**; the `current height` clause needs a node | `nLockTime`, plus §8.4's threshold rule and the season projection, then one `RELATIVE LOCK` line per input carrying a BIP-68 relative lock (§8.4, amended 2026-11-25). **Wording is §8.4's normative spellings, by reference — five for `nLockTime` and the `RELATIVE LOCK` line — and this row may not invent another** |
    | `INPUTS` | **always**; the value and provenance columns need a node | outpoints from the transaction, values from `gettxout` |
    | `STATUS` | **always** — `UNKNOWN` with no node | the liveness table above: `SPENT — ALREADY CONFIRMED` first, then LIVE / DEAD / PENDING / UNKNOWN |
 
@@ -695,10 +695,13 @@ overturned an earlier assumption and are marked.
    > is the same drift as I-8 in the opposite direction.** The `LOCKTIME` row
    > ended `— PASSED`, which is not among §8.4's five permitted spellings, and
    > §8.4 exists to establish that **`mt` cannot make a claim about
-   > spendability at all**: a BIP-68 relative timelock lives in `OP_CSV` inside
-   > the witness script, a relative-locked spend carries `nLockTime = 0`, and
-   > reading it means evaluating the sending wallet's script — out of scope by
-   > ruling.
+   > spendability at all**: it reads the lock fields and evaluates no script,
+   > and whether a transaction is spendable depends on scripts, fees and
+   > unspent inputs. *(Amended 2026-11-25, bug hunt E2: this note said a BIP-68
+   > relative timelock "lives in `OP_CSV` inside the witness script" and that
+   > reading it means evaluating the sending wallet's script. That was wrong —
+   > BIP-68 is a rule on each input's `nSequence` field, and §8.4 now reads
+   > it.)*
    >
    > **This project's own RCW fixture has exactly such a leaf** (`OP_CSV`,
    > 32,768 blocks, ~7 months). A transaction spending it with `nLockTime` at a
@@ -1770,7 +1773,7 @@ fields, **152 characters**, 6 lines — measured,
 > (`RESULTS_legend_budget_2026-08-22.txt`), so §4's reservation does not move.
 
 | `FROM WALLET <8 hex>` | 20 | wallet id or seed fingerprint. The transaction does **not** say what it spends *from* (§6). **Optional — loudly warned when absent** (§10.4) |
-| `LOCKED TO BLOCK <n> ~<SEASON> <year>` / `LOCKED UNTIL <t>` | 35 | the single most actionable fact. Reads **`NO TIMELOCK`** when there is no enforced `nLockTime`. **A statement about the transaction's fields, never about spendability** — `mt` does not evaluate scripts, so it reports the lock it read and lets the reader conclude (§8.4) |
+| `LOCKED TO BLOCK <n> ~<SEASON> <year>` / `LOCKED UNTIL <t>` | 35 | the single most actionable fact. Reads **`NO TIMELOCK`** when there is no enforced `nLockTime` **and no input carries a BIP-68 relative lock**; each relative-locked input adds a `RELATIVE LOCK <n> BLOCKS ON INPUT <i>` / `RELATIVE LOCK <s> SECONDS ON INPUT <i>` line, and `NO TIMELOCK` is then not printed (§8.4, amended 2026-11-25). **A statement about the transaction's fields, never about spendability** — `mt` does not evaluate scripts, so it reports the lock it read and lets the reader conclude (§8.4) |
 | `TO <wallet id, fp or label>  <amount>` | 34 | names the destination **wallet**, not one truncated address — operator ruling, §10.4. **Optional — loudly warned when blank.** A free-text label is allowed **only behind an explicit flag**, since nothing can check it against the transaction |
 
 > **`PLATE n OF m` WAS A FIELD HERE AND IS DELETED — R8 coverage C-3.** §0a had
@@ -2729,6 +2732,7 @@ exactly as permanent, as a machine-engraved one.
    | --- | --- | --- |
    | `nLockTime` | transaction field | **yes** |
    | `nSequence`, per input | transaction field | **yes** |
+   | `nVersion` (decides whether BIP-68 applies) | transaction field | **yes** |
    | current block height | `bitcoind` if reachable, else absent | yes when present |
 
    **`nLockTime` IS NOT ALWAYS A BLOCK HEIGHT, and an earlier version of this
@@ -2763,6 +2767,15 @@ exactly as permanent, as a machine-engraved one.
        NO TIMELOCK                      current height 963663
        nLockTime 900000 present but NOT ENFORCED (all inputs final)
        LOCKED TO BLOCK 900000           current height unknown (no node)
+
+   plus, after the `nLockTime` line, one line per input carrying a BIP-68
+   relative lock (the amendment at the end of this section):
+
+       RELATIVE LOCK 32768 BLOCKS ON INPUT 0   counted from the block that confirms the coin it spends
+       RELATIVE LOCK 51200 SECONDS ON INPUT 1   counted from the block that confirms the coin it spends
+
+   When `nLockTime` locks nothing (`nLockTime = 0`), the `RELATIVE LOCK` lines
+   replace the `NO TIMELOCK` line rather than follow it.
 
    > **THESE FIVE ARE THE `stderr` REPORT'S SPELLINGS. THE LEGEND'S ARE
    > DIFFERENT, AND THIS SECTION NEVER SAID SO — F-239.** Forty lines below,
@@ -2848,7 +2861,12 @@ exactly as permanent, as a machine-engraved one.
 
    - **Legend:** `LOCKED TO BLOCK <n> ~<SEASON> <year>` for a height,
      **`LOCKED UNTIL <time>`** for a timestamp, or **`NO TIMELOCK`** — that exact
-     spelling, 11 characters, normative everywhere.
+     spelling, 11 characters, normative everywhere. Then one line per
+     relative-locked input, **`RELATIVE LOCK <n> BLOCKS ON INPUT <i>`** or
+     **`RELATIVE LOCK <s> SECONDS ON INPUT <i>`** (`<s>` = the 16-bit value
+     × 512, `<i>` counting from 0); `NO TIMELOCK` is never engraved beside one,
+     so with `nLockTime = 0` those lines are the whole lock legend (amended
+     2026-11-25, below).
 
      > **This string existed in TWO spellings across four sites — `NO TIMELOCK`
      > and `NO BLOCK TIMELOCK`, 11 versus 17 characters — and §8.4 contradicted
@@ -2920,7 +2938,8 @@ exactly as permanent, as a machine-engraved one.
 
    **The legend keeps `LOCKED TO BLOCK <n>` and OMITS the `~<SEASON> <year>`
    estimate.** `NO TIMELOCK` is reserved for a transaction with `nLockTime = 0`
-   or with all inputs final.
+   or with all inputs final, **and no input carrying a BIP-68 relative lock**
+   (amended 2026-11-25).
 
    > **This section said `NO TIMELOCK`, and §8.4 forty lines away said `LOCKED
    > TO BLOCK 900000, current height 963663` — for the same transaction — R6
@@ -2993,25 +3012,92 @@ exactly as permanent, as a machine-engraved one.
    a script read, so it stays in scope. `nSequence` appeared nowhere in the
    534-line draft that first specified this rule.
 
-   > **What `mt` therefore CANNOT see, disclosed rather than glossed.** A BIP-68
-   > **relative** timelock lives in the witness script as `OP_CSV`, and a
-   > relative-locked spend has **`nLockTime = 0`**. Reading it means evaluating
-   > the sending wallet's script, which is out of scope by ruling. One of the
-   > RCW's own taproot leaves is exactly this — `OP_CSV` with `008000` = 32,768
-   > blocks, roughly seven months (`RESULTS_rcw_2026-08-22.txt`).
-   >
-   > **`mt` will therefore OVER-WARN on such transactions**, which is the safe
-   > direction: it says a plate might be spendable when it is not, and the
-   > operator — who chose the wallet — can disregard it. The unsafe direction,
-   > false reassurance, is closed by the `nSequence` rule above.
-   >
-   > **This is why the legend states an OBSERVATION, not a conclusion.** An
-   > earlier draft engraved `IMMEDIATELY SPENDABLE`, which is a positive claim
-   > about spendability that `mt` can no longer substantiate — engrave it on a
-   > `OP_CSV`-locked transaction and the steel permanently asserts something
-   > false. A `stderr` warning is disposable; a legend line is forever. The
-   > legend now reads **`NO TIMELOCK`**: precisely true about the fields
-   > `mt` read, and silent about scripts it did not.
+   **AMENDED 2026-11-25 (bug hunt E2; mnemonic-transaction T1) — `mt` READS
+   BIP-68 RELATIVE LOCKS, because they are FIELDS.** The note this replaces said
+   a BIP-68 relative timelock "lives in the witness script as `OP_CSV`", that
+   reading it "means evaluating the sending wallet's script, which is out of
+   scope by ruling", and that the legend `NO TIMELOCK` was therefore "precisely
+   true about the fields `mt` read". **The protocol fact was wrong.** Checked
+   against the authoritative text:
+
+   - **BIP-68, Specification:** the rule applies to "transactions with an
+     nVersion greater than or equal to 2"; "If bit (1 << 31) of the sequence
+     number is not set, then the sequence number is interpreted as an encoded
+     relative lock-time"; bit (1 << 22) selects "units of 512 seconds
+     granularity", otherwise "a number of blocks"; "a mask of 0x0000ffff MUST be
+     applied to the sequence field"; the lock counts from "the mining date of
+     the output it is spending"; "A relative … lock-time of zero indicates an
+     input which can be included in any block"; and the rules "are not applied
+     to the nSequence field of the input of the coinbase transaction".
+   - **Bitcoin Core, `CalculateSequenceLocks`
+     (`src/consensus/tx_verify.cpp`):** BIP-68 is enforced when `tx.version >=
+     2` with the version unsigned (`static_cast<uint32_t>` in releases where
+     the field was signed), and an input with `SEQUENCE_LOCKTIME_DISABLE_FLAG`
+     set is skipped.
+   - **BIP-112:** `OP_CHECKSEQUENCEVERIFY` only makes a script FAIL unless the
+     spending input's `nSequence` already encodes at least the lock. The lock
+     is enforced on the field; the opcode only forces the spender to set it.
+
+   So a relative lock is a **field read, the same class as the `nSequence`
+   finality rule above** that this section already calls in scope, and `mt`
+   reads every input's `nSequence` already. The old text produced exactly the
+   failure this section exists to close. A pre-signed recovery or inheritance
+   spend through an `older(N)` path — the shape this tool is most often used
+   for, and the shape of this project's own RCW leaf (`OP_CSV` with `008000` =
+   32,768 blocks, `RESULTS_rcw_2026-08-22.txt`) — has `nLockTime = 0` and
+   `nSequence = N`. `mt` printed `LOCKTIME  NO TIMELOCK` and suggested
+   engraving **`NO TIMELOCK`** beside it. A recoverer who trusts the plate
+   broadcasts early, is refused `non-BIP68-final`, and has nothing on the steel
+   that says when the transaction becomes valid. It never over-warned, as the
+   old note claimed; it engraved something false.
+
+   **The rule.** For a transaction whose `nVersion`, read as an unsigned 32-bit
+   integer, is 2 or more, every non-coinbase input whose `nSequence` has bit 31
+   clear and a non-zero low 16 bits carries a relative lock of that value — in
+   blocks, or in units of 512 seconds when bit 22 is set. Bits 16–21 and 23–30
+   are ignored, as BIP-68 masks them. `mt` reports each such input, in input
+   order:
+
+   | surface | spelling |
+   | --- | --- |
+   | the `stderr` REPORT | `RELATIVE LOCK <n> BLOCKS ON INPUT <i>   counted from the block that confirms the coin it spends`, or `… <s> SECONDS …` |
+   | the engraved LEGEND | `RELATIVE LOCK <n> BLOCKS ON INPUT <i>`, or `RELATIVE LOCK <s> SECONDS ON INPUT <i>` |
+
+   `<n>` is the 16-bit value; `<s>` is the value × 512, so the plate states
+   seconds rather than a unit a stranger must look up; `<i>` counts from 0, as
+   every input index `mt` prints does. The `nLockTime` line keeps its five
+   spellings and comes first; **`NO TIMELOCK` is never printed or engraved
+   beside a relative lock**, so with `nLockTime = 0` the `RELATIVE LOCK` lines
+   are the whole lock report and legend. A relative row carries **no `current
+   height` clause and no season estimate**: the lock counts from the block that
+   confirmed the coin each input spends, which the transaction does not
+   contain, so the chain height alone says nothing about it (§8.4 compares like
+   with like). The negative-subtraction warning above does not say "Treat it as
+   spendable now" when a relative lock is present; it says the relative lock
+   still binds. With no node, the "has the locktime passed?" line reads
+   `UNKNOWN`, not `N/A`, when a relative lock is present.
+
+   **What `mt` still does not see.** It evaluates no script, so it does not
+   check that a relative lock matches what the spending script demands, nor
+   that an `OP_CLTV` in a script matches `nLockTime`. Those decide whether the
+   transaction is valid at all, not when, and a transaction that fails them is
+   one no node accepts at any height. That is the scope ruling above,
+   unchanged.
+
+   **This is why the legend states an OBSERVATION, not a conclusion.** An
+   earlier draft engraved `IMMEDIATELY SPENDABLE`, which is a positive claim
+   about spendability that `mt` cannot substantiate. A `stderr` warning is
+   disposable; a legend line is forever. The lock lines state what the fields
+   say and nothing else.
+
+   **Cost.** A `RELATIVE LOCK` line is 37 characters for the RCW leaf
+   (`RELATIVE LOCK 32768 BLOCKS ON INPUT 0`), against `NO TIMELOCK`'s 11, and a
+   transaction with several relative-locked inputs gets one line each. The
+   legend budget figures (`RESULTS_legend_budget_2026-08-22.txt`) measure a
+   legend with one lock line and were not re-measured for this amendment; the
+   legend is a suggestion and the device chooses the plate layout. The mt1
+   strings and their wire format do not change: the legend is cut beside the
+   strings, not encoded in them.
 5. **`gettxout` returns `null` for any input, AND the parent is confirmed, AND
    the node reported a synced `-txindex` before `mt` asked about this
    transaction (§6a)** → refuse, when a node is reachable; otherwise `mt` warns

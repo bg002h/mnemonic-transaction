@@ -930,6 +930,85 @@ fn refuses_ms1_without_echoing_any_of_it() {
     }
 }
 
+/// The `even` corpus set (design/vectors/mt1_v1_vectors.md), a valid 6-string
+/// mt1 set that `decode` and `verify` read clean.
+const EVEN_MT1: &str = "\
+mt1p9h8jqq9qqqqgqqqqqqqyqherdfykhhpey6z2cvafak8804qd7g0dl6v8ex9wr2cvky023skwkeud2229sax
+mt1p9h8jqq9qqphgdqqqqqqqq0mllllupyqj6vqqqqqqqqzcqpfsw7ph2rt5w54kt768636cls8zxg0najlzunp
+mt1p9h8jqq9qqzj8yqpnzw4vl2rwffqyqqqqqkqq282yyhc2vavd20hvk94pz39hts3u5s9a0qd8pwskxfl7ju5
+mt1p9h8jqq9qqrqfrnq3qzyp77h37cnxzvwutegzmzy5zrrrfvrpykdfsckvk03dcq6rcjtvlsfcglv7zx43yaz
+mt1p9h8jqq9qqylgpzqmhcwhuupdvnrc82rncvzzdahpgjsdwgu52jd7vmxsve9x3w5ujeqyssuvddxvwqze4ve
+mt1p9h8jqq9qq9qdcc7h75twfxyf340c4sgqzhfdq6xtgt7zhxngpwa049l0z59l6jqcqqqqqq5k5y2ye5nv8yf
+";
+
+/// Bug hunt 2026-11-25 T2: §8.9 looked only at the first 64 bytes, so an ms1
+/// string after a valid mt1 set (or after a long comment line) was not refused:
+/// `verify` printed `OK` and exited 0. Every verb must refuse it by §8.9,
+/// wherever it sits, and echo none of it.
+#[test]
+fn bh1125_t2_ms1_anywhere_in_the_input_is_refused() {
+    let after_set = format!("{EVEN_MT1}{MS1}\n");
+    let after_comment =
+        format!("# backup of my seed, written 2026-11-25, keep safe and never share!!\n{MS1}\n");
+    let mid_line = format!("{EVEN_MT1}seed: {} plate 1\n", MS1.to_uppercase());
+    for (label, body) in [
+        ("after-set", &after_set),
+        ("after-comment", &after_comment),
+        ("mid-line", &mid_line),
+    ] {
+        for verb in ["encode", "decode", "verify", "inspect"] {
+            let f = tmp(body);
+            let out = mt().args([verb, "--in"]).arg(f.path()).output().unwrap();
+            let err = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(!out.status.success(), "{label}/{verb} accepted ms1:\n{err}");
+            assert!(
+                err.contains("REFUSED — §8.9,"),
+                "{label}/{verb}: expected §8.9, got:\n{err}"
+            );
+            assert!(
+                !err.to_ascii_lowercase().contains(&MS1[3..11]),
+                "{label}/{verb}: echoed the secret:\n{err}"
+            );
+            assert!(out.stdout.is_empty(), "{label}/{verb} wrote to stdout");
+        }
+    }
+
+    // The control: the same set with no ms1 still verifies.
+    let f = tmp(EVEN_MT1);
+    mt().args(["verify", "--in"])
+        .arg(f.path())
+        .assert()
+        .success();
+}
+
+/// The T2 scan must not refuse a BINARY PSBT whose bytes happen to hold
+/// `\nms1…`: binary is recognised before any whitespace handling (§8.2e), and
+/// no "line" of it is text. Whatever `encode` says about these bytes, it is not
+/// §8.9.
+#[test]
+fn bh1125_t2_a_binary_psbt_is_not_scanned_for_ms1() {
+    let mut bytes = b"psbt\xff\x01\x00\x0a".to_vec();
+    bytes.extend_from_slice(format!("\n{}\n", &MS1).as_bytes());
+    let mut f = tempfile::NamedTempFile::new().unwrap();
+    f.write_all(&bytes).unwrap();
+    f.flush().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = mt()
+        .args(["encode", "--in"])
+        .arg(f.path())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !err.contains("§8.9"),
+        "a binary PSBT was read as text:\n{err}"
+    );
+}
+
 // ── shared ──────────────────────────────────────────────────────────────────
 
 fn hex_to_bytes(s: &str) -> Vec<u8> {

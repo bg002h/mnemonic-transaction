@@ -81,12 +81,114 @@ pub enum Lock {
     Time(u32),
 }
 
+/// One input's BIP-68 relative lock: a FIELD read, like `nLockTime`.
+///
+/// BIP-68 is a consensus rule on the transaction's own fields. In a transaction
+/// whose `nVersion`, read as an unsigned 32-bit integer, is 2 or more, an input
+/// whose `nSequence` has bit 31 clear cannot be mined until `value` blocks (or
+/// `value` x 512 seconds, when bit 22 is set) have passed since the block that
+/// confirmed the coin it spends. `OP_CSV` (BIP-112) only forces the spender to
+/// set that field; it is not where the lock lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Relative {
+    /// The input's index, counting from 0 as everywhere else in `mt`.
+    pub input: usize,
+    /// The low 16 bits of `nSequence`. Never 0: a zero lock locks nothing.
+    pub value: u16,
+    /// Bit 22: units of 512 seconds rather than blocks.
+    pub time: bool,
+}
+
+/// BIP-68's disable flag, bit 31 (`SEQUENCE_LOCKTIME_DISABLE_FLAG`).
+const SEQUENCE_LOCKTIME_DISABLE_FLAG: u32 = 1 << 31;
+/// BIP-68's type flag, bit 22 (`SEQUENCE_LOCKTIME_TYPE_FLAG`).
+const SEQUENCE_LOCKTIME_TYPE_FLAG: u32 = 1 << 22;
+/// BIP-68's value mask (`SEQUENCE_LOCKTIME_MASK`).
+const SEQUENCE_LOCKTIME_MASK: u32 = 0x0000_ffff;
+
+impl Relative {
+    /// The lock's size, with its unit: `32768 BLOCKS` or `51200 SECONDS`.
+    fn amount(&self) -> String {
+        if self.time {
+            format!("{} SECONDS", u32::from(self.value) * 512)
+        } else {
+            format!("{} BLOCKS", self.value)
+        }
+    }
+
+    /// The legend line, and the head of the report line.
+    pub fn legend(&self) -> String {
+        format!("RELATIVE LOCK {} ON INPUT {}", self.amount(), self.input)
+    }
+}
+
+/// Every input's BIP-68 relative lock, in input order.
+///
+/// Bitcoin Core's `CalculateSequenceLocks`: enforced only when
+/// `static_cast<uint32_t>(tx.version) >= 2`; an input with the disable flag set
+/// carries none; the value is `nSequence & 0xffff`. A value of 0 "indicates an
+/// input which can be included in any block" (BIP-68), so it is not a lock and
+/// is not reported. A coinbase input is exempt (BIP-68), and is skipped.
+pub fn read_relative(tx: &Transaction) -> Vec<Relative> {
+    // The SIGNED field read unsigned, as Core compares it: a version with the
+    // high bit set is >= 2 there.
+    if (tx.version.0 as u32) < 2 {
+        return Vec::new();
+    }
+    tx.input
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| !i.previous_output.is_null())
+        .filter_map(|(n, i)| {
+            let seq = i.sequence.0;
+            if seq & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
+                return None;
+            }
+            let value = (seq & SEQUENCE_LOCKTIME_MASK) as u16;
+            (value != 0).then_some(Relative {
+                input: n,
+                value,
+                time: seq & SEQUENCE_LOCKTIME_TYPE_FLAG != 0,
+            })
+        })
+        .collect()
+}
+
+/// Both readings of the lock fields: `nLockTime` (with every input's
+/// `nSequence` deciding whether it is enforced) and each input's BIP-68
+/// relative lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locks {
+    /// What `nLockTime` says.
+    pub absolute: Lock,
+    /// Each input's relative lock, in input order. Empty when none is set.
+    pub relative: Vec<Relative>,
+}
+
+impl From<Lock> for Locks {
+    fn from(absolute: Lock) -> Self {
+        Self {
+            absolute,
+            relative: Vec::new(),
+        }
+    }
+}
+
+/// Read `nLockTime`, every input's `nSequence` and the version, and say what
+/// they mean.
+pub fn read(tx: &Transaction) -> Locks {
+    Locks {
+        absolute: read_absolute(tx),
+        relative: read_relative(tx),
+    }
+}
+
 /// Read `nLockTime` and every input's `nSequence`, and say what they mean.
 ///
 /// **`nSequence` is not optional.** `nLockTime` is enforced only when at least
 /// one input has `nSequence != 0xFFFFFFFF`; a transaction with every input final
 /// ignores its locktime entirely.
-pub fn read(tx: &Transaction) -> Lock {
+pub fn read_absolute(tx: &Transaction) -> Lock {
     let lt = tx.lock_time.to_consensus_u32();
     if lt == 0 {
         return Lock::None;
@@ -157,12 +259,11 @@ impl Lock {
     /// meaningless to a human and a season alone is unverifiable, so the plate
     /// carries both and a reader can always fall back to the number.
     ///
-    /// `NO TIMELOCK` is reserved for `nLockTime = 0` **or all inputs final** —
-    /// precisely true about the fields `mt` read, and silent about scripts it
-    /// did not. Engraving `IMMEDIATELY SPENDABLE` instead would be a positive
-    /// claim about spendability that `mt` cannot substantiate: a BIP-68 relative
-    /// timelock lives in `OP_CSV` inside the witness script, and a
-    /// relative-locked spend has `nLockTime = 0`.
+    /// `NO TIMELOCK` is reserved for `nLockTime = 0` **or all inputs final**,
+    /// and only when no input carries a BIP-68 relative lock — [`Locks::legend`]
+    /// decides that, so this is never engraved alone beside a relative lock.
+    /// Engraving `IMMEDIATELY SPENDABLE` instead would be a positive claim about
+    /// spendability that `mt` cannot substantiate: it does not evaluate scripts.
     pub fn legend(&self) -> String {
         match *self {
             // Both states, one spelling, 11 characters, normative everywhere.
@@ -189,6 +290,68 @@ impl Lock {
             format!("nLockTime {n} is BELOW this build's reference height {MT_REF_HEIGHT}."),
             "This transaction is not meaningfully time-locked -- its lock height \
              passed before mt was built. Treat it as spendable now.",
+        ))
+    }
+}
+
+impl Locks {
+    /// Whether nothing locks this transaction: no enforced `nLockTime` and no
+    /// relative lock on any input.
+    pub fn is_unlocked(&self) -> bool {
+        matches!(self.absolute, Lock::None | Lock::NotEnforced(_)) && self.relative.is_empty()
+    }
+
+    /// The **`stderr` report** rows: §8.4's `nLockTime` spelling, then one
+    /// `RELATIVE LOCK` row per relative-locked input.
+    ///
+    /// `NO TIMELOCK` is never printed beside a relative lock: with
+    /// `nLockTime = 0` the relative rows are the whole answer. A relative row
+    /// carries no `current height` clause, because the chain height alone says
+    /// nothing about a lock counted from the confirmation of the coin an input
+    /// spends.
+    pub fn report_rows(&self, chain: Chain) -> Vec<String> {
+        let mut rows = Vec::new();
+        if self.absolute != Lock::None || self.relative.is_empty() {
+            rows.push(self.absolute.report_row(chain));
+        }
+        for r in &self.relative {
+            rows.push(format!(
+                "{}   counted from the block that confirms the coin it spends",
+                r.legend()
+            ));
+        }
+        rows
+    }
+
+    /// The **engraved legend** lines: the `nLockTime` line, then one
+    /// `RELATIVE LOCK` line per relative-locked input. The `nLockTime` line is
+    /// dropped only where it would read `NO TIMELOCK` beside a relative lock,
+    /// which would put a falsehood on steel.
+    pub fn legend(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let absolute_locks = !matches!(self.absolute, Lock::None | Lock::NotEnforced(_));
+        if absolute_locks || self.relative.is_empty() {
+            lines.push(self.absolute.legend());
+        }
+        lines.extend(self.relative.iter().map(Relative::legend));
+        lines
+    }
+
+    /// §8.4's negative-subtraction warning. When an input also carries a
+    /// relative lock, the warning does not say "spendable now": that lock
+    /// still binds.
+    pub fn below_reference_warning(&self) -> Option<crate::refusal::Warning> {
+        let w = self.absolute.below_reference_warning()?;
+        if self.relative.is_empty() {
+            return Some(w);
+        }
+        let Lock::Height(n) = self.absolute else {
+            return Some(w);
+        };
+        Some(crate::refusal::Warning::new(
+            format!("nLockTime {n} is BELOW this build's reference height {MT_REF_HEIGHT}."),
+            "Its nLockTime passed before mt was built, but this transaction also \
+             carries a RELATIVE LOCK (see the LOCKTIME row), which still binds.",
         ))
     }
 }
@@ -339,6 +502,121 @@ mod tests {
     fn a_height_below_the_reference_has_no_estimate() {
         assert_eq!(season_year(MT_REF_HEIGHT - 1), None);
         assert_eq!(season_year(900_000), None);
+    }
+
+    fn tx_with(version: i32, sequences: &[u32], lock_time: u32) -> Transaction {
+        use bitcoin::hashes::Hash as _;
+        use bitcoin::{OutPoint, Sequence, TxIn, Txid};
+        Transaction {
+            version: bitcoin::transaction::Version(version),
+            lock_time: bitcoin::absolute::LockTime::from_consensus(lock_time),
+            input: sequences
+                .iter()
+                .enumerate()
+                .map(|(n, s)| TxIn {
+                    previous_output: OutPoint {
+                        txid: Txid::from_byte_array([7; 32]),
+                        vout: n as u32,
+                    },
+                    sequence: Sequence(*s),
+                    ..TxIn::default()
+                })
+                .collect(),
+            output: vec![],
+        }
+    }
+
+    /// Bug hunt 2026-11-25 T1 (engrave E2): BIP-68 is a rule on the
+    /// transaction's FIELDS. A version-2 spend through an `older(32768)` path
+    /// has `nLockTime = 0` and `nSequence = 0x00008000`, and it was reported and
+    /// engraved `NO TIMELOCK`.
+    #[test]
+    fn bh1125_t1_a_relative_lock_is_read_from_nsequence() {
+        let l = read(&tx_with(2, &[0x0000_8000], 0));
+        assert_eq!(l.absolute, Lock::None);
+        assert_eq!(
+            l.relative,
+            vec![Relative {
+                input: 0,
+                value: 32_768,
+                time: false
+            }]
+        );
+        assert_eq!(l.legend(), vec!["RELATIVE LOCK 32768 BLOCKS ON INPUT 0"]);
+        assert!(!l.is_unlocked());
+        let rows = l.report_rows(Chain::default());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].starts_with("RELATIVE LOCK 32768 BLOCKS ON INPUT 0"));
+        assert!(!rows.concat().contains("NO TIMELOCK"));
+    }
+
+    /// Bit 22 selects units of 512 seconds; the value is the low 16 bits, and
+    /// the bits between are ignored (BIP-68: "a mask of 0x0000ffff MUST be
+    /// applied").
+    #[test]
+    fn bh1125_t1_bit_22_is_units_of_512_seconds_and_only_16_bits_count() {
+        let l = read(&tx_with(2, &[0x0040_0064 | 0x0001_0000], 0));
+        assert_eq!(l.legend(), vec!["RELATIVE LOCK 51200 SECONDS ON INPUT 0"]);
+    }
+
+    /// What is NOT a relative lock: version 1 (BIP-68 does not apply), the
+    /// disable flag (bit 31), a zero value, and a final input.
+    #[test]
+    fn bh1125_t1_what_is_not_a_relative_lock() {
+        for (version, seq) in [
+            (1, 0x0000_8000),
+            (2, 0x8000_8000),
+            (2, 0x0000_0000),
+            (2, 0x0040_0000),
+            (2, 0xFFFF_FFFD),
+            (2, 0xFFFF_FFFF),
+        ] {
+            let l = read(&tx_with(version, &[seq], 0));
+            assert!(l.relative.is_empty(), "v{version} {seq:#010x}: {l:?}");
+            assert_eq!(l.legend(), vec!["NO TIMELOCK"], "v{version} {seq:#010x}");
+        }
+        // Core reads the signed version UNSIGNED: a high-bit version is >= 2.
+        let l = read(&tx_with(-1, &[0x0000_0010], 0));
+        assert_eq!(l.legend(), vec!["RELATIVE LOCK 16 BLOCKS ON INPUT 0"]);
+    }
+
+    /// Both locks at once: the `nLockTime` line stays, and each locked input
+    /// gets its own line, numbered from 0.
+    #[test]
+    fn bh1125_t1_absolute_and_relative_locks_are_both_stated() {
+        let l = read(&tx_with(2, &[0xFFFF_FFFD, 0x0000_0090], 1_383_520));
+        assert_eq!(
+            l.legend(),
+            vec![
+                "LOCKED TO BLOCK 1383520 ~SUMMER 2034".to_string(),
+                "RELATIVE LOCK 144 BLOCKS ON INPUT 1".to_string(),
+            ]
+        );
+        let rows = l.report_rows(Chain::default());
+        assert!(rows[0].starts_with("LOCKED TO BLOCK 1383520"), "{rows:?}");
+        assert!(
+            rows[1].starts_with("RELATIVE LOCK 144 BLOCKS ON INPUT 1"),
+            "{rows:?}"
+        );
+    }
+
+    /// The below-reference warning must not say "spendable now" while a
+    /// relative lock still binds.
+    #[test]
+    fn bh1125_t1_below_reference_warning_does_not_say_spendable_beside_a_relative_lock() {
+        let plain = read(&tx_with(2, &[0xFFFF_FFFD], 900_000));
+        let flat = |w: crate::refusal::Warning| {
+            w.to_string()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let w = flat(plain.below_reference_warning().unwrap());
+        assert!(w.contains("spendable now"), "{w}");
+        let rel = read(&tx_with(2, &[0x0000_0090], 900_000));
+        let w = flat(rel.below_reference_warning().unwrap());
+        assert!(!w.contains("spendable"), "{w}");
+        assert!(w.contains("RELATIVE LOCK"), "{w}");
     }
 
     /// The threshold is the difference between a block number and a date, and
