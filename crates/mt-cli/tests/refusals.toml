@@ -599,6 +599,14 @@ test  = "bh1119_mt_i11_transaction_refusal_precedes_dash_refusal"
 check = "src/main.rs::transaction_unsupported_guard"
 class = "USAGE"
 
+# `verify` never asks a node (§1.1): a named --bitcoin-cli would be accepted
+# and never run. Usage, like --transaction on decode (review 2026-11-26 M2).
+[[refusal]]
+spec  = "§10.10"
+test  = "verify_refuses_a_named_bitcoin_cli"
+check = "src/main.rs::bitcoin_cli_unsupported_guard"
+class = "USAGE"
+
 # The existing --json/--quiet refusal keeps precedence over both new ones.
 [[refusal]]
 spec  = "§10.10"

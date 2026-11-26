@@ -320,3 +320,54 @@
 - [mt-fix-gate-header-stale-counts] status=open grade=N kind=docs owner=none filed=2026-11-25 src=coordinator/agent-reports/whole-diff-mt29.md#n1 :: design/FIX_bh1119_mt_output_writes/gate.sh header (lines 17-19) says "base 3993d0c (523 tests, 67 refusal tests over 18 ruled refusals)"; the actual base dc9af9f1 is 551 / 84. The totals in the gate body (585, 93, 19) are correct.
 - [mt-validate-redirect-wording] status=open grade=N kind=docs owner=none filed=2026-11-25 src=coordinator/agent-reports/whole-diff-mt29.md#n2 :: validate.rs mechanism text for the stdout case says "A > redirect empties that file"; for a >> redirect (rows i4_*_stdout_appends_to_in) nothing was emptied. The text is the FIX's ruled wording, so this is a wording point for the architect only.
 - [mt-engrave-port-output-writes-spec] status=open grade=M kind=docs owner=none filed=2026-11-25 src=coordinator/agent-reports/build-fix-bh-mt12-1124.md :: port the mt output-writes spec deltas (FIX design/FIX_bh1119_mt_output_writes.md, PR #29) to mnemonic-engrave's copy of SPEC_mt_v0_1.md
+
+### `exit-rs-to-mnemonic-io-lib` — replace `src/exit.rs` with mnemonic-io-lib's `exit` module
+
+- **Surfaced:** 2026-11-26, exit-code spec rev 5 implementation (decision 4).
+- **What:** `crates/mt-cli/src/exit.rs` is a local copy of the constants, the
+  `Exit` bit-set and the R11 legend. mt takes mnemonic-io-lib from crates.io,
+  and 0.1.3 does not carry `exit`. Once 0.1.4 (or later) is published with it,
+  replace the module with the library's and move the pinning unit test with it.
+- **Watch:** the final review (M9) suggests the library also grow
+  `exit::add(code, bits)` and `Bits::from_code`; mt's absorbing `BitOr` would
+  then become a call to `add`.
+- **Companion:** mnemonic-engrave `design/FOLLOWUPS.md` (the io-lib publish).
+- **Status:** owed-to-build, blocked on the publish.
+
+### `mt-offline-switch` — no offline switch when `bitcoin-cli` is on `PATH` (open for Brian)
+
+- **Surfaced:** 2026-11-26, exit-code review I2 and the coordinator's R9 ruling.
+- **What:** a named `--bitcoin-cli` that is missing is now 32, so pointing it
+  at nothing is no longer a way to go offline. Offline is "no `bitcoin-cli` at
+  all". An operator whose `bitcoin-cli` is on `PATH` (possibly configured for a
+  remote node) has no way to keep mt from sending it the transaction's txids,
+  short of editing `PATH`. The opposite need is met: `--bitcoin-cli
+  bitcoin-cli` makes the node required (32 on failure).
+- **Options:** `mt --offline`, or `--bitcoin-cli none`. Either is a flag change:
+  toolkit manual, GUI mirror, help, and the exit-code spec §7d move with it.
+- **Status:** open, needs a ruling from Brian.
+
+### `spec-mt-resync-exit-codes` — re-sync SPEC_mt's exit-code text with mnemonic-engrave
+
+- **Surfaced:** 2026-11-26, final review I2.
+- **What:** `design/SPEC_mt_v0_1.md` here and the normative copy in
+  mnemonic-engrave diverge both ways on exit codes. Engrave has (b1)'s
+  default-on-PATH-failing sentence and §10 item 10's full code list (with a
+  false "mt verify against a node" sentence being corrected there). This copy
+  has the write-failure "adds 32" text, the §10.10 64 lines and the §6a offline
+  paragraph, which engrave lacks.
+- **Do:** after engrave's fix lands, merge its (b1) and §10 item 10 here; port
+  this copy's exit-code text back to engrave.
+- **Status:** owed-to-build.
+
+### `exit-codes-open-nits` — closed stdin is 2; a discarded damaged duplicate is 0 (open for Brian)
+
+- **Surfaced:** 2026-11-26, exit-code review N3 and N5 (left unfolded).
+- **Closed stdin (N3):** `mt decode <&-` reads as empty input, so 2 (decision 3).
+  A missing fd 0 is arguably §3 test 2 ("missing from the system", 32). Left at 2.
+- **Discarded duplicate (N5):** when a set holds two copies of a chunk, mt keeps
+  the clean one and discards the damaged one, so no correction is used and the
+  code is 0 (R6, "used"). mt still prints "DISCARDED the copy needing … it is
+  the one to re-cut", and 16's action is "re-engrave". Journey C's
+  `drawer-scrap` names an unreadable plate and exits 0 too.
+- **Status:** open, needs a ruling from Brian (exit-code spec rev 6 items 9, 20).

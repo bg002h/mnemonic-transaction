@@ -41,6 +41,18 @@ Releases 0.1.0 and 0.1.1 are described by their tags (`mt-cli-v0.1.0`,
     and have none on `PATH`. Pointing `--bitcoin-cli` at a path that does not
     exist is no longer an offline switch; it is a named helper gone missing,
     32. mt has no other offline flag (an open question for the spec).
+    Naming it, even as `--bitcoin-cli bitcoin-cli`, makes the node required.
+    A `bitcoin-cli` found on `PATH` without the flag that fails stays a
+    warning, 0. When a named helper sets 32, mt prints one stderr line naming
+    it: `mt: --bitcoin-cli <path>: could not be started: …`, `exited N`, or
+    `gave a reply mt could not read`.
+  - Core's not-found (exit 5) is an answer only from `getrawtransaction`, and
+    an old Core's method-not-found (89) only from `getindexinfo`; from any
+    other call a named helper's 5 or 89 is a failure (32). A `getblockcount`
+    reply that is no height is no node (the no-node warning).
+  - `verify` refuses `--bitcoin-cli` as usage (64): it never asks a node, and
+    the flag was accepted and ignored.
+  - Each verb's `--help` ends with the bits that verb can set (R11).
   - Repaired is 16: `decode`, `verify` and `inspect` that used a BCH-corrected
     chunk now set 16 (0 before, decision 5), with the same output. Bits sum: a
     `verify --transaction` mismatch on a corrected set is 17.

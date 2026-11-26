@@ -17,32 +17,53 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static NAMED: AtomicBool = AtomicBool::new(false);
+/// The `--bitcoin-cli` path the operator named, if they named one.
+static NAMED: OnceLock<PathBuf> = OnceLock::new();
+/// The one stderr line naming a failed helper has been printed.
+static SAID: AtomicBool = AtomicBool::new(false);
 
-/// The operator named `--bitcoin-cli` on the command line (exit-code spec R9).
+/// The operator named `--bitcoin-cli` on the command line (exit-code spec R9),
+/// even as `--bitcoin-cli bitcoin-cli`: naming it makes the node required.
 /// From here on, a `bitcoin-cli` that is missing, cannot be started, fails,
 /// or gives a reply mt cannot use adds IO (32) to the exit code (§3 test 2,
-/// "failed or gone missing"). Only the DEFAULT `bitcoin-cli` being absent is
-/// the offline path, "no node at all", which stays 0.
-pub fn helper_named() {
-    NAMED.store(true, Ordering::Relaxed);
+/// "failed or gone missing"). Only the DEFAULT `bitcoin-cli` that is absent
+/// or failing is the offline path, a warning that sets nothing.
+pub fn helper_named(path: &Path) {
+    let _ = NAMED.set(path.to_path_buf());
+}
+
+/// Was `--bitcoin-cli` named on the command line?
+pub fn is_named() -> bool {
+    NAMED.get().is_some()
 }
 
 /// A call to a named helper failed, or its reply could not be used: note IO,
-/// once is enough. Core's real answers (a null `gettxout`, not-found exit 5,
-/// a `getindexinfo` without a txindex) are answers and never come here.
-fn helper_failed() {
-    if NAMED.load(Ordering::Relaxed) {
-        crate::out::note(crate::exit::Exit::IO);
+/// and say so once on stderr, naming the helper, so a typo and a node that is
+/// down are told apart (R5). Core's real answers (a null `gettxout`, a
+/// not-found from `getrawtransaction`, a `getindexinfo` without a txindex)
+/// are answers and never come here.
+fn helper_failed(reason: &dyn std::fmt::Display) {
+    let Some(path) = NAMED.get() else {
+        return;
+    };
+    crate::out::note(crate::exit::Exit::IO);
+    if !SAID.swap(true, Ordering::Relaxed) {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "mt: --bitcoin-cli {}: {reason}",
+            path.display()
+        );
     }
 }
 
 /// `helper_failed`, then `v`: for the branches where a reply arrived but
 /// carries nothing mt can use.
 fn unusable<T>(v: T) -> T {
-    helper_failed();
+    helper_failed(&"gave a reply mt could not read");
     v
 }
 
@@ -115,14 +136,11 @@ impl Node {
             cli: cli.to_path_buf(),
         };
         match node.call(&["getblockcount"]) {
-            Reply::Answered(s) => {
-                // Something answered. A reply that is no block height is a
-                // helper failing (R9), though later calls may still answer.
-                if s.parse::<u64>().is_err() {
-                    helper_failed();
-                }
-                Some(node)
-            }
+            // A reply that is no block height is no node: a named helper that
+            // gives one has failed (R9), and the run takes the no-node path
+            // with its warning.
+            Reply::Answered(s) if s.parse::<u64>().is_err() => unusable(None),
+            Reply::Answered(_) => Some(node),
             Reply::Failed(_) => None,
         }
     }
@@ -135,6 +153,11 @@ impl Node {
     }
 
     /// Run `bitcoin-cli -stdin`, passing every argument on **stdin**.
+    ///
+    /// Core's own error replies are answers, not a failing helper, but only
+    /// from the call that gives them: 5 (not-found, RPC_INVALID_ADDRESS_OR_KEY)
+    /// from `getrawtransaction`, and 89 (an older Core's method-not-found,
+    /// -32601) from `getindexinfo`. Any other non-zero exit is a failure.
     fn call(&self, args: &[&str]) -> Reply {
         use std::io::Write;
         let mut child = match Command::new(&self.cli)
@@ -147,36 +170,45 @@ impl Node {
             Ok(c) => c,
             // Missing or not startable. For the default `bitcoin-cli` that is
             // the offline path; for a named one it is a failure (R9).
-            Err(_) => {
-                helper_failed();
+            Err(e) => {
+                helper_failed(&format_args!("could not be started: {e}"));
                 return Reply::Failed(None);
             }
         };
-        {
-            let Some(stdin) = child.stdin.as_mut() else {
-                helper_failed();
-                return Reply::Failed(None);
-            };
+        let mut broke = None;
+        if let Some(stdin) = child.stdin.as_mut() {
             for a in args {
-                if writeln!(stdin, "{a}").is_err() {
-                    let _ = child.wait();
-                    helper_failed();
-                    return Reply::Failed(None);
+                if let Err(e) = writeln!(stdin, "{a}") {
+                    broke = Some(e);
+                    break;
                 }
             }
         }
-        let Ok(out) = child.wait_with_output() else {
-            helper_failed();
-            return Reply::Failed(None);
+        let out = match child.wait_with_output() {
+            Ok(o) => o,
+            Err(e) => {
+                helper_failed(&format_args!("could not be run: {e}"));
+                return Reply::Failed(None);
+            }
         };
         if !out.status.success() {
-            // Core's own error replies are answers, not a failing helper:
-            // 5 is not-found (RPC_INVALID_ADDRESS_OR_KEY), 89 is an older
-            // Core's method-not-found (-32601) for `getindexinfo`.
-            if !matches!(out.status.code(), Some(5 | 89)) {
-                helper_failed();
+            let answer = match args.first() {
+                Some(&"getrawtransaction") => Some(5),
+                Some(&"getindexinfo") => Some(89),
+                _ => None,
+            };
+            let code = out.status.code();
+            if code.is_none() || code != answer {
+                match code {
+                    Some(n) => helper_failed(&format_args!("exited {n}")),
+                    None => helper_failed(&"was stopped by a signal"),
+                }
             }
-            return Reply::Failed(out.status.code());
+            return Reply::Failed(code);
+        }
+        if let Some(e) = broke {
+            helper_failed(&format_args!("did not read its arguments: {e}"));
+            return Reply::Failed(None);
         }
         Reply::Answered(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
@@ -222,7 +254,7 @@ impl Node {
             .ok()
             .and_then(|v| v.get("mediantime")?.as_u64());
         if t.is_none() {
-            helper_failed();
+            helper_failed(&"gave a reply mt could not read");
         }
         t
     }

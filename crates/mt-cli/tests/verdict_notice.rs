@@ -16,8 +16,13 @@ const NO_NODE_HEAD: &str = "\nWARNING: no bitcoind reachable. mt read this trans
 const OK_EVEN: &str = "mt verify: OK — 6 chunks, set 0x2dcf2, transaction re-derives.";
 const MATCH_LINE: &str = "  --transaction matches, on the full txid.";
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn corpus() -> serde_json::Value {

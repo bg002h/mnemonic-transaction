@@ -59,7 +59,11 @@ exits 0 with a warning. With a real `bitcoin-cli` on `PATH`, `mt` consults it
 automatically and asks the operator for nothing — `bitcoin-cli` already holds
 the RPC URL, the cookie, the network and the wallet. A `--bitcoin-cli PATH`
 you name is a helper you asked for: if it is missing, fails or gives no usable
-answer, `mt` still prints its output and adds 32 to the exit status.
+answer, `mt` still prints its output, says so on one stderr line
+(`mt: --bitcoin-cli <path>: …`) and adds 32 to the exit status. Naming it, even
+as `--bitcoin-cli bitcoin-cli`, is how to make the node required. A
+`bitcoin-cli` found on `PATH` without the flag that fails is a warning only.
+`verify` never asks a node and refuses `--bitcoin-cli` (64).
 `mt` supports Bitcoin Core 0.21 or newer, with -txindex for full node checks.
 
 ## Verifying the tool, not just running it

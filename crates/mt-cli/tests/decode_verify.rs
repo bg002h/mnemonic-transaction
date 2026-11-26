@@ -10,8 +10,13 @@ use std::io::Write;
 mod common;
 use common::exit::{INVALID, REPAIRED};
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn corpus() -> serde_json::Value {

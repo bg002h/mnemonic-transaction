@@ -227,14 +227,17 @@ for c in sorted(cited - set(REQUIRED)):
 #    and string literals are stripped first, so `/* INVALID */` or
 #    "REFUSED —" does not count (review 2026-11-26 M2).
 CLASSES = {"NO", "INVALID", "REFUSED", "IO", "USAGE"}
-ASSERTING_HELPERS = (
-    "assert_refused",            # refusals.rs
-    "assert_refused_with",       # bughunt.rs
-    "assert_same_file_refusal",  # bh1119_mt_output_writes.rs
-    "assert_refusal",            # arg_intake.rs
-    "refused",                   # bh1119_mt_input_parsing.rs, _inspect_routing.rs
-    "assert_newline_separator_refused",  # arg_intake.rs, via assert_refusal
-)
+# name -> the test files whose definition of it `assert_eq!`s the class. A
+# helper of the same name in any other file does not count (tx_validity.rs's
+# `refused` only formats a line).
+ASSERTING_HELPERS = {
+    "assert_refused": {"refusals.rs"},
+    "assert_refused_with": {"bughunt.rs", "tx_validity.rs"},
+    "assert_same_file_refusal": {"bh1119_mt_output_writes.rs"},
+    "assert_refusal": {"arg_intake.rs"},
+    "refused": {"bh1119_mt_input_parsing.rs", "bh1119_mt_inspect_routing.rs"},
+    "assert_newline_separator_refused": {"arg_intake.rs"},  # via assert_refusal
+}
 
 def strip(src):
     """Comments and string literals out, so only code is matched."""
@@ -245,23 +248,39 @@ def strip(src):
     src = re.sub(r"//[^\n]*", "", src)                     # line comments
     return src
 
-def helper_args(body):
-    """The argument text of every call to an asserting helper."""
+def call_args(body, names):
+    """(name, argument text) of every call to one of `names`; the name may be a
+    macro (`assert_ne!`)."""
     out = []
-    for m in re.finditer(r"\b(" + "|".join(ASSERTING_HELPERS) + r")\s*\(", body):
+    for m in re.finditer(r"\b(" + "|".join(re.escape(n) for n in names) + r")\s*\(", body):
         depth, i = 1, m.end()
         while i < len(body) and depth:
             depth += {"(": 1, ")": -1}.get(body[i], 0)
             i += 1
-        out.append(body[m.end():i - 1])
+        out.append((m.group(1), body[m.end():i - 1], m.start(), i))
     return out
+
+def helper_args(body, path):
+    """The argument text of every call to a helper that asserts its class in
+    this file."""
+    here = os.path.basename(path or "")
+    names = [n for n, files in ASSERTING_HELPERS.items() if here in files]
+    return [a for _, a, _, _ in call_args(body, names)] if names else []
+
+def without_negations(body):
+    """`assert_ne!(.., Some(CLASS))` asserts the class is NOT the code: cut
+    every `assert_ne!` out before looking for an asserted class."""
+    for _, _, start, end in reversed(call_args(body, ["assert_ne!"])):
+        body = body[:start] + body[end:]
+    return body
 
 for e in entries:
     if e["class"] not in CLASSES:
         problems.append(f"{e['test']}: class {e['class']!r} is not one of {sorted(CLASSES)}")
         continue
-    body = strip(declared.get(e["test"], (None, ""))[1])
-    args = helper_args(body)
+    path, raw = declared.get(e["test"], (None, ""))
+    body = without_negations(strip(raw))
+    args = helper_args(body, path)
     def asserted(cls):
         return bool(re.search(rf"Some\(\s*{cls}\s*\)", body)) or any(
             re.search(rf"\b{cls}\b", a) for a in args

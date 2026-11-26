@@ -50,14 +50,31 @@ enum Command {
     /// Default: `mt1` strings — to engrave by hand, or to pipe into
     /// `me sysw pack` as bare records for text plates.
     /// `--qr`: a `tx:` record carrying the transaction's bytes, for QR plates.
+    #[command(after_help = HELP_BITS_ENCODE)]
     Encode(EncodeArgs),
     /// Read `mt1` strings back and emit BROADCASTABLE HEX on stdout.
+    #[command(after_help = HELP_BITS_DECODE)]
     Decode(ReadArgs),
     /// Check a set of `mt1` strings — structurally, and never asking a node.
+    #[command(after_help = HELP_BITS_VERIFY)]
     Verify(ReadArgs),
     /// Report what is IN a set. Queries a local node AUTOMATICALLY if one is reachable.
+    #[command(after_help = HELP_BITS_INSPECT)]
     Inspect(ReadArgs),
 }
+
+// R11: each verb's help states only the bits that verb can set. The root help
+// carries the whole legend.
+const HELP_BITS_ENCODE: &str = "Exit status: 0, 64 or 101, or the sum of: 1 the node proves \
+an input spent or contradicts a value; 2 the input is invalid; 8 refused; 32 a file, device or \
+helper failed.";
+const HELP_BITS_DECODE: &str = "Exit status: 0, 64 or 101, or the sum of: 2 the input is \
+invalid; 8 refused; 16 a correction was applied; 32 a file, device or helper failed.";
+const HELP_BITS_VERIFY: &str = "Exit status: 0, 64 or 101, or the sum of: 1 --transaction \
+names another transaction; 2 the input is invalid; 8 refused; 16 a correction was applied; 32 a \
+file or device failed.";
+const HELP_BITS_INSPECT: &str = "Exit status: 0, 64 or 101, or the sum of: 2 the input is \
+invalid; 8 refused; 16 a correction was applied; 32 a file, device or helper failed.";
 
 /// Arguments shared by the two reading verbs.
 #[derive(clap::Args)]
@@ -125,11 +142,15 @@ struct ReadArgs {
     #[arg(long)]
     json: bool,
 
-    /// Path to `bitcoin-cli`, for a binary not on `PATH`.
+    /// Path to `bitcoin-cli`, for a binary not on `PATH` (`decode` and
+    /// `inspect`; `verify` never asks a node and refuses it, 64).
     ///
-    /// A path you name that is missing, fails or does not answer adds 32 to
-    /// the exit status (the report still prints). To run offline, do not pass
-    /// this flag and have no `bitcoin-cli` on `PATH`.
+    /// Naming it, even as `--bitcoin-cli bitcoin-cli`, makes the node
+    /// required: a path you name that is missing, fails or does not answer
+    /// adds 32 to the exit status (the report still prints). Without this
+    /// flag a `bitcoin-cli` on `PATH` is used if it answers, and is a warning
+    /// if not. To run offline, do not pass this flag and have no `bitcoin-cli`
+    /// on `PATH`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
 }
@@ -290,9 +311,12 @@ struct EncodeArgs {
 
     /// Path to `bitcoin-cli`, for a binary not on `PATH`.
     ///
-    /// A path you name that is missing, fails or does not answer adds 32 to
-    /// the exit status (the strings still print). To run offline, do not pass
-    /// this flag and have no `bitcoin-cli` on `PATH`.
+    /// Naming it, even as `--bitcoin-cli bitcoin-cli`, makes the node
+    /// required: a path you name that is missing, fails or does not answer
+    /// adds 32 to the exit status (the strings still print). Without this
+    /// flag a `bitcoin-cli` on `PATH` is used if it answers, and is a warning
+    /// if not. To run offline, do not pass this flag and have no `bitcoin-cli`
+    /// on `PATH`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
 }
@@ -373,12 +397,12 @@ fn main() -> std::process::ExitCode {
     // R9: a `--bitcoin-cli` the operator NAMED is a helper they asked for, so
     // its failure, absence included, is IO (32). The default is not: its
     // absence is the offline path.
-    if matches
-        .subcommand()
-        .and_then(|(_, m)| m.value_source("bitcoin_cli"))
-        == Some(clap::parser::ValueSource::CommandLine)
-    {
-        node::helper_named();
+    if let Some((_, m)) = matches.subcommand() {
+        if m.value_source("bitcoin_cli") == Some(clap::parser::ValueSource::CommandLine) {
+            if let Some(p) = m.get_one::<std::path::PathBuf>("bitcoin_cli") {
+                node::helper_named(p);
+            }
+        }
     }
     match cli.command {
         Command::Encode(args) => run(encode(args, intake.material)),
@@ -1333,8 +1357,11 @@ fn read_input_bytes(
 
 /// Exit-code spec R6 (decision 5): a verb that USED a BCH-corrected chunk
 /// says so in its code (REPAIRED, 16), not only on stderr: the plate is
-/// damaged. The set's content id is the oracle (`content_id_guard`), so the
-/// correction is verified when the verb succeeds. A refusal after this point
+/// damaged. The set's content id (`content_id_guard`) re-derives from the
+/// corrected transaction's txid, so a successful verb has confirmed the
+/// transaction's identity (its inputs, outputs and locktime). The id does not
+/// cover witness data, so a miscorrected signature is not caught by it; it
+/// could only fail to broadcast. A refusal after this point
 /// keeps the bit (R1), because the margin report still names the corrections.
 fn note_corrections(chunks: &[mt_codec::DecodedChunk]) {
     if chunks.iter().any(|c| c.corrected > 0) {
@@ -1821,6 +1848,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "verify")?;
     json_unsupported_guard(args.json, "verify")?;
+    bitcoin_cli_unsupported_guard(node::is_named(), "verify")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "verify")?;
     let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
@@ -2600,6 +2628,33 @@ fn transaction_unsupported_guard(
     )
     .with_remedy(
         "Run `mt verify --transaction <path>` for the comparison, or drop `--transaction`.",
+    ))
+}
+
+/// §10.10: `verify` never asks a node (§1.1), so a `--bitcoin-cli` named on
+/// its command line would be accepted and never run: a caller would take the
+/// set as checked against the chain when nothing asked. Usage (64), like
+/// `--transaction` on `decode` (review 2026-11-26 M2).
+fn bitcoin_cli_unsupported_guard(named: bool, verb: &str) -> Result<(), Refusal> {
+    if !named {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        Exit::USAGE,
+        verb,
+        "§10.10",
+        format!("--bitcoin-cli has no meaning for `{verb}`"),
+        format!(
+            "`{verb}` checks the strings themselves and never asks a node, so it would \
+             accept the flag and never run the helper: a caller would take the set as \
+             checked against the chain when nothing asked it.\n\
+             \n\
+             mt refuses rather than accepting the flag and ignoring it."
+        ),
+    )
+    .with_remedy(
+        "Run `mt inspect --bitcoin-cli <path>` to ask the node about the set, or drop \
+         `--bitcoin-cli`.",
     ))
 }
 

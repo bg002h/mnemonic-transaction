@@ -14,8 +14,13 @@ use assert_cmd::Command;
 use bitcoin::consensus::deserialize;
 use std::io::Write;
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn base() -> serde_json::Value {

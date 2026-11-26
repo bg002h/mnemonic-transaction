@@ -21,8 +21,13 @@ mod common;
 use common::exit::IO;
 use common::fixture_txids;
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 /// The P5 base fixture: two inputs (3 BTC and 5 BTC), regtest, from Core v25.
@@ -618,7 +623,7 @@ fn index_syncs_after_own_question() -> Stub {
         arms.push_str(&format!("      {}*) echo '{CONFIRMED}' ;;\n", &p[..16]));
     }
     stub(&format!(
-        "  getindexinfo)\n    if [ -e \"$(dirname \"$0\")/own-asked\" ]; then echo '{{\"txindex\": {{\"synced\": true, \"best_block_height\": 963832}}}}'; else echo '{{\"txindex\": {{\"synced\": false, \"best_block_height\": 10}}}}'; fi ;;\n  gettxout) exit 0 ;;\n  getrawtransaction)\n    case \"$arg1\" in\n{arms}      *) : > \"$(dirname \"$0\")/own-asked\"; exit 5 ;;\n    esac ;;"
+        "  getindexinfo)\n    if [ -e \"${{0%/*}}/own-asked\" ]; then echo '{{\"txindex\": {{\"synced\": true, \"best_block_height\": 963832}}}}'; else echo '{{\"txindex\": {{\"synced\": false, \"best_block_height\": 10}}}}'; fi ;;\n  gettxout) exit 0 ;;\n  getrawtransaction)\n    case \"$arg1\" in\n{arms}      *) : > \"${{0%/*}}/own-asked\"; exit 5 ;;\n    esac ;;"
     ))
 }
 

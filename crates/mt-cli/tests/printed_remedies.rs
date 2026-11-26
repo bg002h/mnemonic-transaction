@@ -24,8 +24,13 @@ const REMEDY_TXID: &str = "Fetch the transaction: `bitcoin-cli getrawtransaction
 pass that. If you have not broadcast yet, run `bitcoin-cli finalizepsbt <psbt>` instead and \
 pass the value of its `hex` field (present once it shows `\"complete\": true`).";
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn base() -> serde_json::Value {

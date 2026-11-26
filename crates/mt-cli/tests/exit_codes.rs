@@ -10,8 +10,13 @@ use std::io::Write;
 mod common;
 use common::exit::{INVALID, IO, NO, OK, REFUSED, REPAIRED, USAGE};
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 /// The offline posture: no `--bitcoin-cli` on the command line and no
@@ -69,8 +74,13 @@ fn one_error_set() -> String {
 }
 
 fn run(args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
+    run_with_path(NO_NODE_PATH, args, stdin)
+}
+
+/// As `run`, with the child's `PATH` set to `path`.
+fn run_with_path(path: &str, args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
     let o = mt()
-        .env("PATH", NO_NODE_PATH)
+        .env("PATH", path)
         .args(args)
         .write_stdin(stdin)
         .output()
@@ -272,57 +282,167 @@ fn helper(body: &str) -> (tempfile::TempDir, String) {
     (dir, p)
 }
 
-/// Run `decode`, `inspect` and `encode` against a named `--bitcoin-cli`, and
-/// assert each exits `want` and still prints its output (R9: the run keeps its
-/// report and strings).
-fn assert_named_helper_gives(cli: &str, want: i32, why: &str) {
+/// Run `decode`, `inspect` and `encode` against a named `--bitcoin-cli` that
+/// fails, and assert each exits 32, still prints its output (R9: the run keeps
+/// its report and strings), and names the helper on ONE stderr line (review
+/// M3): `mt: --bitcoin-cli <path>: <reason>`.
+fn assert_named_helper_fails(cli: &str, reason: &str, why: &str) {
     let set = strings("even").join("\n");
-    for verb in ["decode", "inspect"] {
-        let (code, out, err) = run(&[verb, "--bitcoin-cli", cli], &set);
-        assert_eq!(code, Some(want), "{why}, {verb}: {err}");
-        assert!(!out.is_empty(), "{why}: {verb} lost its output");
-    }
     let raw = vector("even", "raw_hex");
     let f = tmp(raw.as_str().unwrap());
-    let (code, out, err) = run(
-        &[
-            "encode",
-            "--bitcoin-cli",
-            cli,
-            "--in",
-            f.path().to_str().unwrap(),
-        ],
-        "",
-    );
-    assert_eq!(code, Some(want), "{why}, encode: {err}");
-    assert!(out.starts_with("mt1"), "{why}: encode lost its output");
+    let fp = f.path().to_str().unwrap();
+    for argv in [
+        &["decode", "--bitcoin-cli", cli][..],
+        &["inspect", "--bitcoin-cli", cli],
+        &["encode", "--bitcoin-cli", cli, "--in", fp],
+    ] {
+        let verb = argv[0];
+        let (code, out, err) = run(argv, if verb == "encode" { "" } else { &set });
+        assert_eq!(code, Some(IO), "{why}, {verb}: {err}");
+        assert!(!out.is_empty(), "{why}: {verb} lost its output");
+        if verb == "encode" {
+            assert!(out.starts_with("mt1"), "{why}: encode lost its strings");
+        }
+        let prefix = format!("mt: --bitcoin-cli {cli}: ");
+        let named: Vec<&str> = err.lines().filter(|l| l.starts_with(&prefix)).collect();
+        assert_eq!(
+            named.len(),
+            1,
+            "{why}, {verb}: want one line naming the helper:\n{err}"
+        );
+        assert!(
+            named[0].contains(reason),
+            "{why}, {verb}: {:?} does not say {reason:?}",
+            named[0]
+        );
+    }
 }
 
 /// R9: a `bitcoin-cli` the operator NAMED, that runs and fails, sets 32 and
 /// the output still prints.
 #[test]
 fn a_named_bitcoin_cli_that_fails_is_io() {
-    let (_d, cli) = helper("#!/bin/sh\ncat >/dev/null\nexit 1\n");
-    assert_named_helper_gives(&cli, IO, "exits 1");
+    let (_d, cli) = helper("#!/bin/sh\nwhile read -r _; do :; done\nexit 1\n");
+    assert_named_helper_fails(&cli, "exited 1", "exits 1");
+}
+
+/// Review M1: Core's not-found (5) and an old Core's method-not-found (89) are
+/// answers only from the calls that give them (`getrawtransaction`,
+/// `getindexinfo`). A named helper that exits 5 or 89 on EVERY call fails.
+#[test]
+fn a_named_bitcoin_cli_exiting_5_or_89_on_every_call_is_io() {
+    for n in [5, 89] {
+        let (_d, cli) = helper(&format!(
+            "#!/bin/sh\nwhile read -r _; do :; done\nexit {n}\n"
+        ));
+        assert_named_helper_fails(&cli, &format!("exited {n}"), &format!("exit {n}"));
+    }
 }
 
 /// R9 (review I1): a named helper that exits 0 but gives no reply mt can use
 /// (nothing at all, or garbage) has failed just the same.
 #[test]
 fn a_named_bitcoin_cli_with_no_usable_reply_is_io() {
-    let (_d, cli) = helper("#!/bin/sh\ncat >/dev/null\nexit 0\n");
-    assert_named_helper_gives(&cli, IO, "silent");
-    let (_d, cli) = helper("#!/bin/sh\ncat >/dev/null\necho garbage\n");
-    assert_named_helper_gives(&cli, IO, "garbage");
+    let (_d, cli) = helper("#!/bin/sh\nwhile read -r _; do :; done\nexit 0\n");
+    assert_named_helper_fails(&cli, "gave a reply mt could not read", "silent");
+    let (_d, cli) = helper("#!/bin/sh\nwhile read -r _; do :; done\necho garbage\n");
+    assert_named_helper_fails(&cli, "gave a reply mt could not read", "garbage");
 }
 
 /// R9 and §3 test 2, "failed or gone missing" (coordinator ruling on review
 /// I2): a NAMED path that does not exist, or cannot be started, is 32.
 #[test]
 fn a_named_bitcoin_cli_that_is_missing_is_io() {
-    assert_named_helper_gives("/nonexistent/bitcoin-cli", IO, "missing path");
+    assert_named_helper_fails(
+        "/nonexistent/bitcoin-cli",
+        "could not be started: ",
+        "missing path",
+    );
     let (_d, cli) = helper("#!/nonexistent/sh\nexit 0\n");
-    assert_named_helper_gives(&cli, IO, "missing interpreter");
+    assert_named_helper_fails(&cli, "could not be started: ", "missing interpreter");
+}
+
+/// Review M5: naming the default, `--bitcoin-cli bitcoin-cli`, is naming it:
+/// the node is then required, and its absence is 32.
+#[test]
+fn naming_the_default_bitcoin_cli_makes_the_node_required() {
+    assert_named_helper_fails("bitcoin-cli", "could not be started: ", "named default");
+}
+
+/// Review M5: the DEFAULT `bitcoin-cli`, found on `PATH`, that fails or gives
+/// garbage is not a helper the operator asked for: 0, with the warning.
+#[test]
+fn the_default_bitcoin_cli_on_path_that_fails_is_a_warning() {
+    let set = strings("even").join("\n");
+    for body in [
+        "#!/bin/sh\nwhile read -r _; do :; done\nexit 1\n",
+        "#!/bin/sh\nwhile read -r _; do :; done\necho garbage\n",
+    ] {
+        let (d, _) = helper(body);
+        let path = d.path().to_str().unwrap();
+        for verb in ["decode", "inspect"] {
+            let (code, out, err) = run_with_path(path, &[verb], &set);
+            assert_eq!(code, Some(OK), "{verb} {body:?}: {err}");
+            assert!(!out.is_empty(), "{verb} lost its output");
+            assert!(
+                format!("{out}{err}").contains("WARNING"),
+                "{verb} {body:?}: no warning:\n{out}{err}"
+            );
+            assert!(!err.contains("mt: --bitcoin-cli"), "{err}");
+        }
+    }
+}
+
+/// Review M2: `verify` never asks a node, so a named `--bitcoin-cli` there is
+/// a command-line error (64), like `--transaction` on `decode`.
+#[test]
+fn verify_refuses_a_named_bitcoin_cli() {
+    let set = strings("even").join("\n");
+    let s = common::node_stub("", &[]);
+    for cli in ["/nonexistent/bitcoin-cli", s.path().to_str().unwrap()] {
+        let (code, out, err) = run(&["verify", "--bitcoin-cli", cli], &set);
+        assert_eq!(code, Some(USAGE), "{cli}: {err}");
+        assert!(out.is_empty());
+    }
+    let (code, _, err) = run(&["verify"], &set);
+    assert_eq!(code, Some(OK), "{err}");
+}
+
+/// R11: each verb's help states the bits that verb can set, and no others.
+#[test]
+fn each_verb_help_states_its_bits() {
+    for (verb, line) in [
+        (
+            "encode",
+            "Exit status: 0, 64 or 101, or the sum of: 1 the node proves an input spent or \
+             contradicts a value; 2 the input is invalid; 8 refused; 32 a file, device or \
+             helper failed.",
+        ),
+        (
+            "decode",
+            "Exit status: 0, 64 or 101, or the sum of: 2 the input is invalid; 8 refused; \
+             16 a correction was applied; 32 a file, device or helper failed.",
+        ),
+        (
+            "verify",
+            "Exit status: 0, 64 or 101, or the sum of: 1 --transaction names another \
+             transaction; 2 the input is invalid; 8 refused; 16 a correction was applied; \
+             32 a file or device failed.",
+        ),
+        (
+            "inspect",
+            "Exit status: 0, 64 or 101, or the sum of: 2 the input is invalid; 8 refused; \
+             16 a correction was applied; 32 a file, device or helper failed.",
+        ),
+    ] {
+        let (code, out, _) = run(&[verb, "--help"], "");
+        assert_eq!(code, Some(OK));
+        let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat(&out).ends_with(&flat(line)),
+            "{verb} --help does not end with its bits:\n{out}"
+        );
+    }
 }
 
 /// Only the DEFAULT `bitcoin-cli` being absent is the offline path: 0, with
