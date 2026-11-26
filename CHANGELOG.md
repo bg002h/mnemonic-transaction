@@ -15,6 +15,31 @@ Releases 0.1.0 and 0.1.1 are described by their tags (`mt-cli-v0.1.0`,
 ## mt-cli [Unreleased]
 
 ### Changed
+- **Exit codes follow the constellation exit-code spec**
+  (mnemonic-engrave `design/SPEC_constellation_exit_codes.md`, revision 5, all
+  eleven decisions as recommended). BREAKING for scripts that branch on the
+  code. Every refusal carries its class (`Refusal::new` takes it), and
+  `tests/refusals.toml` gains a `class` per row that
+  `scripts/check-refusal-coverage.sh` checks against the row's test (R13).
+  - Usage is 64: clap errors (2 before), the §10.10 flag-combination refusals
+    and a bad `--separator` (1 before; the separator is now checked before any
+    input is read, R2). Non-UTF-8 argv stays 64.
+  - Invalid input is 2 (1 before): garbage, an invalid or uncorrectable set,
+    an ms1, a pasted txid, empty input, the §8.1/§8.2b/c/d/e, §8.3, §8.6 and
+    §8.7b correctness refusals.
+  - Refused is 8 (1 before): bearer material on argv (§8.2f), a world-readable
+    stdout (§8.2h), the same file in and out (§8.2i).
+  - No is 1 (unchanged): `verify --transaction` mismatch, a node-proved spent
+    input (§8.5), a value that disagrees with the chain (§6a).
+  - IO is 32: an input that cannot be read (1 before), and a failed stdout or
+    `--out` write, which now ADDS 32 to the verb's code instead of turning 0
+    into 1 (R8). A `--bitcoin-cli` the operator named that runs and fails adds
+    32 (0 before, R9); an absent path is still the offline path, exit 0.
+  - Repaired is 16: `decode`, `verify` and `inspect` that used a BCH-corrected
+    chunk now set 16 (0 before, decision 5), with the same output. Bits sum: a
+    `verify --transaction` mismatch on a corrected set is 17.
+  - A codec failure that the checks before it make unreachable is 101.
+  - The root `--help` ends with the exit-status legend (R11).
 - **FIX-J: printed remedies (bh-mt-I22, I25).** The §8.1 and
   §10.10 remedies tell the operator to pass the `hex` field of `finalizepsbt`'s
   answer, not the whole answer. `scripts/live-smoke-test.sh` sets `umask 077`

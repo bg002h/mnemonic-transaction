@@ -55,6 +55,13 @@ OFFLINE=(--bitcoin-cli /nonexistent/bitcoin-cli)
 FAILED=0
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 step() { printf '  %s\n' "$*"; }
+code() {  # code <got> <want> <why>
+  if [ "$1" -eq "$2" ]; then
+    printf '    ok   %s\n' "$3"
+  else
+    printf '    FAIL %s (exit %s)\n' "$3" "$1"; FAILED=1
+  fi
+}
 have() {  # have <file> <needle> <why>
   if grep -qF -- "$2" "$1"; then
     printf '    ok   %s\n' "$3"
@@ -203,9 +210,14 @@ have "$WORK/c.err" "DISCARDED  the copy needing 1 of 4"      "says which it DISC
 have "$WORK/c.err" "it is the one to re-cut"                 "names the plate to act on"
 
 step "\$ mt verify < mistyped.txt                 (one plate, two wrong characters)"
-"$MT" verify --in "$WORK/mistyped.txt" >/dev/null 2>"$WORK/c2.err"
+# A USED CORRECTION IS EXIT 16 (REPAIRED, the constellation exit-code spec's
+# decision 5), not 0: the output is the same, and the code now says the plate
+# is damaged. `|| rc=$?` keeps `set -e` from ending the journey on it.
+rc=0
+"$MT" verify --in "$WORK/mistyped.txt" >/dev/null 2>"$WORK/c2.err" || rc=$?
 sed 's/^/    | /' "$WORK/c2.err"
 step "assertions:"
+code "$rc" 16 "exit 16: a correction was applied (REPAIRED)"
 have "$WORK/c2.err" "CORRECTION APPLIED"  "the margin report fires"
 have "$WORK/c2.err" "2 of 4 symbols"      "...and quantifies the budget spent"
 have "$WORK/c2.err" "pos "                "...localises each correction"
@@ -213,9 +225,11 @@ have "$WORK/c2.err" "read "               "...and gives the BEFORE-value"
 have "$WORK/c2.err" "corrected to "       "...beside the after-value"
 
 step "\$ mt verify < drawer-scrap.txt             (one plate damaged past t = 4)"
-"$MT" verify --in "$WORK/drawer-scrap.txt" >/dev/null 2>"$WORK/c3.err"
+rc=0
+"$MT" verify --in "$WORK/drawer-scrap.txt" >/dev/null 2>"$WORK/c3.err" || rc=$?
 sed 's/^/    | /' "$WORK/c3.err"
 step "assertions:"
+code "$rc" 0 "exit 0: the set verified from the healthy copies, with no correction used"
 have "$WORK/c3.err" "mt verify: OK"        "a scrap plate does not kill a recoverable set"
 have "$WORK/c3.err" "UNREADABLE STRING"    "the unreadable plate is named"
 have "$WORK/c3.err" "cannot tell you which chunk that string was" "...and mt states the limit of what it knows"

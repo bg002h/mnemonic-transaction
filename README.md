@@ -23,9 +23,21 @@ hard interface boundary, not a formatting preference — `mt decode` is meant to
 be piped, and the moment a warning shares that stream a downstream consumer has
 to parse prose out of its own input.
 If stdout cannot be written (a full disk), mt prints
-`mt: cannot write the output: <error>` and exits 1; a reader that closes the pipe
-early only stops the output. mt refuses to write its output into one of its own
-input files.
+`mt: cannot write the output: <error>` and adds 32 to its exit status; a reader
+that closes the pipe early only stops the output. mt refuses to write its output
+into one of its own input files.
+
+**Exit status** follows the constellation's exit-code table: 0 = done, every
+check passed; 64 = bad command line, nothing ran; 101 = internal error.
+Otherwise the sum (1 to 63) of: 1 a check said no (`verify --transaction` names
+another transaction, a node proves an input spent or disagrees with a value);
+2 an input is invalid; 8 refused (bearer material on the command line, a
+world-readable stdout, an output that is one of the inputs); 16 a correction was
+applied (the output is the same, and a plate is damaged); 32 a file or helper
+failed (an input that cannot be read, an output that cannot be written, a
+`--bitcoin-cli` you named that runs and does not answer; pointing it at nothing
+is the offline path, and stays 0). A script that accepts a corrected plate tests
+`[ $(( rc & ~16 )) -eq 0 ]`.
 
 Input comes from a **file or stdin, never an argument**: an argument lands in
 shell history and in `ps` for every user on the machine, and this material is
