@@ -384,7 +384,7 @@
   string stays 0. Its notice is conditional ("Do not discard the plate on this
   message alone ... if it is one of THESE, re-cut it"): mt cannot tell which
   chunk the string was or whether it belongs to the set, so it does not tell
-  the operator to re-engrave it. Flagged for Brian in case he reads the ruling
-  to cover it.
+  the operator to re-engrave it. Brian confirmed this on 2026-11-26 ("Keep 0
+  (conditional advice)"); Journey C's `drawer-scrap` step pins the 0.
 - **Status:** N3 open, needs a ruling from Brian; N5 resolved (exit-code spec
   rev 6 items 9, 20).
