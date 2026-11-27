@@ -11,9 +11,8 @@ use assert_cmd::Command;
 use std::io::Write;
 
 mod common;
+use common::exit::INVALID;
 use common::hex_to_bytes;
-
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 /// The texts this FIX adds (PROPOSED, architect confirms). A wording change
 /// updates these constants and nothing else.
@@ -29,8 +28,13 @@ fn warned(verdict: &str) -> String {
     format!("WARNING: {verdict}{SUFFIX}")
 }
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn base() -> serde_json::Value {
@@ -79,7 +83,12 @@ struct Run {
 
 fn run(args: &[&str], input: &str) -> Run {
     let f = file_with(input);
-    let o = mt().args(args).arg("--in").arg(f.path()).output().unwrap();
+    let mut c = mt();
+    if !args.contains(&"--bitcoin-cli") {
+        // Offline: no helper named, and none on the child's PATH.
+        c.env("PATH", "/nonexistent");
+    }
+    let o = c.args(args).arg("--in").arg(f.path()).output().unwrap();
     Run {
         code: o.status.code(),
         out: String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -88,7 +97,7 @@ fn run(args: &[&str], input: &str) -> Run {
 }
 
 fn encode_offline(input: &str, extra: &[&str]) -> Run {
-    let mut a = vec!["encode", "--bitcoin-cli", OFFLINE];
+    let mut a = vec!["encode"];
     a.extend_from_slice(extra);
     run(&a, input)
 }
@@ -97,9 +106,14 @@ fn encode_offline_with(input: &str, cli: &str) -> Run {
     run(&["encode", "--bitcoin-cli", cli], input)
 }
 
-fn assert_refused_with(r: &Run, line: &str) {
+fn assert_refused_with(r: &Run, class: i32, line: &str) {
     assert_ne!(r.code, Some(101), "mt panicked: {}", r.err);
-    assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(class),
+        "encode did not refuse; stderr:\n{}",
+        r.err
+    );
     assert!(
         r.err.lines().any(|l| l == line),
         "missing refusal line {line:?}; stderr:\n{}",
@@ -137,7 +151,7 @@ const MAX_MONEY: u64 = 2_100_000_000_000_000;
 fn bh1119_mt_i16_encode_refuses_zero_outputs() {
     let hex = mutated_raw_hex(|tx| tx.output.clear());
     let r = encode_offline(&hex, &[]);
-    assert_refused_with(&r, &refused(ZERO_OUT, "§8.2b"));
+    assert_refused_with(&r, INVALID, &refused(ZERO_OUT, "§8.2b"));
 }
 
 #[test]
@@ -146,6 +160,7 @@ fn bh1119_mt_i16_encode_refuses_output_above_money_range() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "output 0 pays 2100000000000001 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -163,6 +178,7 @@ fn bh1119_mt_i16_encode_refuses_output_total_above_money_range() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "outputs 0 to 1 total 2200000000000000 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -180,6 +196,7 @@ fn bh1119_mt_i16_encode_output_sum_overflow_refuses_not_panics() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "output 0 pays 9223372036854775808 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -198,6 +215,7 @@ fn bh1119_mt_i16_encode_output_range_checked_before_duplicate_inputs() {
     let r = encode_offline(&hex, &[]);
     assert_refused_with(
         &r,
+        INVALID,
         &refused(
             "output 0 pays 2100000000000001 sat, more than 21,000,000 BTC",
             "§8.2b",
@@ -218,7 +236,7 @@ fn bh1119_mt_i16_encode_output_at_money_range_is_accepted() {
 // ── I16, inspect warns ──────────────────────────────────────────────────────
 
 fn inspect_offline(input: &str, extra: &[&str]) -> Run {
-    let mut a = vec!["inspect", "--bitcoin-cli", OFFLINE];
+    let mut a = vec!["inspect"];
     a.extend_from_slice(extra);
     run(&a, input)
 }
@@ -335,7 +353,7 @@ fn bh1119_mt_i16_decode_output_sum_overflow_does_not_panic() {
     let bytes = bitcoin::consensus::serialize(&tx);
     let strings =
         mt_codec::string_layer::pipeline::encode(&bytes, &tx.compute_txid().to_string()).unwrap();
-    let r = run(&["decode", "--bitcoin-cli", OFFLINE], &strings.join("\n"));
+    let r = run(&["decode"], &strings.join("\n"));
     assert_ne!(r.code, Some(101), "decode panicked: {}", r.err);
     assert_eq!(r.code, Some(0), "stderr:\n{}", r.err);
     assert_eq!(r.out.trim(), to_hex(&bytes));
@@ -436,19 +454,19 @@ fn i17_verdict(n: usize, vout: u32) -> String {
 #[test]
 fn bh1119_mt_i17_encode_refuses_missing_vout_with_input_value() {
     let r = encode_offline(&legacy_psbt(&[99], None, false), &["--input-value", "0:10"]);
-    assert_refused_with(&r, &refused(&i17_verdict(0, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(0, 99), "§8.2d"));
 }
 
 #[test]
 fn bh1119_mt_i17_encode_refuses_missing_vout_with_witness_utxo() {
     let r = encode_offline(&legacy_psbt(&[99], None, true), &[]);
-    assert_refused_with(&r, &refused(&i17_verdict(0, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(0, 99), "§8.2d"));
 }
 
 #[test]
 fn bh1119_mt_i17_encode_refuses_missing_vout_without_any_value() {
     let r = encode_offline(&legacy_psbt(&[99], None, false), &[]);
-    assert_refused_with(&r, &refused(&i17_verdict(0, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(0, 99), "§8.2d"));
 }
 
 #[test]
@@ -458,7 +476,7 @@ fn bh1119_mt_i17_encode_names_the_first_offending_input() {
         &legacy_psbt(&[real_vout, 99], None, false),
         &["--input-value", "1:10"],
     );
-    assert_refused_with(&r, &refused(&i17_verdict(1, 99), "§8.2d"));
+    assert_refused_with(&r, INVALID, &refused(&i17_verdict(1, 99), "§8.2d"));
 }
 
 /// Guard: a record whose hash does not match keeps the existing refusal, which
@@ -472,7 +490,7 @@ fn bh1119_mt_i17_hash_mismatch_still_refused_first() {
         &legacy_psbt(&[99], Some(other), false),
         &["--input-value", "0:10"],
     );
-    assert_eq!(r.code, Some(1), "stderr:\n{}", r.err);
+    assert_eq!(r.code, Some(INVALID), "stderr:\n{}", r.err);
     let (prev, _) = legacy_parent();
     let want = refused(
         &format!(

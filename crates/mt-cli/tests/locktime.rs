@@ -10,11 +10,14 @@ use assert_cmd::Command;
 use bitcoin::consensus::{deserialize, serialize};
 use std::io::Write;
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
-
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn base_tx() -> bitcoin::Transaction {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p5_base.json");
@@ -44,7 +47,8 @@ fn locktime_row(tx: &bitcoin::Transaction) -> String {
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -171,7 +175,8 @@ fn a_lock_below_the_reference_height_warns() {
     f.write_all(hex.as_bytes()).unwrap();
     f.flush().unwrap();
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();

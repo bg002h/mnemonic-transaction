@@ -9,8 +9,16 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+mod common;
+use common::exit::INVALID;
+
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn corpus() -> serde_json::Value {
@@ -276,7 +284,7 @@ fn refuses_a_hex_encoded_psbt_by_name() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.starts_with("mt encode: REFUSED — §8.2e,"), "got: {err}");
     assert!(
@@ -295,7 +303,7 @@ fn unrecognised_input_shows_the_bytes() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("REFUSED — §8.2e"), "got: {err}");
     assert!(
@@ -304,21 +312,17 @@ fn unrecognised_input_shows_the_bytes() {
     );
 }
 
-/// `--bitcoin-cli /nonexistent` is the offline mechanism every gate and journey
-/// needing an air-gapped run uses. It must not crash — the alternative an
-/// implementer reaches for is editing `PATH`, which is process-global and would
-/// silently change neighbouring tests in the same run.
+/// No `bitcoin-cli` at all (none named, none on `PATH`) is the offline path
+/// every gate and journey needing an air-gapped run uses. It must not crash,
+/// and it is a warning, exit 0. `PATH` is set on the child only, so no
+/// neighbouring test sees it.
 #[test]
 fn a_missing_bitcoin_cli_does_not_crash() {
     let v = &corpus()["vectors"][0];
     let f = tmp_with(v["raw_hex"].as_str().unwrap().as_bytes());
     let out = mt()
-        .args([
-            "encode",
-            "--bitcoin-cli",
-            "/nonexistent/bitcoin-cli",
-            "--in",
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -357,12 +361,14 @@ fn a_bare_dash_means_stdin_and_changes_nothing() {
     let raw = v["raw_hex"].as_str().unwrap();
 
     let plain = mt()
-        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(raw)
         .output()
         .unwrap();
     let dashed = mt()
-        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "-"])
         .write_stdin(raw)
         .output()
         .unwrap();
@@ -387,13 +393,8 @@ fn a_bare_dash_composes_with_qr() {
     let v = &corpus()["vectors"][0];
     let raw = v["raw_hex"].as_str().unwrap();
     let a = mt()
-        .args([
-            "encode",
-            "--qr",
-            "--bitcoin-cli",
-            "/nonexistent/bitcoin-cli",
-            "-",
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--qr", "-"])
         .write_stdin(raw)
         .output()
         .unwrap();
@@ -411,7 +412,8 @@ fn a_bare_dash_composes_with_qr() {
 #[test]
 fn a_dash_does_not_open_the_door_to_other_positionals() {
     let a = mt()
-        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli", "wat"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "wat"])
         .write_stdin("00")
         .output()
         .unwrap();
@@ -447,7 +449,8 @@ fn pasting_mt1_strings_back_into_encode_names_them_and_the_right_verb() {
     let pasted = strings.join("\n");
 
     let a = mt()
-        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(pasted)
         .output()
         .unwrap();
@@ -479,7 +482,8 @@ fn pasting_mt1_strings_back_into_encode_names_them_and_the_right_verb() {
 #[test]
 fn genuinely_unrecognisable_input_still_gets_the_generic_refusal() {
     let a = mt()
-        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin("zzzz not anything at all zzzz")
         .output()
         .unwrap();
@@ -500,7 +504,8 @@ fn pasting_a_tx_record_back_into_encode_is_recognised_too() {
     let v = &corpus()["vectors"][0];
     let raw = v["raw_hex"].as_str().unwrap();
     let a = mt()
-        .args(["encode", "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(format!("tx:{raw}"))
         .output()
         .unwrap();
@@ -535,11 +540,6 @@ fn pasting_a_tx_record_back_into_encode_is_recognised_too() {
 // `--out` is on `encode` ALONE. §6b's reasoning is entirely about the refusal
 // mt prints, and that refusal fires from encode; adding the channel to `decode`
 // would half-close a hazard while reading as a whole fix.
-
-/// The offline mechanism, as everywhere else: never `PATH`, which is
-/// process-global and would silently change neighbouring tests.
-#[cfg(unix)]
-const OUT_OFFLINE: &[&str] = &["--bitcoin-cli", "/nonexistent/bitcoin-cli"];
 
 #[cfg(unix)]
 fn mode_of(p: &std::path::Path) -> u32 {
@@ -577,7 +577,7 @@ fn out_tightens_a_pre_existing_world_readable_target_to_0600() {
 
     let out = mt()
         .args(["encode"])
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .arg("--out")
@@ -636,7 +636,7 @@ fn out_suppresses_the_world_readable_stdout_gate() {
     // the MODE OF FD 1, so stdout has to be a real 0644 file.
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
         .arg("encode")
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .arg("--out")
@@ -678,7 +678,7 @@ fn out_writes_the_same_bytes_the_pipeline_gets() {
 
     let piped = mt()
         .args(["encode"])
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .output()
@@ -687,7 +687,7 @@ fn out_writes_the_same_bytes_the_pipeline_gets() {
 
     let out = mt()
         .args(["encode"])
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .arg("--out")
@@ -714,7 +714,7 @@ fn out_carries_the_qr_record_too() {
 
     let out = mt()
         .args(["encode", "--qr"])
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .arg("--out")
@@ -747,7 +747,7 @@ fn out_names_the_file_it_wrote_and_the_mode_it_made_it() {
 
     let out = mt()
         .args(["encode"])
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .arg("--out")
@@ -794,7 +794,7 @@ fn the_world_readable_remedy_offers_out_before_the_shells_workarounds() {
 
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
         .arg("encode")
-        .args(OUT_OFFLINE)
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .stdout(std::process::Stdio::from(handle))

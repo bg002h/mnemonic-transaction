@@ -18,6 +18,7 @@
 #![allow(clippy::result_large_err)]
 
 mod blocks;
+mod exit;
 mod input;
 mod locktime;
 mod node;
@@ -27,7 +28,8 @@ mod refusal;
 mod report;
 mod validate;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use exit::Exit;
 use std::io::{Read, Write};
 
 use mt_codec::string_layer::pipeline;
@@ -35,7 +37,7 @@ use refusal::Refusal;
 
 /// Engravable codex32 backups of signed Bitcoin transactions.
 #[derive(Parser)]
-#[command(name = "mt", version, about, long_about = None)]
+#[command(name = "mt", version, about, long_about = None, after_help = exit::LEGEND)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -48,14 +50,33 @@ enum Command {
     /// Default: `mt1` strings — to engrave by hand, or to pipe into
     /// `me sysw pack` as bare records for text plates.
     /// `--qr`: a `tx:` record carrying the transaction's bytes, for QR plates.
+    #[command(after_help = HELP_BITS_ENCODE)]
     Encode(EncodeArgs),
     /// Read `mt1` strings back and emit BROADCASTABLE HEX on stdout.
+    #[command(after_help = HELP_BITS_DECODE)]
     Decode(ReadArgs),
     /// Check a set of `mt1` strings — structurally, and never asking a node.
+    #[command(after_help = HELP_BITS_VERIFY)]
     Verify(ReadArgs),
     /// Report what is IN a set. Queries a local node AUTOMATICALLY if one is reachable.
+    #[command(after_help = HELP_BITS_INSPECT)]
     Inspect(ReadArgs),
 }
+
+// R11: each verb's help states only the bits that verb can set. The root help
+// carries the whole legend.
+const HELP_BITS_ENCODE: &str = "Exit status: 0, 64 or 101, or the sum of: 1 the node proves \
+an input spent or contradicts a value; 2 the input is invalid; 8 refused; 32 a file, device or \
+helper failed.";
+const HELP_BITS_DECODE: &str = "Exit status: 0, 64 or 101, or the sum of: 2 the input is \
+invalid; 8 refused; 16 a correction was applied or a damaged copy needs re-cutting; 32 a file, \
+device or helper failed.";
+const HELP_BITS_VERIFY: &str = "Exit status: 0, 64 or 101, or the sum of: 1 --transaction \
+names another transaction; 2 the input is invalid; 8 refused; 16 a correction was applied or a \
+damaged copy needs re-cutting; 32 a file or device failed.";
+const HELP_BITS_INSPECT: &str = "Exit status: 0, 64 or 101, or the sum of: 2 the input is \
+invalid; 8 refused; 16 a correction was applied or a damaged copy needs re-cutting; 32 a file, \
+device or helper failed.";
 
 /// Arguments shared by the two reading verbs.
 #[derive(clap::Args)]
@@ -123,12 +144,24 @@ struct ReadArgs {
     #[arg(long)]
     json: bool,
 
-    /// Path to `bitcoin-cli`. Pointing this at something absent forces the
-    /// OFFLINE path — the mechanism every air-gapped gate and journey uses,
-    /// because the alternative an implementer reaches for is editing `PATH`,
-    /// which is process-global and would silently change neighbouring tests.
+    /// Path to `bitcoin-cli`, for a binary not on `PATH` (`decode` and
+    /// `inspect`; `verify` never asks a node and refuses it, 64).
+    ///
+    /// Naming it, even as `--bitcoin-cli bitcoin-cli`, makes the node
+    /// required: a path you name that is missing, fails or does not answer
+    /// adds 32 to the exit status (the report still prints). Without this
+    /// flag a `bitcoin-cli` on `PATH` is used if it answers, and is a warning
+    /// if not. To run offline, pass `--offline`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
+
+    /// Never ask a node: no `bitcoin-cli` is run, not even one on `PATH`
+    /// (`decode` and `inspect`; `verify` never asks a node and refuses it, 64).
+    ///
+    /// The run says the chain was not checked and exits as it would with no
+    /// node (0 when nothing else failed). Refused with `--bitcoin-cli` (64).
+    #[arg(long)]
+    offline: bool,
 }
 
 #[derive(clap::Args)]
@@ -287,11 +320,20 @@ struct EncodeArgs {
 
     /// Path to `bitcoin-cli`, for a binary not on `PATH`.
     ///
-    /// Pointing this at something that does not exist is how a run is forced
-    /// **offline** — the mechanism every gate and journey that must run
-    /// air-gapped uses.
+    /// Naming it, even as `--bitcoin-cli bitcoin-cli`, makes the node
+    /// required: a path you name that is missing, fails or does not answer
+    /// adds 32 to the exit status (the strings still print). Without this
+    /// flag a `bitcoin-cli` on `PATH` is used if it answers, and is a warning
+    /// if not. To run offline, pass `--offline`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
+
+    /// Never ask a node: no `bitcoin-cli` is run, not even one on `PATH`.
+    ///
+    /// The run says the chain was not checked and exits as it would with no
+    /// node (0 when nothing else failed). Refused with `--bitcoin-cli` (64).
+    #[arg(long)]
+    offline: bool,
 }
 
 fn main() -> std::process::ExitCode {
@@ -301,7 +343,7 @@ fn main() -> std::process::ExitCode {
         Ok(argv) => argv,
         Err(refusal) => {
             out::stderr_write(format_args!("{refusal}"));
-            return std::process::ExitCode::from(64);
+            return std::process::ExitCode::from(refusal.class.to_exit_code());
         }
     };
 
@@ -339,14 +381,19 @@ fn main() -> std::process::ExitCode {
     // and anything it did not admit still is.
     if let Err(refusal) = validate::command_line_guard(&intake.argv) {
         out::stderr_write(format_args!("{refusal}"));
-        return std::process::ExitCode::FAILURE;
+        return std::process::ExitCode::from(out::exit_code(refusal.class));
     }
 
-    let cli = match Cli::try_parse_from(&intake.argv) {
-        Ok(cli) => cli,
+    let parsed = Cli::command()
+        .try_get_matches_from(&intake.argv)
+        .and_then(|m| Cli::from_arg_matches(&m).map(|cli| (cli, m)));
+    let (cli, matches) = match parsed {
+        Ok(p) => p,
         Err(e) => {
             // S1: `--help` and `--version` go to stdout under the same write
-            // rule as the verbs; a usage error keeps clap's stderr text, exit 2.
+            // rule as the verbs; a usage error keeps clap's stderr text, and
+            // exits 64 (exit-code spec decision 2: mt's clap arguments are all
+            // settings or paths, none an input value).
             if e.use_stderr() || !out::read_only() {
                 if let Err(w) = e.print() {
                     if !e.use_stderr() {
@@ -354,10 +401,29 @@ fn main() -> std::process::ExitCode {
                     }
                 }
             }
-            let code = u8::try_from(e.exit_code()).unwrap_or(2);
-            return std::process::ExitCode::from(out::exit_code(code));
+            let outcome = if e.use_stderr() {
+                Exit::USAGE
+            } else {
+                Exit::OK
+            };
+            return std::process::ExitCode::from(out::exit_code(outcome));
         }
     };
+    // R9: a `--bitcoin-cli` the operator NAMED is a helper they asked for, so
+    // its failure, absence included, is IO (32). The default is not: its
+    // absence is the offline path.
+    if let Some((_, m)) = matches.subcommand() {
+        if m.value_source("bitcoin_cli") == Some(clap::parser::ValueSource::CommandLine) {
+            if let Some(p) = m.get_one::<std::path::PathBuf>("bitcoin_cli") {
+                node::helper_named(p);
+            }
+        }
+        // `--offline` (§2b item 1): no `bitcoin-cli` runs. Each verb refuses it
+        // with `--bitcoin-cli`, and `verify` refuses it outright, before input.
+        if m.get_flag("offline") {
+            node::go_offline();
+        }
+    }
     match cli.command {
         Command::Encode(args) => run(encode(args, intake.material)),
         Command::Decode(args) => run(decode(args, intake.material)),
@@ -367,13 +433,14 @@ fn main() -> std::process::ExitCode {
 }
 
 /// Exit 0 means every check passed; non-zero otherwise. `mt decode`'s
-/// documented pipeline depends on it.
+/// documented pipeline depends on it. A refusal exits with its class, plus
+/// every bit the run reported before it (exit-code spec R1).
 fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
     match r {
-        Ok(()) => std::process::ExitCode::from(out::exit_code(0)),
+        Ok(()) => std::process::ExitCode::from(out::exit_code(Exit::OK)),
         Err(refusal) => {
             out::stderr_write(format_args!("{refusal}"));
-            std::process::ExitCode::from(out::exit_code(1))
+            std::process::ExitCode::from(out::exit_code(refusal.class))
         }
     }
 }
@@ -383,6 +450,7 @@ fn run(r: Result<(), Refusal>) -> std::process::ExitCode {
 fn read_encode_file(path: &std::path::Path) -> Result<Vec<u8>, Refusal> {
     std::fs::read(path).map_err(|e| {
         Refusal::new(
+            Exit::IO,
             "encode",
             "§8.2e",
             format!("cannot read {}", path.display()),
@@ -408,7 +476,13 @@ fn input_endpoint(
 fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
+    offline_with_bitcoin_cli_guard(args.offline, node::is_named(), "encode")?;
+    // A setting, judged from the command line alone, so before any input is
+    // read (exit-code spec R2).
+    separator_guard(&args.separator)?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "encode")?;
     // §8.2i: the output is never one of the inputs (Q1c: before any read).
+    // After every command-line check: it stats files (R2).
     validate::same_file_guard(
         "encode",
         match args.out.as_deref() {
@@ -417,7 +491,6 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         },
         input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
     )?;
-    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "encode")?;
 
     let raw = match (&args.r#in, argv_material) {
         // Two sources offered for ONE channel. `--in` wins -- it is the private
@@ -445,6 +518,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
             let mut buf = Vec::new();
             std::io::stdin().read_to_end(&mut buf).map_err(|e| {
                 Refusal::new(
+                    Exit::IO,
                     "encode",
                     "§8.2e",
                     "cannot read stdin",
@@ -467,8 +541,6 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         let _ = writeln!(stderr, "{w}");
     }
 
-    separator_guard(&args.separator)?;
-
     txid_paste_guard(&raw, "encode")?;
     let sniffed = input::sniff(&raw)?;
     let asserted = parse_input_values(&args.input_value)?;
@@ -479,6 +551,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
         input::Input::Psbt(bytes) => {
             let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                 Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2e",
                     "input carries the PSBT magic but does not parse",
@@ -662,6 +735,7 @@ fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusa
     let txid = tx.compute_txid().to_string();
     let strings = pipeline::encode(&tx_bytes, &txid).map_err(|e| {
         Refusal::new(
+            Exit::INTERNAL,
             "encode",
             "§3b",
             "transaction cannot be chunked",
@@ -1084,6 +1158,7 @@ fn txid_partial(bytes: &[u8], verb: &str) -> Result<(String, usize), Refusal> {
     let (tx, used) = bitcoin::consensus::encode::deserialize_partial::<bitcoin::Transaction>(bytes)
         .map_err(|e| {
             Refusal::new(
+                Exit::INVALID,
                 verb,
                 "§8.2e",
                 "input is not a decodable Bitcoin transaction",
@@ -1258,6 +1333,7 @@ fn read_input_bytes(
     let read_file = |p: &std::path::PathBuf| -> Result<Vec<u8>, Refusal> {
         std::fs::read(p).map_err(|e| {
             Refusal::new(
+                Exit::IO,
                 verb,
                 "§1.1e",
                 format!("cannot read {}", p.display()),
@@ -1282,9 +1358,9 @@ fn read_input_bytes(
         (None, Some(material)) => material,
         (None, None) => {
             let mut buf = Vec::new();
-            std::io::stdin()
-                .read_to_end(&mut buf)
-                .map_err(|e| Refusal::new(verb, "§1.1e", "cannot read stdin", format!("{e}")))?;
+            std::io::stdin().read_to_end(&mut buf).map_err(|e| {
+                Refusal::new(Exit::IO, verb, "§1.1e", "cannot read stdin", format!("{e}"))
+            })?;
             buf
         }
     };
@@ -1300,10 +1376,51 @@ fn read_input_bytes(
     Ok(bytes)
 }
 
+/// Exit-code spec R6 (decision 5): a verb that USED a BCH-corrected chunk
+/// says so in its code (REPAIRED, 16), not only on stderr: the plate is
+/// damaged. The set's content id (`content_id_guard`) re-derives from the
+/// corrected transaction's txid, so a successful verb has confirmed the
+/// transaction's identity (its inputs, outputs and locktime). The id does not
+/// cover witness data, so a miscorrected signature is not caught by it; it
+/// could only fail to broadcast. A refusal after this point
+/// keeps the bit (R1), because the margin report still names the corrections.
+/// REPAIRED (16) when a chunk mt used was corrected (decision 5), and also
+/// when mt discarded a damaged copy of a chunk it holds clean: `set_notices`
+/// tells the operator to re-cut that plate, and 16 is set whenever mt says to
+/// re-engrave one (ruling 2026-11-26, exit-code spec §2b item 2). A clean
+/// duplicate (0 corrections) is §1.8's advice followed and sets nothing.
+fn note_corrections(set: &mt_codec::string_layer::pipeline::DecodedSet) {
+    if set.chunks.iter().any(|c| c.corrected > 0)
+        || set.duplicates.iter().any(|d| d.discarded_corrections > 0)
+    {
+        out::note(Exit::REPAIRED);
+    }
+}
+
+/// A duplicate's `--json` warning (§10.10b). A damaged discarded copy is the
+/// one plate mt says to re-cut, so its entry says so: it is why the run is 16.
+fn duplicate_warning(d: &mt_codec::string_layer::pipeline::Duplicate) -> String {
+    let mut w = format!(
+        "chunk {} was present twice; kept the copy needing {} corrections",
+        d.index + 1,
+        d.kept_corrections
+    );
+    if d.discarded_corrections > 0 {
+        use core::fmt::Write as _;
+        let _ = write!(
+            w,
+            "; the discarded copy needed {}: re-cut it",
+            d.discarded_corrections
+        );
+    }
+    w
+}
+
 /// The UTF-8 step of `read_input`.
 fn input_text(bytes: Vec<u8>, verb: &str) -> Result<String, Refusal> {
     String::from_utf8(bytes).map_err(|_| {
         Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1e",
             "input is not text",
@@ -1608,17 +1725,20 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     json_quiet_guard(args.json, args.quiet, "decode")?;
+    offline_with_bitcoin_cli_guard(args.offline, node::is_named(), "decode")?;
+    transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
+    // §8.2i, after every command-line check: it stats files (R2).
     validate::same_file_guard(
         "decode",
         mnemonic_io_lib::write::Endpoint::Stdout,
         input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
     )?;
-    transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
-    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
     let text = read_input(&args.r#in, argv_material, "decode")?;
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
+    note_corrections(&set);
 
     // §1.1's LAST CHECK, before anything reaches stdout.
     content_id_guard(&set.bytes, &set.chunks, "decode")?;
@@ -1662,10 +1782,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         if args.json {
             let mut warnings: Vec<String> = Vec::new();
             if node.is_none() {
-                warnings.push(
-                    "no bitcoind reachable: nothing here is confirmed against the chain"
-                        .to_string(),
-                );
+                warnings.push(node::no_node_json_warning());
             }
             for (pos, from, to) in printed_notes(&read) {
                 warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
@@ -1677,11 +1794,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                 ));
             }
             for d in &set.duplicates {
-                warnings.push(format!(
-                    "chunk {} was present twice; kept the copy needing {} corrections",
-                    d.index + 1,
-                    d.kept_corrections
-                ));
+                warnings.push(duplicate_warning(d));
             }
             warnings.extend(correction_warnings(&set.chunks));
             // F-275 UNDER `--json`: the warning becomes DATA, inside the one
@@ -1776,11 +1889,14 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
 fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "verify")?;
     json_unsupported_guard(args.json, "verify")?;
+    bitcoin_cli_unsupported_guard(node::is_named(), "verify")?;
+    offline_unsupported_guard(args.offline, "verify")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "verify")?;
     let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
+    note_corrections(&set);
 
     // ...AND the reassembled transaction re-derives that id. This is the check
     // the OK line has always claimed; until it existed, the claim was a
@@ -1798,6 +1914,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         if let Some(path) = &args.transaction {
             let supplied = std::fs::read(path).map_err(|e| {
                 Refusal::new(
+                    Exit::IO,
                     "verify",
                     "§1.1",
                     format!("cannot read {}", path.display()),
@@ -1821,6 +1938,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                 input::Input::Psbt(bytes) => {
                     let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                         Refusal::new(
+                            Exit::INVALID,
                             "verify",
                             "§1.1",
                             "the supplied PSBT does not parse",
@@ -1834,6 +1952,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                     // it would report a match for something unbroadcastable.
                     validate::finalized_guard_psbt(&psbt).map_err(|r| {
                         Refusal::new(
+                            Exit::INVALID,
                             "verify",
                             "§1.1",
                             "the supplied PSBT is not finalized",
@@ -1855,6 +1974,7 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
             let got = txid_display(&supplied, "verify", Subject::Input)?;
             if want != got {
                 return Err(Refusal::new(
+                    Exit::NO,
                     "verify",
                     "§1.1",
                     "the supplied transaction is not the one on these strings",
@@ -1943,6 +2063,7 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
         input::Input::Psbt(bytes) => {
             let (psbt, used) = psbt_exact(&bytes).map_err(|e| {
                 Refusal::new(
+                    Exit::INVALID,
                     "inspect",
                     "§8.2e",
                     "input carries the PSBT magic but does not parse",
@@ -1997,8 +2118,7 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
         warnings.push(j.clone());
     }
     if node.is_none() {
-        warnings
-            .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
+        warnings.push(node::no_node_json_warning());
     }
     // THE LIMIT, STATED. `inspect` over scanned bytes sees the bytes and
     // nothing else: it cannot know they came off the plate they were meant to,
@@ -2066,13 +2186,15 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "inspect")?;
+    offline_with_bitcoin_cli_guard(args.offline, node::is_named(), "inspect")?;
+    transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
+    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
+    // §8.2i, after every command-line check: it stats files (R2).
     validate::same_file_guard(
         "inspect",
         mnemonic_io_lib::write::Endpoint::Stdout,
         input_endpoint(args.r#in.as_deref(), argv_material.is_some()),
     )?;
-    transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
-    in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
     // `inspect` reads BYTES and routes on what they ARE (I5, I6), in order:
     // empty input stays on the strings path ("no strings found in the input"
     // beats anything the sniffer would say); whatever §8.2e's sniff recognises
@@ -2102,6 +2224,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
     let read = read_strings::read(&text, "inspect")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
+    note_corrections(&set);
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
 
@@ -2124,8 +2247,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         warnings.push(w.headline.clone());
     }
     if node.is_none() {
-        warnings
-            .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
+        warnings.push(node::no_node_json_warning());
     }
     for (pos, from, to) in printed_notes(&read) {
         warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
@@ -2137,11 +2259,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         ));
     }
     for d in &set.duplicates {
-        warnings.push(format!(
-            "chunk {} was present twice; kept the copy needing {} corrections",
-            d.index + 1,
-            d.kept_corrections
-        ));
+        warnings.push(duplicate_warning(d));
     }
     warnings.extend(correction_warnings(&set.chunks));
 
@@ -2302,6 +2420,7 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         };
 
         return Refusal::new(
+            Exit::INVALID,
             verb,
             "§1.1",
             format!(
@@ -2323,6 +2442,7 @@ fn explain_failure(strings: &[String], verb: &str, e: &mt_codec::Error) -> Refus
         );
     }
     Refusal::new(
+        Exit::INVALID,
         verb,
         "§1.1",
         "the set does not verify",
@@ -2358,8 +2478,15 @@ fn content_id_guard(
 ) -> Result<(), Refusal> {
     let expected = chunks[0].header.chunk_set_id;
     let (txid, used) = txid_partial(bytes, verb)?;
-    let derived = pipeline::content_id_from_txid_display(&txid)
-        .map_err(|e| Refusal::new(verb, "§1.1", "cannot derive the content id", format!("{e}")))?;
+    let derived = pipeline::content_id_from_txid_display(&txid).map_err(|e| {
+        Refusal::new(
+            Exit::INTERNAL,
+            verb,
+            "§1.1",
+            "cannot derive the content id",
+            format!("{e}"),
+        )
+    })?;
     if derived == expected {
         // Content id first (a mismatch is the louder fault); bytes left after
         // the transaction are refused only once the id has matched (bh-mt-I1).
@@ -2431,6 +2558,7 @@ fn content_id_guard(
     };
 
     let refusal = Refusal::new(
+        Exit::INVALID,
         verb,
         "§1.1",
         format!(
@@ -2464,6 +2592,7 @@ fn txid_paste_guard(raw: &[u8], verb: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§10.10",
         "this is a transaction ID (64 hex characters), not a transaction",
@@ -2497,6 +2626,7 @@ fn json_quiet_guard(json: bool, quiet: bool, verb: &str) -> Result<(), Refusal> 
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         "--json and --quiet contradict each other",
@@ -2520,6 +2650,7 @@ fn transaction_unsupported_guard(
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         format!("--transaction has no meaning for `{verb}`"),
@@ -2537,6 +2668,76 @@ fn transaction_unsupported_guard(
     ))
 }
 
+/// §10.10: `verify` never asks a node (§1.1), so a `--bitcoin-cli` named on
+/// its command line would be accepted and never run: a caller would take the
+/// set as checked against the chain when nothing asked. Usage (64), like
+/// `--transaction` on `decode` (review 2026-11-26 M2).
+fn bitcoin_cli_unsupported_guard(named: bool, verb: &str) -> Result<(), Refusal> {
+    if !named {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        Exit::USAGE,
+        verb,
+        "§10.10",
+        format!("--bitcoin-cli has no meaning for `{verb}`"),
+        format!(
+            "`{verb}` checks the strings themselves and never asks a node, so it would \
+             accept the flag and never run the helper: a caller would take the set as \
+             checked against the chain when nothing asked it.\n\
+             \n\
+             mt refuses rather than accepting the flag and ignoring it."
+        ),
+    )
+    .with_remedy(
+        "Run `mt inspect --bitcoin-cli <path>` to ask the node about the set, or drop \
+         `--bitcoin-cli`.",
+    ))
+}
+
+/// §10.10: `--offline` says never ask a node and a named `--bitcoin-cli`
+/// says the node is required (R9). Both on one command line contradict each
+/// other, judged without reading anything: usage (64).
+fn offline_with_bitcoin_cli_guard(offline: bool, named: bool, verb: &str) -> Result<(), Refusal> {
+    if !(offline && named) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        Exit::USAGE,
+        verb,
+        "§10.10",
+        "--offline and --bitcoin-cli contradict each other",
+        "`--offline` tells mt never to ask a node, and naming `--bitcoin-cli` tells \
+         it the node is required. mt cannot do both, and will not pick one.",
+    )
+    .with_remedy(
+        "Drop `--bitcoin-cli` to run without a node, or drop `--offline` to ask the \
+         node you named.",
+    ))
+}
+
+/// §10.10: `verify` never asks a node (§1.1), so `--offline` there is a flag
+/// accepted and ignored. Refused as usage (64), the same as `verify
+/// --bitcoin-cli`.
+fn offline_unsupported_guard(offline: bool, verb: &str) -> Result<(), Refusal> {
+    if !offline {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        Exit::USAGE,
+        verb,
+        "§10.10",
+        format!("--offline has no meaning for `{verb}`"),
+        format!(
+            "`{verb}` checks the strings themselves and never asks a node, so it is \
+             always offline and the flag would change nothing.\n\
+             \n\
+             mt refuses rather than accepting the flag and ignoring it."
+        ),
+    )
+    .with_remedy(format!("Drop `--offline`: `mt {verb}` never asks a node.")))
+}
+
 /// §10.10, T13 (I12): `--in <path>` together with the positional `-` names two
 /// inputs; the file used to win and stdin was silently ignored.
 fn in_with_dash_guard(has_in: bool, dash: bool, verb: &str) -> Result<(), Refusal> {
@@ -2544,6 +2745,7 @@ fn in_with_dash_guard(has_in: bool, dash: bool, verb: &str) -> Result<(), Refusa
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         "--in and `-` name two different inputs",
@@ -2563,6 +2765,7 @@ fn quiet_unsupported_guard(quiet: bool, verb: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         format!("--quiet has no meaning for `{verb}`"),
@@ -2587,6 +2790,7 @@ fn json_unsupported_guard(json: bool, verb: &str) -> Result<(), Refusal> {
         return Ok(());
     }
     Err(Refusal::new(
+        Exit::USAGE,
         verb,
         "§10.10",
         format!("--json has no meaning for `{verb}`"),
@@ -2632,6 +2836,7 @@ fn set_end_guard(total: usize, used: usize, verb: &str) -> Result<(), Refusal> {
     }
     let n = total - used;
     Err(Refusal::new(
+        Exit::INVALID,
         verb,
         "§1.1",
         format!(
@@ -2665,6 +2870,7 @@ fn decode_tx(bytes: &[u8], verb: &str, subject: Subject) -> Result<bitcoin::Tran
     let (tx, used) = bitcoin::consensus::encode::deserialize_partial::<bitcoin::Transaction>(bytes)
         .map_err(|e| {
             Refusal::new(
+                Exit::INVALID,
                 verb,
                 "§8.2e",
                 "the reassembled bytes are not a Bitcoin transaction",
@@ -2703,6 +2909,7 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
         .map(|s| {
             let (i, v) = s.split_once(':').ok_or_else(|| {
                 Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2c",
                     format!("--input-value {s:?} is not <index>:<amount>"),
@@ -2713,6 +2920,7 @@ fn parse_input_values(raw: &[String]) -> Result<Vec<(u32, u64)>, Refusal> {
             })?;
             let idx: u32 = i.parse().map_err(|_| {
                 Refusal::new(
+                    Exit::INVALID,
                     "encode",
                     "§8.2c",
                     format!("--input-value index {i:?} is not a number"),
@@ -2741,6 +2949,7 @@ fn separator_guard(sep: &str) -> Result<(), Refusal> {
     // whitespace separator holding a newline gives N1.
     if sep.chars().all(char::is_whitespace) {
         return Err(Refusal::new(
+            Exit::USAGE,
             "encode",
             "§1.1e",
             format!("--separator {sep:?} contains a newline"),
@@ -2753,6 +2962,7 @@ fn separator_guard(sep: &str) -> Result<(), Refusal> {
         .with_remedy("Use a space, a tab, or omit --separator (a space is the default)."));
     }
     Err(Refusal::new(
+        Exit::USAGE,
         "encode",
         "§1.1e",
         format!("--separator {sep:?} is not whitespace"),
@@ -2777,6 +2987,7 @@ fn input_index_range_guard(asserted: &[(u32, u64)], inputs: usize) -> Result<(),
         return Ok(());
     };
     Err(Refusal::new(
+        Exit::INVALID,
         "encode",
         "§8.2c",
         format!("--input-value names input {i}, but this transaction has {inputs} input(s)"),
@@ -2802,6 +3013,7 @@ fn check_input_value_indices(asserted: &[(u32, u64)], _args: &EncodeArgs) -> Res
     for (i, _) in asserted {
         if !seen.insert(*i) {
             return Err(Refusal::new(
+                Exit::INVALID,
                 "encode",
                 "§8.2c",
                 format!("--input-value names input {i} more than once"),
@@ -2825,6 +3037,7 @@ fn fmt_btc(sats: u64) -> String {
 fn parse_btc(v: &str) -> Result<u64, Refusal> {
     let bad = |why: &str| {
         Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2c",
             format!("--input-value amount {v:?} is not a BTC amount"),

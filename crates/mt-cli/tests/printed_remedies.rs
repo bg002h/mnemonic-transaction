@@ -12,8 +12,7 @@ use assert_cmd::Command;
 use std::io::Write;
 
 mod common;
-
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+use common::exit::INVALID;
 
 /// The remedy texts this FIX sets (PROPOSED, architect confirms). A wording
 /// change updates these constants and nothing else.
@@ -25,8 +24,13 @@ const REMEDY_TXID: &str = "Fetch the transaction: `bitcoin-cli getrawtransaction
 pass that. If you have not broadcast yet, run `bitcoin-cli finalizepsbt <psbt>` instead and \
 pass the value of its `hex` field (present once it shows `\"complete\": true`).";
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn base() -> serde_json::Value {
@@ -55,7 +59,8 @@ struct Run {
 fn encode_offline(input: &str) -> Run {
     let f = file_with(input);
     let o = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -87,7 +92,12 @@ fn remedy_of(err: &str, header: &str) -> String {
 #[test]
 fn i22_unfinalized_psbt_remedy_names_hex_field() {
     let r = encode_offline(base()["unfinalized_psbt_b64"].as_str().unwrap());
-    assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(INVALID),
+        "encode did not refuse; stderr:\n{}",
+        r.err
+    );
     assert!(r.out.is_empty(), "a refused encode wrote stdout: {}", r.out);
     assert_eq!(
         remedy_of(&r.err, "mt encode: REFUSED — §8.1, "),
@@ -101,7 +111,12 @@ fn i22_unfinalized_psbt_remedy_names_hex_field() {
 fn i22_txid_remedy_names_hex_field() {
     let (own, _) = common::fixture_txids(&base());
     let r = encode_offline(&own);
-    assert_eq!(r.code, Some(1), "encode did not refuse; stderr:\n{}", r.err);
+    assert_eq!(
+        r.code,
+        Some(INVALID),
+        "encode did not refuse; stderr:\n{}",
+        r.err
+    );
     assert!(r.out.is_empty(), "a refused encode wrote stdout: {}", r.out);
     assert_eq!(
         remedy_of(&r.err, "mt encode: REFUSED — §10.10, "),
@@ -117,14 +132,15 @@ fn i22_txid_remedy_reading_verbs_point_to_inspect() {
     for verb in ["decode", "verify"] {
         let f = file_with(&own);
         let o = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--in"])
             .arg(f.path())
             .output()
             .unwrap();
         let err = String::from_utf8_lossy(&o.stderr).into_owned();
         assert_eq!(
             o.status.code(),
-            Some(1),
+            Some(INVALID),
             "{verb} did not refuse; stderr:\n{err}"
         );
         assert_eq!(

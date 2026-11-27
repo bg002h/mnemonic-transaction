@@ -32,8 +32,8 @@ toml_path = sys.argv[1]
 text = open(toml_path).read()
 entries = []
 for b in text.split("[[refusal]]")[1:]:
-    f = dict(re.findall(r'^\s*(spec|test|check)\s*=\s*"([^"]+)"', b, re.M))
-    missing = {"spec", "test", "check"} - set(f)
+    f = dict(re.findall(r'^\s*(spec|test|check|class)\s*=\s*"([^"]+)"', b, re.M))
+    missing = {"spec", "test", "check", "class"} - set(f)
     if missing:
         sys.exit(f"FAIL: an entry is missing {sorted(missing)}:\n{b.strip()[:200]}")
     entries.append(f)
@@ -218,6 +218,90 @@ for c in sorted(cited - set(REQUIRED)):
         "changed and this gate was not updated, or the reference is a typo"
     )
 
+# 5. EVERY ROW MAPS TO ITS EXIT-CODE CLASS (exit-code spec R13). The class is
+#    the row's `class`; its test must assert it BY NAME (tests/common/mod.rs
+#    `exit::<CLASS>`), in an ASSERTING position: `Some(CLASS)` (compared with
+#    the exit code), or as an argument of one of the helpers below, each of
+#    which `assert_eq!`s its class argument against the exit code. A name and
+#    not a number, so `Some(2)` beside an unrelated `2` cannot pass; comments
+#    and string literals are stripped first, so `/* INVALID */` or
+#    "REFUSED —" does not count (review 2026-11-26 M2).
+CLASSES = {"NO", "INVALID", "REFUSED", "IO", "USAGE"}
+# name -> the test files whose definition of it `assert_eq!`s the class. A
+# helper of the same name in any other file does not count (tx_validity.rs's
+# `refused` only formats a line).
+ASSERTING_HELPERS = {
+    "assert_refused": {"refusals.rs"},
+    "assert_refused_with": {"bughunt.rs", "tx_validity.rs"},
+    "assert_same_file_refusal": {"bh1119_mt_output_writes.rs"},
+    "assert_refusal": {"arg_intake.rs"},
+    "refused": {"bh1119_mt_input_parsing.rs", "bh1119_mt_inspect_routing.rs"},
+    "assert_newline_separator_refused": {"arg_intake.rs"},  # via assert_refusal
+}
+
+def strip(src):
+    """Comments and string literals out, so only code is matched."""
+    src = re.sub(r"'(?:[^'\\\n]|\\.)'", "' '", src)        # char literals ('"')
+    src = re.sub(r'(?<![A-Za-z0-9_])r(#*)"(?:.|\n)*?"\1', '""', src)  # raw strings
+    src = re.sub(r'"(?:[^"\\]|\\.)*"', '""', src, flags=re.S)
+    src = re.sub(r"/\*(?:.|\n)*?\*/", " ", src)            # block comments
+    src = re.sub(r"//[^\n]*", "", src)                     # line comments
+    return src
+
+def call_args(body, names):
+    """(name, argument text) of every call to one of `names`; the name may be a
+    macro (`assert_ne!`)."""
+    out = []
+    for m in re.finditer(r"\b(" + "|".join(re.escape(n) for n in names) + r")\s*\(", body):
+        depth, i = 1, m.end()
+        while i < len(body) and depth:
+            depth += {"(": 1, ")": -1}.get(body[i], 0)
+            i += 1
+        out.append((m.group(1), body[m.end():i - 1], m.start(), i))
+    return out
+
+def helper_args(body, path):
+    """The argument text of every call to a helper that asserts its class in
+    this file."""
+    here = os.path.basename(path or "")
+    names = [n for n, files in ASSERTING_HELPERS.items() if here in files]
+    return [a for _, a, _, _ in call_args(body, names)] if names else []
+
+def without_negations(body):
+    """`assert_ne!(.., Some(CLASS))` asserts the class is NOT the code: cut
+    every `assert_ne!` out before looking for an asserted class."""
+    for _, _, start, end in reversed(call_args(body, ["assert_ne!"])):
+        body = body[:start] + body[end:]
+    return body
+
+for e in entries:
+    if e["class"] not in CLASSES:
+        problems.append(f"{e['test']}: class {e['class']!r} is not one of {sorted(CLASSES)}")
+        continue
+    path, raw = declared.get(e["test"], (None, ""))
+    body = without_negations(strip(raw))
+    args = helper_args(body, path)
+    def asserted(cls):
+        return bool(re.search(rf"Some\(\s*{cls}\s*\)", body)) or any(
+            re.search(rf"\b{cls}\b", a) for a in args
+        )
+    if not asserted(e["class"]):
+        problems.append(
+            f"{e['test']}: refusals.toml says class {e['class']}, and the test "
+            f"never asserts `{e['class']}` (as `Some({e['class']})` or a "
+            f"helper's class argument)"
+        )
+    for other in CLASSES - {e["class"]}:
+        if asserted(other):
+            problems.append(
+                f"{e['test']}: refusals.toml says class {e['class']}, and the "
+                f"test asserts `{other}`"
+            )
+    if re.search(r"Some\(\s*\d+\s*\)", body):
+        problems.append(
+            f"{e['test']}: compares with a numeric `Some(<n>)`; name the class"
+        )
+
 seen = {}
 for e in entries:
     seen.setdefault(e["test"], []).append(e["spec"])
@@ -257,5 +341,5 @@ print(f"check-refusal-coverage: {len(entries)} refusal tests over "
       f"{len(cited)} ruled refusals, each with a test that exists and a check "
       "that resolves")
 for e in entries:
-    print(f"  {e['spec']:<7} {e['test']}")
+    print(f"  {e['spec']:<7} {e['class']:<8} {e['test']}")
 PY

@@ -23,8 +23,13 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn corpus() -> serde_json::Value {
@@ -107,7 +112,7 @@ fn encode(args: &[&str], hexstr: &str) -> assert_cmd::assert::Assert {
     let mut c = mt();
     c.arg("encode");
     c.args(args.iter());
-    c.args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"]);
+    c.env("PATH", "/nonexistent");
     c.arg("--in").arg(f.path()).assert()
 }
 
@@ -183,7 +188,7 @@ fn a_failing_run_contributes_nothing_to_stdout() {
     for (name, args) in cases {
         let mut c = mt();
         c.args(args.iter());
-        c.args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"]);
+        c.env("PATH", "/nonexistent");
         let a = c
             .write_stdin("not a transaction at all\n")
             .assert()
@@ -340,7 +345,7 @@ fn the_world_readable_refusal_names_the_artifact_this_run_made() {
         let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
             .arg("encode")
             .args(extra.iter())
-            .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+            .env("PATH", "/nonexistent")
             .arg("--in")
             .arg(f.path())
             .stdout(std::process::Stdio::from(handle))
@@ -467,7 +472,7 @@ fn the_world_readable_refusal_states_the_mode_and_claims_no_more() {
     std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
         .args(["encode", "--qr"])
-        .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .stdout(std::process::Stdio::from(handle))

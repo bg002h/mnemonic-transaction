@@ -7,8 +7,16 @@
 use assert_cmd::Command;
 use std::io::Write;
 
+mod common;
+use common::exit::{INVALID, REPAIRED};
+
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn corpus() -> serde_json::Value {
@@ -202,7 +210,7 @@ fn decode_refuses_all_elided_input() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("REFUSED — §3b"), "got: {err}");
     assert!(
@@ -286,9 +294,10 @@ fn verify_reports_its_margin_not_just_a_verdict() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "one damaged symbol must still verify OK"
+    assert_eq!(
+        out.status.code(),
+        Some(REPAIRED),
+        "one damaged symbol must still verify, with REPAIRED set (exit-code spec R6)"
     );
 
     let err = String::from_utf8(out.stderr).unwrap();
@@ -403,7 +412,14 @@ fn a_duplicate_keeps_the_healthier_copy_and_says_which_it_dropped() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "a duplicate must not fail the set");
+    // Not a failure: the set verifies. But mt tells the operator to re-cut
+    // the damaged copy it discarded, so the run is 16 (exit-code spec §2b
+    // item 2, ruled 2026-11-26).
+    assert_eq!(
+        out.status.code(),
+        Some(16),
+        "a damaged duplicate is 16, never a failure"
+    );
     let err = String::from_utf8(out.stderr).unwrap();
 
     assert!(err.contains("DUPLICATE RESOLVED. chunk 3"), "got: {err}");
@@ -437,7 +453,11 @@ fn the_healthier_copy_wins_whichever_arrives_first() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(out.status.success());
+    assert_eq!(
+        out.status.code(),
+        Some(16),
+        "the damaged copy is re-cut: 16"
+    );
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(
         err.contains("KEPT       the copy needing 0 of 4"),
@@ -551,7 +571,8 @@ fn the_margin_report_gives_before_and_after_values() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(out.status.success());
+    // A correction was used: REPAIRED (16), exit-code spec R6.
+    assert_eq!(out.status.code(), Some(REPAIRED));
     let err = String::from_utf8(out.stderr).unwrap();
 
     assert!(err.contains("2 of 4 symbols"), "{err}");
@@ -610,8 +631,9 @@ fn verify_refuses_a_set_that_does_not_re_derive_its_id() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(
-        !out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(INVALID),
         "verify accepted a set whose payload is a DIFFERENT transaction"
     );
     let err = String::from_utf8(out.stderr).unwrap();
@@ -665,7 +687,8 @@ fn decode_emits_nothing_when_the_id_does_not_re_derive() {
 fn inspect_refuses_a_set_that_does_not_re_derive_its_id() {
     let f = tmp_with(&forged_set().join("\n"));
     let out = mt()
-        .args(["inspect", "--bitcoin-cli", "/nonexistent", "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["inspect", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -790,7 +813,7 @@ fn a_dropped_character_is_named_as_a_length_error_not_a_missing_plate() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(INVALID));
     let err = String::from_utf8(out.stderr).unwrap();
 
     assert!(err.contains("REFUSED — §1.1e,"), "got: {err}");
@@ -1140,8 +1163,10 @@ fn an_elided_line_that_happens_to_begin_mtl_is_left_alone() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
+    // The altered symbols are repaired by BCH, so REPAIRED (16), not 0.
+    assert_eq!(
+        out.status.code(),
+        Some(REPAIRED),
         "an elided line beginning `mtl` was corrupted by the separator repair:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -1398,12 +1423,14 @@ fn a_bare_dash_means_stdin_on_every_reading_verb() {
     let strings = strings_of("even").join("\n");
     for verb in ["decode", "verify", "inspect"] {
         let plain = mt()
-            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+            .env("PATH", "/nonexistent")
+            .args([verb])
             .write_stdin(strings.clone())
             .output()
             .unwrap();
         let dashed = mt()
-            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli", "-"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "-"])
             .write_stdin(strings.clone())
             .output()
             .unwrap();
@@ -1438,7 +1465,8 @@ fn a_dash_does_not_open_the_door_to_other_positionals_on_reading_verbs() {
     let strings = strings_of("even").join("\n");
     for verb in ["decode", "verify", "inspect"] {
         let out = mt()
-            .args([verb, "--bitcoin-cli", "/nonexistent/bitcoin-cli", "wat"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "wat"])
             .write_stdin(strings.clone())
             .output()
             .unwrap();
@@ -1479,7 +1507,7 @@ fn decode_to_mode(mode: u32, extra: &[&str]) -> (u64, String, Option<i32>) {
     let o = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
         .arg("decode")
         .args(extra)
-        .args(["--bitcoin-cli", "/nonexistent/bitcoin-cli"])
+        .env("PATH", "/nonexistent")
         .arg("--in")
         .arg(f.path())
         .stdout(std::process::Stdio::from(handle))
@@ -1552,12 +1580,8 @@ fn decode_says_nothing_about_an_owner_only_stdout() {
 
     // ...and the pipeline, which `assert_cmd` gives us as an anonymous pipe.
     let piped = mt()
-        .args([
-            "decode",
-            "--quiet",
-            "--bitcoin-cli",
-            "/nonexistent/bitcoin-cli",
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--quiet"])
         .arg("--in")
         .arg(tmp_with(&strings_of("even").join("\n")).path())
         .output()

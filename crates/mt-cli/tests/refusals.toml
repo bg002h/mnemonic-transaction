@@ -19,7 +19,7 @@
 # exactly the failure to catch. Adding a refusal to the spec therefore requires
 # touching this file, and THE COUPLING IS THE MECHANISM, not an inconvenience.
 #
-# THREE FIELDS, and the third is not decoration:
+# FOUR FIELDS, and the third and fourth are not decoration:
 #
 #   spec   where it is ruled
 #   test   the test that proves it fires, in tests/refusals.rs
@@ -31,6 +31,13 @@
 #          break silently on a refactor, and the last mutates whatever has moved
 #          into that line.
 #
+#   class  the refusal's exit-code class (mnemonic-engrave
+#          SPEC_constellation_exit_codes.md §3, rule R13): NO, INVALID,
+#          REFUSED, IO or USAGE. The named test asserts that code by the same
+#          name (tests/common/mod.rs `exit`), and check-refusal-coverage.sh
+#          fails a row whose test does not, so every refusal row maps to its
+#          class in an executed assertion.
+#
 # EVERY `check` IS A `fn(..) -> Result<(), Refusal>`, so one mutation shape --
 # insert `return Ok(());` at the top of the body -- neuters any of them.
 
@@ -38,11 +45,13 @@
 spec  = "§8.1"
 test  = "refuses_an_unfinalized_psbt"
 check = "src/validate.rs::finalized_guard_psbt"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2b"
 test  = "refuses_an_absurd_fee_rate"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 # §8.2b RULES FOUR CHECKS UNDER ONE NUMBER, so it carries four entries. The
 # spec's own minimum is "inputs >= outputs", "an absurdly HIGH fee", "no
@@ -52,21 +61,25 @@ check = "src/validate.rs::value_guard"
 spec  = "§8.2b"
 test  = "refuses_outputs_that_exceed_inputs"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2b"
 test  = "refuses_a_duplicate_outpoint"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2b"
 test  = "refuses_an_empty_vin"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2d"
 test  = "refuses_a_non_witness_utxo_that_does_not_hash_to_its_input"
 check = "src/validate.rs::non_witness_utxo_guard"
+class = "INVALID"
 
 # bughunt-1119 FIX-E (T17): §8.2b's output range, in Core's CheckTransaction
 # order -- vout non-empty, each output at most 21,000,000 BTC, the running
@@ -75,16 +88,19 @@ check = "src/validate.rs::non_witness_utxo_guard"
 spec  = "§8.2b"
 test  = "bh1119_mt_i16_encode_refuses_zero_outputs"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2b"
 test  = "bh1119_mt_i16_encode_refuses_output_above_money_range"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2b"
 test  = "bh1119_mt_i16_encode_refuses_output_total_above_money_range"
 check = "src/validate.rs::value_guard"
+class = "INVALID"
 
 # bughunt-1119 FIX-E (T16): a txid-bound record with no output at the input's
 # vout proves the outpoint does not exist. Refused always.
@@ -92,11 +108,13 @@ check = "src/validate.rs::value_guard"
 spec  = "§8.2d"
 test  = "a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound"
 check = "src/validate.rs::non_witness_utxo_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "refuses_unrecognised_input_naming_what_was_seen"
 check = "src/input.rs::recognised_guard"
+class = "INVALID"
 
 # The one genuinely AMBIGUOUS input: valid hex and a PSBT at once. It had a
 # test in encode.rs and no entry here for the whole of P5 -- and the coverage
@@ -106,41 +124,49 @@ check = "src/input.rs::recognised_guard"
 spec  = "§8.2e"
 test  = "refuses_a_hex_encoded_psbt_by_name"
 check = "src/input.rs::hex_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2f"
 test  = "refuses_a_transaction_passed_as_a_command_line_argument"
 check = "src/validate.rs::command_line_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.3"
 test  = "refuses_an_unsigned_raw_transaction"
 check = "src/validate.rs::finalized_guard_raw"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.5"
 test  = "refuses_a_spent_input_whose_parent_confirmed"
 check = "src/validate.rs::spent_input_guard"
+class = "NO"
 
 [[refusal]]
 spec  = "§8.6a"
 test  = "refuses_a_signature_that_is_not_sighash_all"
 check = "src/validate.rs::sighash_all_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.6b"
 test  = "refuses_a_satisfaction_carrying_no_signature"
 check = "src/validate.rs::has_signature_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.7b"
 test  = "refuses_over_the_chunk_ceiling"
 check = "src/validate.rs::chunk_ceiling_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.9"
 test  = "refuses_ms1_without_echoing_any_of_it"
 check = "src/validate.rs::secret_guard"
+class = "INVALID"
 
 # NORMATIVE AND OUTSIDE §8's NUMBERING. §6a rules that mt compares the value
 # gettxout returns against the PSBT's own UTXO record and refuses on mismatch,
@@ -151,6 +177,7 @@ check = "src/validate.rs::secret_guard"
 spec  = "§6a"
 test  = "refuses_a_value_that_disagrees_with_the_chain"
 check = "src/validate.rs::value_mismatch_guard"
+class = "NO"
 
 # BOTH FOUND BY WIDENING THE COVERAGE GATE TO EVERY SUITE, 2026-08-24. Each had
 # a passing test in another file and no entry here, so neither had ever been
@@ -160,11 +187,13 @@ check = "src/validate.rs::value_mismatch_guard"
 spec  = "§3b"
 test  = "decode_refuses_all_elided_input"
 check = "src/read_strings.rs::restore_elided"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2c"
 test  = "input_value_must_be_per_input"
 check = "src/main.rs::parse_input_values"
+class = "INVALID"
 
 # A second §8.2e test, in encode.rs. Same rule, same check, different input --
 # and the ledger keys on the TEST, so both are declared rather than one hidden.
@@ -172,6 +201,7 @@ check = "src/main.rs::parse_input_values"
 spec  = "§8.2e"
 test  = "unrecognised_input_shows_the_bytes"
 check = "src/input.rs::recognised_guard"
+class = "INVALID"
 
 # §1.1's LAST CHECK, and the one with no code behind it until two independent
 # reviews found it from opposite directions. verify printed "transaction
@@ -181,6 +211,7 @@ check = "src/input.rs::recognised_guard"
 spec  = "§1.1"
 test  = "verify_refuses_a_set_that_does_not_re_derive_its_id"
 check = "src/main.rs::content_id_guard"
+class = "INVALID"
 
 # §8.2c's AMOUNT parsing, a distinct guard from its per-input requirement:
 # `--input-value 0:inf` panicked, and `-5`/`NaN` produced a silent nonsense
@@ -190,6 +221,7 @@ check = "src/main.rs::content_id_guard"
 spec  = "§8.2c"
 test  = "a_hostile_input_value_is_refused_by_name_and_never_panics"
 check = "src/main.rs::parse_btc"
+class = "INVALID"
 
 # §1.1e's LENGTH CHECK. A dropped character reported `chunk 3 of 6 is missing` --
 # an accusation about the operator's steel, sending them to hunt for a plate
@@ -198,6 +230,7 @@ check = "src/main.rs::parse_btc"
 spec  = "§1.1e"
 test  = "a_dropped_character_is_named_as_a_length_error_not_a_missing_plate"
 check = "src/read_strings.rs::length_report"
+class = "INVALID"
 
 # THE FLAGS THAT QUIETLY DID NOTHING. All three were found by an adversarial
 # review typing what a person mistypes, and each was silent rather than wrong --
@@ -206,16 +239,19 @@ check = "src/read_strings.rs::length_report"
 spec  = "§1.1e"
 test  = "a_non_whitespace_separator_is_refused_before_anything_is_cut"
 check = "src/main.rs::separator_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§8.2c"
 test  = "a_repeated_input_value_index_is_refused"
 check = "src/main.rs::check_input_value_indices"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2c"
 test  = "an_input_value_index_that_names_no_input_is_refused"
 check = "src/main.rs::input_index_range_guard"
+class = "INVALID"
 
 # THE CONTROL for §8.2f's charset test. My own widening of the recogniser
 # refused a legitimate FILENAME beginning `mt1`; this asserts the fix narrowed
@@ -224,6 +260,7 @@ check = "src/main.rs::input_index_range_guard"
 spec  = "§8.2f"
 test  = "a_real_mt1_string_on_the_command_line_is_still_refused"
 check = "src/validate.rs::command_line_guard"
+class = "REFUSED"
 
 # F-274, added 2026-08-27 (P1 step 3). The guard classified BEFORE it
 # normalised, so a bearer artifact pasted with one stray space was
@@ -236,6 +273,7 @@ check = "src/validate.rs::command_line_guard"
 spec  = "§8.2f"
 test  = "no_spelling_of_a_bearer_argument_reaches_stderr"
 check = "src/validate.rs::command_line_guard"
+class = "REFUSED"
 
 # §8.2c's ACTUAL per-input requirement -- `require_psbt_input_values`, which is
 # called on every PSBT and had NO test and NO entry. An entry I added earlier
@@ -246,6 +284,7 @@ check = "src/validate.rs::command_line_guard"
 spec  = "§8.2c"
 test  = "refuses_a_psbt_input_with_no_utxo_record_and_no_supplied_value"
 check = "src/validate.rs::require_psbt_input_values"
+class = "INVALID"
 
 # §10.10: a pasted TXID is recognisable as such. 64 hex characters is an easy
 # thing to reach for -- it is what an explorer shows and what mt's own TX row
@@ -255,6 +294,7 @@ check = "src/validate.rs::require_psbt_input_values"
 spec  = "§10.10"
 test  = "refuses_a_pasted_txid_by_name"
 check = "src/main.rs::txid_paste_guard"
+class = "INVALID"
 
 # §10.10's txid guard on the READING verbs. A txid reaches them as easily as
 # encode -- more easily, since `inspect` is the verb a recoverer is pointed at
@@ -263,6 +303,7 @@ check = "src/main.rs::txid_paste_guard"
 spec  = "§10.10"
 test  = "a_pasted_txid_is_named_on_every_verb"
 check = "src/main.rs::txid_paste_guard"
+class = "INVALID"
 
 # A flag that cannot work must REFUSE rather than sit inert. `--json` was wired
 # into `inspect` alone, so on three verbs it parsed and did nothing -- and a
@@ -272,6 +313,7 @@ check = "src/main.rs::txid_paste_guard"
 spec  = "§10.10"
 test  = "json_works_where_there_is_a_report_and_refuses_where_there_is_not"
 check = "src/main.rs::json_unsupported_guard"
+class = "USAGE"
 
 # §8.2g's OTHER HALF, ruled 2026-08-24 from the Goal 1 journey walk (F-244).
 # `mt` warned that the INPUT file was readable by others and then wrote the
@@ -284,6 +326,7 @@ check = "src/main.rs::json_unsupported_guard"
 spec  = "§8.2h"
 test  = "refuses_a_world_readable_stdout"
 check = "src/validate.rs::world_readable_stdout_guard"
+class = "REFUSED"
 
 # The SECOND §8.2h entry, same check, different destination -- R0 round 0 (I3).
 # The first guard keyed on `is_file()` and exempted every FIFO, on the stated
@@ -294,6 +337,7 @@ check = "src/validate.rs::world_readable_stdout_guard"
 spec  = "§8.2h"
 test  = "refuses_a_world_readable_named_fifo"
 check = "src/validate.rs::world_readable_stdout_guard"
+class = "REFUSED"
 
 # THE THIRD §8.2h entry, added 2026-08-27 (P1 row 9). The first two pin a
 # world-readable file and a world-readable FIFO; neither can tell mt's `0o077`
@@ -306,6 +350,7 @@ check = "src/validate.rs::world_readable_stdout_guard"
 spec  = "§8.2h"
 test  = "refuses_a_group_writable_stdout_no_read_mask_can_see"
 check = "src/validate.rs::world_readable_stdout_guard"
+class = "REFUSED"
 
 # R3 (SPEC_engrave §2.2 -- "the record form has NO DEFAULT, and the refusal must
 # TEACH") is RETIRED, not merely untested. It refused `--record` without a form
@@ -320,21 +365,25 @@ check = "src/validate.rs::world_readable_stdout_guard"
 spec  = "§1.1"
 test  = "bughunt_mt_07c_non_ascii_in_the_prefix_line_with_elided_lines_refuses"
 check = "src/read_strings.rs::restore_elided"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bughunt_mt_11b_decode_json_quiet_is_refused"
 check = "src/main.rs::json_quiet_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bughunt_mt_r11_quiet_on_inspect_and_verify_is_refused"
 check = "src/main.rs::quiet_unsupported_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bughunt_mt_r11_json_quiet_on_inspect_and_verify_gets_the_quiet_refusal"
 check = "src/main.rs::quiet_unsupported_guard"
+class = "USAGE"
 
 # bughunt-1119 FIX-C (design/FIX_bh1119_mt_input_parsing.md): bh-mt-I1, I2, I20.
 # One input is exactly one PSBT or one transaction, base64 is decoded whole,
@@ -344,96 +393,115 @@ check = "src/main.rs::quiet_unsupported_guard"
 spec  = "§8.2e"
 test  = "bh1119_mt_i1_encode_refuses_raw_then_even_hex"
 check = "src/input.rs::tx_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i1_encode_refuses_even_then_raw_hex"
 check = "src/input.rs::tx_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i1_encode_refuses_one_trailing_byte_on_hex"
 check = "src/input.rs::tx_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i1_inspect_refuses_one_trailing_byte_on_hex"
 check = "src/input.rs::tx_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i1_verify_refuses_trailing_byte_on_transaction_file"
 check = "src/input.rs::tx_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§1.1"
 test  = "bh1119_mt_i1_decode_refuses_set_with_trailing_byte"
 check = "src/main.rs::set_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§1.1"
 test  = "bh1119_mt_i1_verify_refuses_set_with_trailing_byte"
 check = "src/main.rs::set_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§1.1"
 test  = "bh1119_mt_i1_inspect_refuses_set_with_trailing_byte"
 check = "src/main.rs::set_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_two_binary_psbts"
 check = "src/input.rs::psbt_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_two_unpadded_base64_psbts"
 check = "src/input.rs::psbt_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_inspect_refuses_two_base64_psbts"
 check = "src/input.rs::psbt_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_verify_refuses_two_psbts_as_transaction_file"
 check = "src/input.rs::psbt_end_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_padded_base64_then_second_record"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_text_after_padding"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_equals_then_junk"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_nonzero_padding_bits"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i2_encode_refuses_dangling_base64_character"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i20_encode_names_a_damaged_long_key_base64_psbt"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2f"
 test  = "bh1119_mt_i20_argv_classifier_refuses_long_key_base64"
 check = "src/validate.rs::command_line_guard"
+class = "REFUSED"
 
 # bughunt-1119 FIX-D (design/FIX_bh1119_mt_inspect_routing.md): bh-mt-I3, I5, I6.
 # `inspect` routes on the bytes, so input that is neither a transaction nor
@@ -445,21 +513,25 @@ check = "src/validate.rs::command_line_guard"
 spec  = "§8.2e"
 test  = "bh1119_mt_i5_inspect_names_non_text_junk_by_the_sniffer"
 check = "src/input.rs::recognised_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i6_foreign_text_keeps_the_sniffer_refusal"
 check = "src/input.rs::recognised_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i6_damaged_base64_psbt_containing_mt1_keeps_the_psbt_refusal"
 check = "src/input.rs::base64_psbt_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2e"
 test  = "bh1119_mt_i6_wrapped_base64_containing_mt1_keeps_the_sniffer_refusal"
 check = "src/input.rs::recognised_guard"
+class = "INVALID"
 
 # Q3 (Brian 2026-11-24): inspect REPORTS a matching non_witness_utxo with no
 # output at the input's vout; every encode path (plain and --qr) refuses it.
@@ -467,11 +539,13 @@ check = "src/input.rs::recognised_guard"
 spec  = "§8.2d"
 test  = "bh1119_mt_i3_encode_refuses_a_non_witness_utxo_without_the_spent_output"
 check = "src/validate.rs::non_witness_utxo_guard"
+class = "INVALID"
 
 [[refusal]]
 spec  = "§8.2d"
 test  = "bh1119_mt_i3_encode_qr_refuses_a_non_witness_utxo_without_the_spent_output"
 check = "src/validate.rs::non_witness_utxo_guard"
+class = "INVALID"
 
 # bughunt-1119 FIX-H (design/FIX_bh1119_mt_arg_intake.md), rows in tests/arg_intake.rs.
 # I9 (T20): a separator holding a newline is refused; encode and the reader
@@ -480,90 +554,131 @@ check = "src/validate.rs::non_witness_utxo_guard"
 spec  = "§1.1e"
 test  = "bh1119_mt_i9_encode_refuses_lf_separator"
 check = "src/main.rs::separator_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§1.1e"
 test  = "bh1119_mt_i9_encode_refuses_crlf_separator"
 check = "src/main.rs::separator_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§1.1e"
 test  = "bh1119_mt_i9_encode_refuses_separator_ending_in_lf"
 check = "src/main.rs::separator_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§1.1e"
 test  = "bh1119_mt_i9_non_whitespace_wins_over_newline"
 check = "src/main.rs::separator_guard"
+class = "USAGE"
 
 # I11 (T12): --transaction is refused on decode and inspect.
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i11_decode_refuses_transaction"
 check = "src/main.rs::transaction_unsupported_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i11_inspect_refuses_transaction"
 check = "src/main.rs::transaction_unsupported_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i11_inspect_raw_tx_refuses_existing_transaction"
 check = "src/main.rs::transaction_unsupported_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i11_transaction_refusal_precedes_dash_refusal"
 check = "src/main.rs::transaction_unsupported_guard"
+class = "USAGE"
+
+# `verify` never asks a node (§1.1): a named --bitcoin-cli would be accepted
+# and never run. Usage, like --transaction on decode (review 2026-11-26 M2).
+[[refusal]]
+spec  = "§10.10"
+test  = "verify_refuses_a_named_bitcoin_cli"
+check = "src/main.rs::bitcoin_cli_unsupported_guard"
+class = "USAGE"
+
+# `--offline` (ruling 2026-11-26, exit-code spec §2b item 1) never asks a node;
+# a named --bitcoin-cli makes the node required (R9). Both on one command line
+# is usage. And `verify` never asks a node, so --offline there is accepted and
+# ignored: usage, like --bitcoin-cli on verify.
+[[refusal]]
+spec  = "§10.10"
+test  = "offline_with_a_named_bitcoin_cli_is_usage"
+check = "src/main.rs::offline_with_bitcoin_cli_guard"
+class = "USAGE"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "verify_refuses_offline"
+check = "src/main.rs::offline_unsupported_guard"
+class = "USAGE"
 
 # The existing --json/--quiet refusal keeps precedence over both new ones.
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i11_existing_flag_refusals_keep_precedence"
 check = "src/main.rs::json_quiet_guard"
+class = "USAGE"
 
 # I12 (T13): --in together with the positional `-` is refused on every verb.
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i12_decode_refuses_in_with_dash"
 check = "src/main.rs::in_with_dash_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i12_verify_refuses_in_with_dash"
 check = "src/main.rs::in_with_dash_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i12_inspect_refuses_in_with_dash"
 check = "src/main.rs::in_with_dash_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i12_encode_refuses_in_with_dash"
 check = "src/main.rs::in_with_dash_guard"
+class = "USAGE"
 
 # I24 (T22): a non-UTF-8 argument is refused, exit 64, before argv_intake.
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i24_non_utf8_argument_is_refused_exit_64"
 check = "src/validate.rs::utf8_argv_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i24_names_the_first_non_utf8_argument"
 check = "src/validate.rs::utf8_argv_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i24_refused_before_allow_argv_secret"
 check = "src/validate.rs::utf8_argv_guard"
+class = "USAGE"
 
 [[refusal]]
 spec  = "§10.10"
 test  = "bh1119_mt_i24_untyped_verb_falls_back_to_encode"
 check = "src/validate.rs::utf8_argv_guard"
+class = "USAGE"
 
 # bughunt-1119 FIX-B (design/FIX_bh1119_mt_output_writes.md): bh-mt-I4.
 # The output is never one of the inputs (Brian 2026-11-23 Q2; io-lib same_file).
@@ -572,43 +687,52 @@ check = "src/validate.rs::utf8_argv_guard"
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_encode_in_equals_out_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_encode_out_hard_link_to_in_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_encode_out_symlink_to_in_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_encode_out_equals_stdin_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_encode_stdout_appends_to_in_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_decode_stdout_appends_to_in_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_inspect_stdout_appends_to_in_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_decode_stdin_and_stdout_one_file_refused"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"
 
 [[refusal]]
 spec  = "§8.2i"
 test  = "bh1119_mt_i4_refused_before_the_input_is_read"
 check = "src/validate.rs::same_file_guard"
+class = "REFUSED"

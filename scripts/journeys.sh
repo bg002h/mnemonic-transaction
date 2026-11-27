@@ -49,12 +49,22 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Force OFFLINE. Every journey here is air-gapped by design, and a machine that
 # happens to run bitcoind would otherwise take a different path than CI does --
-# so the gate would assert one thing locally and another in CI.
-OFFLINE=(--bitcoin-cli /nonexistent/bitcoin-cli)
+# so the gate would assert one thing locally and another in CI. Offline is "no
+# bitcoin-cli at all": none named, none on PATH. A NAMED path that is missing
+# is a helper gone missing and adds 32 (exit-code spec R9). `mt` is run by its
+# path, so it needs nothing from PATH.
+OFFLINE=(env PATH=/nonexistent)
 
 FAILED=0
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 step() { printf '  %s\n' "$*"; }
+code() {  # code <got> <want> <why>
+  if [ "$1" -eq "$2" ]; then
+    printf '    ok   %s\n' "$3"
+  else
+    printf '    FAIL %s (exit %s)\n' "$3" "$1"; FAILED=1
+  fi
+}
 have() {  # have <file> <needle> <why>
   if grep -qF -- "$2" "$1"; then
     printf '    ok   %s\n' "$3"
@@ -102,7 +112,7 @@ chmod 600 "$WORK"/*.txt "$WORK"/tx.psbt
 # ── A — encode ───────────────────────────────────────────────────────────────
 say "JOURNEY A — the operator pastes a finalized PSBT and cuts"
 step "\$ mt encode < tx.psbt"
-"$MT" encode "${OFFLINE[@]}" --in "$WORK/tx.psbt" >"$WORK/a.out" 2>"$WORK/a.err"
+"${OFFLINE[@]}" "$MT" encode --in "$WORK/tx.psbt" >"$WORK/a.out" 2>"$WORK/a.err"
 sed 's/^/    | /' "$WORK/a.err"
 step "stdout (the artifact):"
 sed 's/^/    | /' "$WORK/a.out"
@@ -154,7 +164,7 @@ for form in typed typed-elided; do
     typed)        step "\$ mt inspect < typed-from-steel.txt      (full strings)" ;;
     typed-elided) step "\$ mt inspect < typed-from-steel.txt      (--elide-prefix form)" ;;
   esac
-  "$MT" inspect "${OFFLINE[@]}" --in "$WORK/$form.txt" >"$WORK/b.out" 2>"$WORK/b.err"
+  "${OFFLINE[@]}" "$MT" inspect --in "$WORK/$form.txt" >"$WORK/b.out" 2>"$WORK/b.err"
   sed 's/^/    | /' "$WORK/b.out"
   sed 's/^/    | /' "$WORK/b.err"
 
@@ -193,19 +203,29 @@ fi
 # ── C — miscut ───────────────────────────────────────────────────────────────
 say "JOURNEY C — a string re-cut, the drawer holding both"
 step "\$ mt verify < drawer.txt                   (chunk 3 present twice)"
-"$MT" verify --in "$WORK/drawer.txt" >"$WORK/c.out" 2>"$WORK/c.err"
+# mt keeps the clean copy and tells the operator to re-cut the damaged one, so
+# the run is 16 (exit-code spec §2b item 2, ruled 2026-11-26: 16 is set
+# whenever mt says to re-engrave a plate).
+rc=0
+"$MT" verify --in "$WORK/drawer.txt" >"$WORK/c.out" 2>"$WORK/c.err" || rc=$?
 sed 's/^/    | /' "$WORK/c.err"
 
 step "assertions:"
+code "$rc" 16 "exit 16: mt says to re-cut the damaged copy it discarded"
 have "$WORK/c.err" "DUPLICATE RESOLVED. chunk 3" "the duplicate is announced, by chunk"
 have "$WORK/c.err" "KEPT       the copy needing 0 of 4"      "says which copy it kept"
 have "$WORK/c.err" "DISCARDED  the copy needing 1 of 4"      "says which it DISCARDED, and why"
 have "$WORK/c.err" "it is the one to re-cut"                 "names the plate to act on"
 
 step "\$ mt verify < mistyped.txt                 (one plate, two wrong characters)"
-"$MT" verify --in "$WORK/mistyped.txt" >/dev/null 2>"$WORK/c2.err"
+# A USED CORRECTION IS EXIT 16 (REPAIRED, the constellation exit-code spec's
+# decision 5), not 0: the output is the same, and the code now says the plate
+# is damaged. `|| rc=$?` keeps `set -e` from ending the journey on it.
+rc=0
+"$MT" verify --in "$WORK/mistyped.txt" >/dev/null 2>"$WORK/c2.err" || rc=$?
 sed 's/^/    | /' "$WORK/c2.err"
 step "assertions:"
+code "$rc" 16 "exit 16: a correction was applied (REPAIRED)"
 have "$WORK/c2.err" "CORRECTION APPLIED"  "the margin report fires"
 have "$WORK/c2.err" "2 of 4 symbols"      "...and quantifies the budget spent"
 have "$WORK/c2.err" "pos "                "...localises each correction"
@@ -213,9 +233,11 @@ have "$WORK/c2.err" "read "               "...and gives the BEFORE-value"
 have "$WORK/c2.err" "corrected to "       "...beside the after-value"
 
 step "\$ mt verify < drawer-scrap.txt             (one plate damaged past t = 4)"
-"$MT" verify --in "$WORK/drawer-scrap.txt" >/dev/null 2>"$WORK/c3.err"
+rc=0
+"$MT" verify --in "$WORK/drawer-scrap.txt" >/dev/null 2>"$WORK/c3.err" || rc=$?
 sed 's/^/    | /' "$WORK/c3.err"
 step "assertions:"
+code "$rc" 0 "exit 0: the set verified from the healthy copies, with no correction used"
 have "$WORK/c3.err" "mt verify: OK"        "a scrap plate does not kill a recoverable set"
 have "$WORK/c3.err" "UNREADABLE STRING"    "the unreadable plate is named"
 have "$WORK/c3.err" "cannot tell you which chunk that string was" "...and mt states the limit of what it knows"

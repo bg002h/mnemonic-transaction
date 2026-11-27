@@ -6,17 +6,23 @@
 //! prefix that depends on the first key's length). Ruling T23: sniff by
 //! decoding.
 //!
-//! Every run is offline (`--bitcoin-cli /nonexistent/bitcoin-cli`). Inputs are
+//! Every run is offline (no `--bitcoin-cli`, no `bitcoin-cli` on `PATH`). Inputs are
 //! the public fixtures `tests/fixtures/p5_base.json` and the corpus vectors in
 //! `mt-codec/src/test_vectors/mt1_v1.json`.
 
 use assert_cmd::Command;
 use std::io::Write;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+mod common;
+use common::exit::{INVALID, NO, REFUSED};
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn json(path: &str) -> serde_json::Value {
@@ -158,7 +164,7 @@ fn file(bytes: &[u8]) -> tempfile::NamedTempFile {
 }
 
 struct Run {
-    ok: bool,
+    code: Option<i32>,
     stdout: String,
     stderr: String,
 }
@@ -168,22 +174,24 @@ fn run(verb: &str, extra: &[&str], input: &[u8]) -> Run {
     let out = mt()
         .arg(verb)
         .args(extra)
-        .args(["--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["--in"])
         .arg(f.path())
         .output()
         .unwrap();
     Run {
-        ok: out.status.success(),
+        code: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }
 }
 
-/// Exit 1, the exact first line, and nothing on stdout.
-fn refused(r: &Run, line: &str) {
-    assert!(
-        !r.ok,
-        "the run succeeded; expected:\n{line}\nstderr:\n{}",
+/// Exit `class`, the exact first line, and nothing on stdout.
+fn refused(class: i32, r: &Run, line: &str) {
+    assert_eq!(
+        r.code,
+        Some(class),
+        "expected exit {class} and:\n{line}\nstderr:\n{}",
         r.stderr
     );
     assert!(
@@ -199,7 +207,7 @@ fn refused(r: &Run, line: &str) {
 }
 
 fn accepted(r: &Run) {
-    assert!(r.ok, "the run was refused:\n{}", r.stderr);
+    assert_eq!(r.code, Some(0), "the run was refused:\n{}", r.stderr);
     assert!(!r.stderr.contains("REFUSED"), "stderr:\n{}", r.stderr);
 }
 
@@ -231,6 +239,7 @@ fn even_plus_ab_strings() -> String {
 fn bh1119_mt_i1_encode_refuses_raw_then_even_hex() {
     let r = qr(format!("{}\n{}\n", raw_hex(), even_hex()).as_bytes());
     refused(
+        INVALID,
         &r,
         "mt encode: REFUSED — §8.2e, the input continues for 222 bytes after the end of the transaction",
     );
@@ -240,6 +249,7 @@ fn bh1119_mt_i1_encode_refuses_raw_then_even_hex() {
 fn bh1119_mt_i1_encode_refuses_even_then_raw_hex() {
     let r = qr(format!("{}\n{}\n", even_hex(), raw_hex()).as_bytes());
     refused(
+        INVALID,
         &r,
         "mt encode: REFUSED — §8.2e, the input continues for 339 bytes after the end of the transaction",
     );
@@ -249,6 +259,7 @@ fn bh1119_mt_i1_encode_refuses_even_then_raw_hex() {
 fn bh1119_mt_i1_encode_refuses_one_trailing_byte_on_hex() {
     let r = qr(format!("{}ab\n", even_hex()).as_bytes());
     refused(
+        INVALID,
         &r,
         "mt encode: REFUSED — §8.2e, the input continues for 1 byte after the end of the transaction",
     );
@@ -258,6 +269,7 @@ fn bh1119_mt_i1_encode_refuses_one_trailing_byte_on_hex() {
 fn bh1119_mt_i1_inspect_refuses_one_trailing_byte_on_hex() {
     let r = run("inspect", &[], format!("{}ab\n", even_hex()).as_bytes());
     refused(
+        INVALID,
         &r,
         "mt inspect: REFUSED — §8.2e, the input continues for 1 byte after the end of the transaction",
     );
@@ -272,6 +284,7 @@ fn bh1119_mt_i1_verify_refuses_trailing_byte_on_transaction_file() {
         even_strings().as_bytes(),
     );
     refused(
+        INVALID,
         &r,
         "mt verify: REFUSED — §8.2e, the input continues for 1 byte after the end of the transaction",
     );
@@ -288,7 +301,7 @@ fn bh1119_mt_i1_verify_still_compares_two_well_formed_transactions() {
         &["--transaction", t.path().to_str().unwrap()],
         even_strings().as_bytes(),
     );
-    assert!(!r.ok, "{}", r.stderr);
+    assert_eq!(r.code, Some(NO), "{}", r.stderr);
     assert!(
         r.stderr
             .contains("the supplied transaction is not the one on these strings"),
@@ -302,6 +315,7 @@ fn bh1119_mt_i1_verify_still_compares_two_well_formed_transactions() {
 fn bh1119_mt_i1_decode_refuses_set_with_trailing_byte() {
     let r = run("decode", &[], even_plus_ab_strings().as_bytes());
     refused(
+        INVALID,
         &r,
         "mt decode: REFUSED — §1.1, the reassembled bytes continue for 1 byte after the end of the transaction",
     );
@@ -316,6 +330,7 @@ fn bh1119_mt_i1_verify_refuses_set_with_trailing_byte() {
         even_plus_ab_strings().as_bytes(),
     );
     refused(
+        INVALID,
         &r,
         "mt verify: REFUSED — §1.1, the reassembled bytes continue for 1 byte after the end of the transaction",
     );
@@ -326,6 +341,7 @@ fn bh1119_mt_i1_verify_refuses_set_with_trailing_byte() {
 fn bh1119_mt_i1_inspect_refuses_set_with_trailing_byte() {
     let r = run("inspect", &[], even_plus_ab_strings().as_bytes());
     refused(
+        INVALID,
         &r,
         "mt inspect: REFUSED — §1.1, the reassembled bytes continue for 1 byte after the end of the transaction",
     );
@@ -338,6 +354,7 @@ fn bh1119_mt_i2_encode_refuses_two_binary_psbts() {
     let mut two = final_psbt();
     two.extend_from_slice(&final_psbt());
     refused(
+        INVALID,
         &qr(&two),
         "mt encode: REFUSED — §8.2e, the input continues for 927 bytes after the end of the PSBT",
     );
@@ -347,6 +364,7 @@ fn bh1119_mt_i2_encode_refuses_two_binary_psbts() {
 fn bh1119_mt_i2_encode_refuses_two_unpadded_base64_psbts() {
     let one = p5("finalized_psbt_b64");
     refused(
+        INVALID,
         &qr(format!("{one}\n{one}\n").as_bytes()),
         "mt encode: REFUSED — §8.2e, the input continues for 927 bytes after the end of the PSBT",
     );
@@ -359,19 +377,19 @@ fn bh1119_mt_i2_encode_refuses_padded_base64_then_second_record() {
     let first = b64(&padded_psbt());
     assert!(first.ends_with("=="));
     let r = qr(format!("{first}\n{}\n", p5("finalized_psbt_b64")).as_bytes());
-    refused(&r, &format!("mt encode: {B64_DAMAGED}"));
+    refused(INVALID, &r, &format!("mt encode: {B64_DAMAGED}"));
 }
 
 #[test]
 fn bh1119_mt_i2_encode_refuses_text_after_padding() {
     let r = qr(format!("{}oops\n", b64(&padded_psbt())).as_bytes());
-    refused(&r, &format!("mt encode: {B64_DAMAGED}"));
+    refused(INVALID, &r, &format!("mt encode: {B64_DAMAGED}"));
 }
 
 #[test]
 fn bh1119_mt_i2_encode_refuses_equals_then_junk() {
     let r = qr(format!("{}=oops\n", p5("finalized_psbt_b64")).as_bytes());
-    refused(&r, &format!("mt encode: {B64_DAMAGED}"));
+    refused(INVALID, &r, &format!("mt encode: {B64_DAMAGED}"));
 }
 
 #[test]
@@ -383,13 +401,13 @@ fn bh1119_mt_i2_encode_refuses_nonzero_padding_bits() {
     assert_eq!(s[i], b'A', "the fixture's last data character");
     s[i] = b'B';
     let r = qr(&s);
-    refused(&r, &format!("mt encode: {B64_DAMAGED}"));
+    refused(INVALID, &r, &format!("mt encode: {B64_DAMAGED}"));
 }
 
 #[test]
 fn bh1119_mt_i2_encode_refuses_dangling_base64_character() {
     let r = qr(format!("{}A\n", p5("finalized_psbt_b64")).as_bytes());
-    refused(&r, &format!("mt encode: {B64_DAMAGED}"));
+    refused(INVALID, &r, &format!("mt encode: {B64_DAMAGED}"));
     let flat = r.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains("one character left over"), "{}", r.stderr);
 }
@@ -400,6 +418,7 @@ fn bh1119_mt_i2_encode_refuses_dangling_base64_character() {
 fn bh1119_mt_i2_inspect_refuses_two_base64_psbts() {
     let one = p5("finalized_psbt_b64");
     refused(
+        INVALID,
         &run("inspect", &[], format!("{one}\n{one}\n").as_bytes()),
         "mt inspect: REFUSED — §8.2e, the input continues for 927 bytes after the end of the PSBT",
     );
@@ -412,7 +431,8 @@ fn bh1119_mt_i2_verify_refuses_two_psbts_as_transaction_file() {
     let t = file(&two);
     // p5's transaction as a set, so only the supplied file is at fault.
     let strings = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(raw_hex())
         .output()
         .unwrap();
@@ -423,6 +443,7 @@ fn bh1119_mt_i2_verify_refuses_two_psbts_as_transaction_file() {
         &strings.stdout,
     );
     refused(
+        INVALID,
         &r,
         "mt verify: REFUSED — §8.2e, the input continues for 927 bytes after the end of the PSBT",
     );
@@ -483,18 +504,19 @@ fn bh1119_mt_i20_inspect_reads_base64_with_long_first_key() {
 fn bh1119_mt_i20_encode_names_a_damaged_long_key_base64_psbt() {
     let mut s = b64(&long_key_psbt()).into_bytes();
     s[200] = b'*';
-    refused(&qr(&s), &format!("mt encode: {B64_DAMAGED}"));
+    refused(INVALID, &qr(&s), &format!("mt encode: {B64_DAMAGED}"));
 }
 
 #[test]
 fn bh1119_mt_i20_argv_classifier_refuses_long_key_base64() {
     let text = b64(&long_key_psbt());
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, &text])
+        .env("PATH", "/nonexistent")
+        .args(["encode", &text])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(REFUSED));
     assert!(
         stderr.contains("mt encode: REFUSED — §8.2f,"),
         "expected the §8.2f argv refusal:\n{stderr}"
@@ -521,7 +543,7 @@ fn bh1119_mt_i1_fixture_set_carries_even_txid() {
 #[test]
 fn bh1119_mt_i20_unrecognised_names_the_stem() {
     let r = qr(b"hello\n");
-    assert!(!r.ok, "{}", r.stderr);
+    assert_eq!(r.code, Some(INVALID), "{}", r.stderr);
     assert!(r.stderr.contains("`cHNidP`),"), "{}", r.stderr);
     assert!(!r.stderr.contains("`cHNidP8`"), "{}", r.stderr);
     assert!(r.stdout.is_empty());

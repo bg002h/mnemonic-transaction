@@ -19,9 +19,14 @@
 
 use std::fmt;
 
+use crate::exit::Exit;
+
 /// A refusal, in the ruled shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
+    /// The exit-code class this refusal falls in (exit-code spec §3), chosen
+    /// where the refusal is built so no refusal goes unclassified (R13).
+    pub class: Exit,
     /// The verb that refused, e.g. `encode`.
     pub verb: String,
     /// The spec reference, e.g. `§8.2b`.
@@ -43,14 +48,16 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    /// Build a refusal.
+    /// Build a refusal of exit-code class `class`.
     pub fn new(
+        class: Exit,
         verb: impl Into<String>,
         section: impl Into<String>,
         verdict: impl Into<String>,
         mechanism: impl Into<String>,
     ) -> Self {
         Self {
+            class,
             verb: verb.into(),
             section: section.into(),
             verdict: verdict.into(),
@@ -75,16 +82,35 @@ impl Refusal {
     }
 }
 
+/// What an internal error (exit 101) adds below its mechanism.
+const INTERNAL_REPORT: &str = "This is a bug in mt, not a problem with your input or your \
+     command line. Please report it, with the command you ran and this message.";
+
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Exit 101 is a bug, not a policy refusal: say so, and ask for a report.
+        let internal = self.class == Exit::INTERNAL;
         writeln!(
             f,
-            "mt {}: REFUSED — {}, {}",
-            self.verb, self.section, self.verdict
+            "mt {}: {} — {}, {}",
+            self.verb,
+            if internal {
+                "INTERNAL ERROR"
+            } else {
+                "REFUSED"
+            },
+            self.section,
+            self.verdict
         )?;
         writeln!(f)?;
         for line in wrap(&self.mechanism, 68) {
             writeln!(f, "  {line}")?;
+        }
+        if internal {
+            writeln!(f)?;
+            for line in wrap(INTERNAL_REPORT, 68) {
+                writeln!(f, "  {line}")?;
+            }
         }
         if let Some(r) = &self.remedy {
             writeln!(f)?;
@@ -158,6 +184,7 @@ mod tests {
     #[test]
     fn verdict_line_is_machine_parseable() {
         let r = Refusal::new(
+            Exit::INVALID,
             "encode",
             "§8.2b",
             "fee rate 31,250 sat/vB exceeds 25,000",
@@ -190,10 +217,28 @@ mod tests {
 
     #[test]
     fn a_refusal_with_nothing_to_suggest_says_nothing() {
-        let r = Refusal::new("encode", "§8.1", "not finalized", "mechanism");
+        let r = Refusal::new(
+            Exit::INVALID,
+            "encode",
+            "§8.1",
+            "not finalized",
+            "mechanism",
+        );
         assert!(
             !r.to_string().contains("Consider"),
             "an absent remedy must not be padded with advice"
         );
+    }
+
+    #[test]
+    fn an_internal_error_is_not_shaped_like_a_refusal() {
+        let r = Refusal::new(Exit::INTERNAL, "encode", "§3b", "cannot chunk", "it broke");
+        let text = r.to_string();
+        assert!(
+            text.starts_with("mt encode: INTERNAL ERROR — §3b, cannot chunk\n"),
+            "{text}"
+        );
+        assert!(!text.contains("REFUSED"), "{text}");
+        assert!(text.contains("This is a bug in mt"), "{text}");
     }
 }

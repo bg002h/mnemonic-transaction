@@ -6,12 +6,14 @@
 //! I11: `--transaction` is refused on `decode` and `inspect`; only `verify`
 //! compares. I12: `--in <path>` together with the positional `-` is refused on
 //! every verb. I24: a non-UTF-8 argument is refused by name, exit 64, before
-//! anything else reads argv.
+//! anything else reads argv. Every refusal here is a USAGE error (64): the
+//! command line alone is wrong (exit-code spec decision 2).
 
 use assert_cmd::Command;
 use std::io::Write;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
+mod common;
+use common::exit::USAGE;
 
 /// The texts this FIX adds (PROPOSED, architect confirms). A wording change
 /// updates these constants and nothing else.
@@ -37,8 +39,13 @@ fn u_verdict(verb: &str, n: usize) -> String {
     format!("mt {verb}: REFUSED — §10.10, argument {n} is not valid UTF-8")
 }
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn raw_hex() -> String {
@@ -63,7 +70,8 @@ fn file_with(text: &str) -> tempfile::NamedTempFile {
 fn encode_with(extra: &[&str]) -> (Option<i32>, String, String) {
     let tx = file_with(&raw_hex());
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .args(extra)
         .arg("--in")
         .arg(tx.path())
@@ -102,24 +110,24 @@ fn assert_refusal(rc: Option<i32>, out: &str, err: &str, code: i32, first: &str,
 
 // ---- I9 (T20): encode admits exactly the separators decode admits ----------
 
-fn assert_newline_separator_refused(sep: &str) {
+fn assert_newline_separator_refused(sep: &str, class: i32) {
     let (rc, out, err) = encode_with(&["--group-size", "5", "--separator", sep]);
-    assert_refusal(rc, &out, &err, 1, &n_verdict(sep), N_PHRASE);
+    assert_refusal(rc, &out, &err, class, &n_verdict(sep), N_PHRASE);
 }
 
 #[test]
 fn bh1119_mt_i9_encode_refuses_lf_separator() {
-    assert_newline_separator_refused("\n");
+    assert_newline_separator_refused("\n", USAGE);
 }
 
 #[test]
 fn bh1119_mt_i9_encode_refuses_crlf_separator() {
-    assert_newline_separator_refused("\r\n");
+    assert_newline_separator_refused("\r\n", USAGE);
 }
 
 #[test]
 fn bh1119_mt_i9_encode_refuses_separator_ending_in_lf() {
-    assert_newline_separator_refused(" \n");
+    assert_newline_separator_refused(" \n", USAGE);
 }
 
 /// Guard: a separator that is not all whitespace keeps the existing refusal,
@@ -127,7 +135,7 @@ fn bh1119_mt_i9_encode_refuses_separator_ending_in_lf() {
 #[test]
 fn bh1119_mt_i9_non_whitespace_wins_over_newline() {
     let (rc, out, err) = encode_with(&["--group-size", "5", "--separator", ".\n"]);
-    assert_eq!(rc, Some(1), "stderr:\n{err}");
+    assert_eq!(rc, Some(USAGE), "stderr:\n{err}");
     assert!(out.is_empty());
     assert_eq!(
         err.lines().next(),
@@ -148,7 +156,8 @@ fn bh1119_mt_i9_encode_admits_every_separator_decode_admits() {
         assert_eq!(rc, Some(0), "separator {sep:?} refused:\n{err}");
         let f = file_with(&out);
         let back = mt()
-            .args(["decode", "--quiet", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["decode", "--quiet", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -174,7 +183,8 @@ fn run_read(
     extra: &[&std::ffi::OsStr],
 ) -> (Option<i32>, String, String) {
     let out = mt()
-        .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args([verb, "--in"])
         .arg(input)
         .args(extra)
         .write_stdin("not read\n")
@@ -192,7 +202,7 @@ fn bh1119_mt_i11_decode_refuses_transaction() {
     let set = strings_file();
     let missing = std::ffi::OsStr::new("/nonexistent/tx.hex");
     let (rc, out, err) = run_read("decode", set.path(), &["--transaction".as_ref(), missing]);
-    assert_refusal(rc, &out, &err, 1, &t_verdict("decode"), T_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &t_verdict("decode"), T_PHRASE);
 }
 
 #[test]
@@ -200,7 +210,7 @@ fn bh1119_mt_i11_inspect_refuses_transaction() {
     let set = strings_file();
     let missing = std::ffi::OsStr::new("/nonexistent/tx.hex");
     let (rc, out, err) = run_read("inspect", set.path(), &["--transaction".as_ref(), missing]);
-    assert_refusal(rc, &out, &err, 1, &t_verdict("inspect"), T_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &t_verdict("inspect"), T_PHRASE);
 }
 
 /// The raw-transaction subject of inspect, with a file that exists and matches:
@@ -213,7 +223,7 @@ fn bh1119_mt_i11_inspect_raw_tx_refuses_existing_transaction() {
         tx.path(),
         &["--transaction".as_ref(), tx.path().as_os_str()],
     );
-    assert_refusal(rc, &out, &err, 1, &t_verdict("inspect"), T_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &t_verdict("inspect"), T_PHRASE);
 }
 
 /// Guard: verify still compares.
@@ -243,7 +253,7 @@ fn bh1119_mt_i11_transaction_refusal_precedes_dash_refusal() {
         set.path(),
         &["--transaction".as_ref(), missing, "-".as_ref()],
     );
-    assert_refusal(rc, &out, &err, 1, &t_verdict("decode"), T_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &t_verdict("decode"), T_PHRASE);
 }
 
 /// Guard: the existing flag refusals keep precedence over both new ones.
@@ -262,7 +272,7 @@ fn bh1119_mt_i11_existing_flag_refusals_keep_precedence() {
             "-".as_ref(),
         ],
     );
-    assert_eq!(rc, Some(1));
+    assert_eq!(rc, Some(USAGE));
     assert_eq!(
         err.lines().next(),
         Some("mt decode: REFUSED — §10.10, --json and --quiet contradict each other"),
@@ -273,7 +283,7 @@ fn bh1119_mt_i11_existing_flag_refusals_keep_precedence() {
         set.path(),
         &["--quiet".as_ref(), "--transaction".as_ref(), missing],
     );
-    assert_eq!(rc, Some(1));
+    assert_eq!(rc, Some(USAGE));
     assert_eq!(
         err.lines().next(),
         Some("mt inspect: REFUSED — §10.10, --quiet has no meaning for `inspect`"),
@@ -287,27 +297,27 @@ fn bh1119_mt_i11_existing_flag_refusals_keep_precedence() {
 fn bh1119_mt_i12_decode_refuses_in_with_dash() {
     let set = strings_file();
     let (rc, out, err) = run_read("decode", set.path(), &["-".as_ref()]);
-    assert_refusal(rc, &out, &err, 1, &d_verdict("decode"), D_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &d_verdict("decode"), D_PHRASE);
 }
 
 #[test]
 fn bh1119_mt_i12_verify_refuses_in_with_dash() {
     let set = strings_file();
     let (rc, out, err) = run_read("verify", set.path(), &["-".as_ref()]);
-    assert_refusal(rc, &out, &err, 1, &d_verdict("verify"), D_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &d_verdict("verify"), D_PHRASE);
 }
 
 #[test]
 fn bh1119_mt_i12_inspect_refuses_in_with_dash() {
     let set = strings_file();
     let (rc, out, err) = run_read("inspect", set.path(), &["-".as_ref()]);
-    assert_refusal(rc, &out, &err, 1, &d_verdict("inspect"), D_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &d_verdict("inspect"), D_PHRASE);
 }
 
 #[test]
 fn bh1119_mt_i12_encode_refuses_in_with_dash() {
     let (rc, out, err) = encode_with(&["-"]);
-    assert_refusal(rc, &out, &err, 1, &d_verdict("encode"), D_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &d_verdict("encode"), D_PHRASE);
 }
 
 /// Guard: `--in` alone and `-` alone still read their one input.
@@ -320,7 +330,8 @@ fn bh1119_mt_i12_in_alone_and_dash_alone_still_work() {
     assert_eq!(out.trim(), raw);
     let body = std::fs::read_to_string(set.path()).unwrap();
     let dashed = mt()
-        .args(["decode", "--quiet", "--bitcoin-cli", OFFLINE, "-"])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--quiet", "-"])
         .write_stdin(body)
         .output()
         .unwrap();
@@ -349,7 +360,7 @@ fn run_os(args: &[&[u8]]) -> (Option<i32>, String, String) {
 #[test]
 fn bh1119_mt_i24_non_utf8_argument_is_refused_exit_64() {
     let (rc, out, err) = run_os(&[b"verify", b"--in", b"plate-\xff.txt"]);
-    assert_refusal(rc, &out, &err, 64, &u_verdict("verify", 3), U_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &u_verdict("verify", 3), U_PHRASE);
     assert!(!err.contains("panicked"), "stderr:\n{err}");
     assert!(!err.contains("plate-"), "the argument was echoed:\n{err}");
 }
@@ -358,7 +369,7 @@ fn bh1119_mt_i24_non_utf8_argument_is_refused_exit_64() {
 #[test]
 fn bh1119_mt_i24_names_the_first_non_utf8_argument() {
     let (rc, out, err) = run_os(&[b"decode", b"--in", b"\xfe", b"--transaction", b"\xff"]);
-    assert_refusal(rc, &out, &err, 64, &u_verdict("decode", 3), U_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &u_verdict("decode", 3), U_PHRASE);
 }
 
 /// Before `argv_intake`: the override's admitted material is never echoed and
@@ -374,7 +385,7 @@ fn bh1119_mt_i24_refused_before_allow_argv_secret() {
         b"--in",
         b"\xff",
     ]);
-    assert_refusal(rc, &out, &err, 64, &u_verdict("encode", 5), U_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &u_verdict("encode", 5), U_PHRASE);
     assert!(!err.contains(&raw[..16]), "material echoed:\n{err}");
 }
 
@@ -383,7 +394,7 @@ fn bh1119_mt_i24_refused_before_allow_argv_secret() {
 #[test]
 fn bh1119_mt_i24_untyped_verb_falls_back_to_encode() {
     let (rc, out, err) = run_os(&[b"\xff"]);
-    assert_refusal(rc, &out, &err, 64, &u_verdict("encode", 1), U_PHRASE);
+    assert_refusal(rc, &out, &err, USAGE, &u_verdict("encode", 1), U_PHRASE);
 }
 
 /// Guard: a UTF-8 path outside ASCII still works.
@@ -394,7 +405,8 @@ fn bh1119_mt_i24_utf8_non_ascii_path_still_works() {
     let p = dir.path().join("plate-é.txt");
     std::fs::copy(set.path(), &p).unwrap();
     let out = mt()
-        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["verify", "--in"])
         .arg(&p)
         .output()
         .unwrap();
@@ -417,7 +429,8 @@ fn bh1119_mt_i24_non_utf8_program_path_is_not_refused() {
     let link = dir.path().join(std::ffi::OsStr::from_bytes(b"mt-\xff"));
     std::os::unix::fs::symlink(assert_cmd::cargo::cargo_bin("mt"), &link).unwrap();
     let out = std::process::Command::new(&link)
-        .args(["verify", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["verify", "--in"])
         .arg(set.path())
         .output()
         .unwrap();

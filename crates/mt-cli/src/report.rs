@@ -138,6 +138,7 @@ impl Status {
             }
             Self::Dead => "DEAD — an input was spent by someone else. The engraving is scrap",
             Self::Pending => "PENDING — a parent has not confirmed. This may still become live",
+            Self::Unknown if crate::node::is_offline() => "UNKNOWN — --offline: no node was asked",
             Self::Unknown => "UNKNOWN — no node reachable",
             Self::Indeterminate => {
                 "UNKNOWN — an input is not in the UTXO set, and without -txindex\n                           this node cannot tell whether its parent confirmed. mt will not\n                           guess DEAD on evidence that cannot distinguish it from PENDING"
@@ -663,7 +664,8 @@ pub fn no_node_warning(
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "WARNING: no bitcoind reachable. mt read this transaction from the"
+        "WARNING: {}. mt read this transaction from the",
+        crate::node::no_node_headline()
     );
     let _ = writeln!(
         s,
@@ -731,10 +733,17 @@ pub fn no_node_warning(
     );
     let _ = writeln!(s);
     let _ = writeln!(s, "         TO RESOLVE ALL FOUR AT ONCE, either:");
-    let _ = writeln!(
-        s,
-        "           - run mt inspect again with a bitcoind reachable, or"
-    );
+    if crate::node::is_offline() {
+        let _ = writeln!(
+            s,
+            "           - run mt inspect again without --offline, with a bitcoind reachable, or"
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "           - run mt inspect again with a bitcoind reachable, or"
+        );
+    }
     let _ = writeln!(s, "           - look this txid up in any block explorer:");
     let _ = writeln!(s, "               {txid}");
     // §10.20's caveat, at the ONE moment it is asked: the explorer has just been

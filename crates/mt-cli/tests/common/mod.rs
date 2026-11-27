@@ -59,6 +59,7 @@ done
 case "$verb" in
   getblockcount)     echo 963832 ;;
   getindexinfo)      echo '{{"txindex": {{"synced": true, "best_block_height": 963832}}}}' ;;
+  getblockchaininfo) echo '{{"chain": "regtest", "mediantime": 1700000000}}' ;;
   gettxout)          {gettxout} ;;
   getrawtransaction)
     case "$arg1" in
@@ -117,4 +118,19 @@ pub fn hex_to_bytes(s: &str) -> Vec<u8> {
         .chunks(2)
         .map(|p| u8::from_str_radix(core::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect()
+}
+
+/// The constellation exit codes (mnemonic-engrave
+/// `SPEC_constellation_exit_codes.md` §3), as the tests name them. 1 to 63 are
+/// sums of the six bits; 64 and 101 never combine.
+pub mod exit {
+    pub const OK: i32 = 0;
+    pub const NO: i32 = 1;
+    pub const INVALID: i32 = 2;
+    pub const UNVERIFIED: i32 = 4;
+    pub const REFUSED: i32 = 8;
+    pub const REPAIRED: i32 = 16;
+    pub const IO: i32 = 32;
+    pub const USAGE: i32 = 64;
+    pub const INTERNAL: i32 = 101;
 }

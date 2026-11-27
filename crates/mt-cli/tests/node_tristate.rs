@@ -7,15 +7,27 @@
 //! real mapping (bitcoin-cli.cpp ParseResult/ParseError): a null result prints
 //! nothing and exits 0; an RPC error exits with abs(code), so a transaction
 //! `getrawtransaction` cannot find exits 5 (RPC_INVALID_ADDRESS_OR_KEY).
+//!
+//! The stubs are NAMED with `--bitcoin-cli`, so a call that fails (anything but
+//! Core's own error replies, exit 5 or 89), or a reply mt cannot read, is a
+//! named helper failing: the run keeps its report and adds IO (32) to the exit
+//! code (exit-code spec R9). Core's real answers (a null `gettxout`, a
+//! `getindexinfo` without a txindex) stay 0.
 
 use assert_cmd::Command;
 use std::io::Write;
 
 mod common;
+use common::exit::IO;
 use common::fixture_txids;
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 /// The P5 base fixture: two inputs (3 BTC and 5 BTC), regtest, from Core v25.
@@ -147,7 +159,7 @@ fn bh1119_mt_c1_failed_gettxout_inspect_is_not_dead() {
         parents_answer(CONFIRMED)
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "a failed gettxout");
 }
 
@@ -159,7 +171,7 @@ fn bh1119_mt_c1_failed_gettxout_inspect_json_is_indeterminate() {
         parents_answer(CONFIRMED)
     ));
     let (rc, o, e) = run("inspect", &s, &["--json"]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     let v: serde_json::Value = serde_json::from_str(&o).expect("inspect --json is JSON");
     assert_eq!(v["status"], "Indeterminate", "{o}");
 }
@@ -173,7 +185,9 @@ fn bh1119_mt_c1_failed_gettxout_encode_warns_and_proceeds() {
         parents_answer(CONFIRMED)
     ));
     let (rc, o, e) = run("encode", &s, &[]);
-    assert_eq!(rc, Some(0), "encode refused on a failed gettxout:\n{e}");
+    // The named stub failed a call: IO (32, exit-code spec R9), and the
+    // strings are still written; not a refusal.
+    assert_eq!(rc, Some(IO), "encode refused on a failed gettxout:\n{e}");
     assert!(!e.contains("REFUSED"), "{e}");
     assert!(!o.trim().is_empty(), "no strings produced");
     assert!(
@@ -195,7 +209,7 @@ fn bh1119_mt_c1_unreadable_gettxout_reply_is_not_dead() {
         parents_answer(CONFIRMED)
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "a gettxout reply with no value");
 }
 
@@ -208,7 +222,7 @@ fn bh1119_mt_c1_unreadable_parent_reply_is_not_dead() {
         parents_answer(r#"{"txid": "00", "confirmations": "6"}"#)
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "an unreadable parent reply");
 }
 
@@ -222,7 +236,7 @@ fn bh1119_mt_c1_unreadable_own_tx_reply_is_not_dead() {
         own_and_parents_answer("not json", CONFIRMED)
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "an unreadable own-transaction reply");
 }
 
@@ -235,7 +249,7 @@ fn bh1119_mt_c1_unreadable_own_tx_reply_encode_warns_and_proceeds() {
         own_and_parents_answer("not json", CONFIRMED)
     ));
     let (rc, o, e) = run("encode", &s, &[]);
-    assert_eq!(rc, Some(0), "encode refused:\n{e}");
+    assert_eq!(rc, Some(IO), "encode refused:\n{e}");
     assert!(!e.contains("can never be broadcast"), "{e}");
     assert!(!o.trim().is_empty(), "no strings produced");
     assert!(
@@ -251,7 +265,7 @@ fn bh1119_mt_c1_unreadable_own_tx_reply_encode_warns_and_proceeds() {
 fn bh1119_mt_c1_failed_parent_lookup_is_unanswered_not_pending() {
     let s = stub("  gettxout) exit 0 ;;\n  getrawtransaction) exit 1 ;;");
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert!(
         !o.contains("STATUS    PENDING"),
         "a failed lookup read as PENDING:\n{o}"
@@ -359,7 +373,7 @@ fn bh1119_mt_i14_unknown_chain_is_named_as_such() {
 fn bh1119_mt_i14_chainless_reply_is_named_as_such() {
     let s = stub("  getblockchaininfo) exit 1 ;;\n  gettxout) exit 0 ;;");
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert!(
         o.contains("OUT       1 output(s)   (addresses shown as MAINNET — the node did not say which chain it is on)\n"),
         "got:\n{o}"
@@ -397,7 +411,7 @@ fn bh1119_mt_i15_scientific_value_is_five_sats() {
 fn bh1119_mt_i15_overprecise_value_is_unanswered() {
     let s = stub("  gettxout) echo '{\"value\":0.000000051,\"scriptPubKey\":{}}' ;;");
     let (rc, o, e) = run("inspect", &s, &["--json"]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     let v: serde_json::Value = serde_json::from_str(&o).unwrap();
     assert_eq!(v["status"], "Indeterminate", "{o}");
     assert_eq!(
@@ -416,7 +430,7 @@ fn bh1119_mt_i15_negative_value_is_unanswered() {
             "  gettxout) echo '{{\"value\":{v},\"scriptPubKey\":{{}}}}' ;;"
         ));
         let (rc, o, e) = run("inspect", &s, &[]);
-        assert_eq!(rc, Some(0), "{e}");
+        assert_eq!(rc, Some(IO), "{e}");
         assert_unanswered_inspect(&o, &format!("value {v}"));
     }
 }
@@ -426,7 +440,7 @@ fn bh1119_mt_i15_negative_value_is_unanswered() {
 fn bh1119_mt_i15_value_above_money_range_is_unanswered() {
     let s = stub("  gettxout) echo '{\"value\":21000000.00000001,\"scriptPubKey\":{}}' ;;");
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "a value above MoneyRange");
 }
 
@@ -469,7 +483,7 @@ fn bh1119_mt_c1_dead_input_outranks_unanswered_input() {
         parents_answer(CONFIRMED)
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert!(
         o.contains("STATUS    DEAD — an input was spent by someone else"),
         "{o}"
@@ -609,7 +623,7 @@ fn index_syncs_after_own_question() -> Stub {
         arms.push_str(&format!("      {}*) echo '{CONFIRMED}' ;;\n", &p[..16]));
     }
     stub(&format!(
-        "  getindexinfo)\n    if [ -e \"$(dirname \"$0\")/own-asked\" ]; then echo '{{\"txindex\": {{\"synced\": true, \"best_block_height\": 963832}}}}'; else echo '{{\"txindex\": {{\"synced\": false, \"best_block_height\": 10}}}}'; fi ;;\n  gettxout) exit 0 ;;\n  getrawtransaction)\n    case \"$arg1\" in\n{arms}      *) : > \"$(dirname \"$0\")/own-asked\"; exit 5 ;;\n    esac ;;"
+        "  getindexinfo)\n    if [ -e \"${{0%/*}}/own-asked\" ]; then echo '{{\"txindex\": {{\"synced\": true, \"best_block_height\": 963832}}}}'; else echo '{{\"txindex\": {{\"synced\": false, \"best_block_height\": 10}}}}'; fi ;;\n  gettxout) exit 0 ;;\n  getrawtransaction)\n    case \"$arg1\" in\n{arms}      *) : > \"${{0%/*}}/own-asked\"; exit 5 ;;\n    esac ;;"
     ))
 }
 
@@ -638,7 +652,7 @@ fn bh1119_mt_c1_unanswered_outranks_txindex_unknown() {
         &parents[0][..16]
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "unanswered beside a txindex UNKNOWN");
 }
 
@@ -653,7 +667,7 @@ fn bh1119_mt_c1_unanswered_outranks_index_not_synced() {
         parents_answer(CONFIRMED)
     ));
     let (rc, o, e) = run("inspect", &s, &[]);
-    assert_eq!(rc, Some(0), "{e}");
+    assert_eq!(rc, Some(IO), "{e}");
     assert_unanswered_inspect(&o, "unanswered beside index-not-synced");
 }
 
@@ -672,7 +686,8 @@ fn timelocked_hex() -> String {
     bitcoin::consensus::encode::serialize_hex(&tx)
 }
 
-fn locktime_row_with(blockchaininfo: &str) -> String {
+/// `code`: IO when the reply's `mediantime` is unusable (R9), else 0.
+fn locktime_row_with(blockchaininfo: &str, code: i32) -> String {
     let s = stub(&format!(
         "  getblockchaininfo) echo '{blockchaininfo}' ;;\n  gettxout) exit 0 ;;"
     ));
@@ -684,7 +699,7 @@ fn locktime_row_with(blockchaininfo: &str) -> String {
         .arg(f.path())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(code));
     let o = String::from_utf8_lossy(&out.stdout).into_owned();
     o.lines()
         .find(|l| l.starts_with("LOCKTIME"))
@@ -697,7 +712,7 @@ fn locktime_row_with(blockchaininfo: &str) -> String {
 /// (`1.7e9` read as 1, printed as 1970).
 #[test]
 fn bh1119_mt_median_time_exponent_reply_is_not_1970() {
-    let row = locktime_row_with(r#"{"chain": "regtest", "mediantime": 1.7e9}"#);
+    let row = locktime_row_with(r#"{"chain": "regtest", "mediantime": 1.7e9}"#, IO);
     assert!(row.contains("LOCKED UNTIL 2027-"), "{row}");
     assert!(
         !row.contains("1970"),
@@ -712,6 +727,6 @@ fn bh1119_mt_median_time_exponent_reply_is_not_1970() {
 /// Guard: Core's integer `mediantime` is read and printed as a date.
 #[test]
 fn bh1119_mt_median_time_integer_reply_is_read() {
-    let row = locktime_row_with(r#"{"chain": "regtest", "mediantime": 1700000000}"#);
+    let row = locktime_row_with(r#"{"chain": "regtest", "mediantime": 1700000000}"#, 0);
     assert!(row.contains("current MTP 2023-11-14T22:13Z"), "{row}");
 }

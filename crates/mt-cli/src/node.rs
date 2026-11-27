@@ -17,6 +17,89 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The `--bitcoin-cli` path the operator named, if they named one.
+static NAMED: OnceLock<PathBuf> = OnceLock::new();
+/// The one stderr line naming a failed helper has been printed.
+static SAID: AtomicBool = AtomicBool::new(false);
+/// `--offline` was given: no `bitcoin-cli` is ever run.
+static OFFLINE: AtomicBool = AtomicBool::new(false);
+
+/// `--offline` (ruling 2026-11-26, exit-code spec §2b item 1): from here on
+/// [`Node::find`] runs nothing and answers "no node", even with a
+/// `bitcoin-cli` on `PATH`. The run then takes the no-node path, and its
+/// warnings say no node was asked rather than that none was reachable.
+pub fn go_offline() {
+    OFFLINE.store(true, Ordering::Relaxed);
+}
+
+/// Was `--offline` given?
+pub fn is_offline() -> bool {
+    OFFLINE.load(Ordering::Relaxed)
+}
+
+/// The head of every no-node warning: under `--offline` mt asked no node,
+/// which is not the same statement as "none was reachable".
+pub fn no_node_headline() -> &'static str {
+    if is_offline() {
+        "--offline: no node was asked"
+    } else {
+        "no bitcoind reachable"
+    }
+}
+
+/// The no-node entry of a `--json` `warnings` array.
+pub fn no_node_json_warning() -> String {
+    if is_offline() {
+        "--offline: no node was asked; nothing here is confirmed against the chain".to_string()
+    } else {
+        "no bitcoind reachable: nothing here is confirmed against the chain".to_string()
+    }
+}
+
+/// The operator named `--bitcoin-cli` on the command line (exit-code spec R9),
+/// even as `--bitcoin-cli bitcoin-cli`: naming it makes the node required.
+/// From here on, a `bitcoin-cli` that is missing, cannot be started, fails,
+/// or gives a reply mt cannot use adds IO (32) to the exit code (§3 test 2,
+/// "failed or gone missing"). Only the DEFAULT `bitcoin-cli` that is absent
+/// or failing is the offline path, a warning that sets nothing.
+pub fn helper_named(path: &Path) {
+    let _ = NAMED.set(path.to_path_buf());
+}
+
+/// Was `--bitcoin-cli` named on the command line?
+pub fn is_named() -> bool {
+    NAMED.get().is_some()
+}
+
+/// A call to a named helper failed, or its reply could not be used: note IO,
+/// and say so once on stderr, naming the helper, so a typo and a node that is
+/// down are told apart (R5). Core's real answers (a null `gettxout`, a
+/// not-found from `getrawtransaction`, a `getindexinfo` without a txindex)
+/// are answers and never come here.
+fn helper_failed(reason: &dyn std::fmt::Display) {
+    let Some(path) = NAMED.get() else {
+        return;
+    };
+    crate::out::note(crate::exit::Exit::IO);
+    if !SAID.swap(true, Ordering::Relaxed) {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "mt: --bitcoin-cli {}: {reason}",
+            path.display()
+        );
+    }
+}
+
+/// `helper_failed`, then `v`: for the branches where a reply arrived but
+/// carries nothing mt can use.
+fn unusable<T>(v: T) -> T {
+    helper_failed(&"gave a reply mt could not read");
+    v
+}
 
 /// A node, or the absence of one.
 #[derive(Debug, Clone)]
@@ -78,14 +161,23 @@ pub enum Utxo {
 }
 
 impl Node {
-    /// Locate `bitcoin-cli`. Absent or not runnable is **not an error** — §6a's
-    /// posture is that offline operation is the constellation's default and an
-    /// absent node is an absent answer, not a bad one.
+    /// Locate `bitcoin-cli`. Absent or not runnable is **not a refusal** —
+    /// §6a's posture is that offline operation is the constellation's default
+    /// and an absent node is an absent answer, not a bad one. (A NAMED helper
+    /// that is absent still adds IO to the exit code, R9.)
     pub fn find(cli: &Path) -> Option<Self> {
+        // `--offline`: nothing is run, not even a `bitcoin-cli` on `PATH`.
+        if is_offline() {
+            return None;
+        }
         let node = Self {
             cli: cli.to_path_buf(),
         };
         match node.call(&["getblockcount"]) {
+            // A reply that is no block height is no node: a named helper that
+            // gives one has failed (R9), and the run takes the no-node path
+            // with its warning.
+            Reply::Answered(s) if s.parse::<u64>().is_err() => unusable(None),
             Reply::Answered(_) => Some(node),
             Reply::Failed(_) => None,
         }
@@ -99,40 +191,71 @@ impl Node {
     }
 
     /// Run `bitcoin-cli -stdin`, passing every argument on **stdin**.
+    ///
+    /// Core's own error replies are answers, not a failing helper, but only
+    /// from the call that gives them: 5 (not-found, RPC_INVALID_ADDRESS_OR_KEY)
+    /// from `getrawtransaction`, and 89 (an older Core's method-not-found,
+    /// -32601) from `getindexinfo`. Any other non-zero exit is a failure.
     fn call(&self, args: &[&str]) -> Reply {
         use std::io::Write;
-        let Ok(mut child) = Command::new(&self.cli)
+        let mut child = match Command::new(&self.cli)
             .arg("-stdin")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-        else {
-            return Reply::Failed(None);
-        };
         {
-            let Some(stdin) = child.stdin.as_mut() else {
+            Ok(c) => c,
+            // Missing or not startable. For the default `bitcoin-cli` that is
+            // the offline path; for a named one it is a failure (R9).
+            Err(e) => {
+                helper_failed(&format_args!("could not be started: {e}"));
                 return Reply::Failed(None);
-            };
+            }
+        };
+        let mut broke = None;
+        if let Some(stdin) = child.stdin.as_mut() {
             for a in args {
-                if writeln!(stdin, "{a}").is_err() {
-                    let _ = child.wait();
-                    return Reply::Failed(None);
+                if let Err(e) = writeln!(stdin, "{a}") {
+                    broke = Some(e);
+                    break;
                 }
             }
         }
-        let Ok(out) = child.wait_with_output() else {
-            return Reply::Failed(None);
+        let out = match child.wait_with_output() {
+            Ok(o) => o,
+            Err(e) => {
+                helper_failed(&format_args!("could not be run: {e}"));
+                return Reply::Failed(None);
+            }
         };
         if !out.status.success() {
-            return Reply::Failed(out.status.code());
+            let answer = match args.first() {
+                Some(&"getrawtransaction") => Some(5),
+                Some(&"getindexinfo") => Some(89),
+                _ => None,
+            };
+            let code = out.status.code();
+            if code.is_none() || code != answer {
+                match code {
+                    Some(n) => helper_failed(&format_args!("exited {n}")),
+                    None => helper_failed(&"was stopped by a signal"),
+                }
+            }
+            return Reply::Failed(code);
+        }
+        if let Some(e) = broke {
+            helper_failed(&format_args!("did not read its arguments: {e}"));
+            return Reply::Failed(None);
         }
         Reply::Answered(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
     /// Current chain height.
     pub fn block_count(&self) -> Option<u64> {
-        self.answer(&["getblockcount"])?.parse().ok()
+        self.answer(&["getblockcount"])?
+            .parse()
+            .map_or_else(|_| unusable(None), Some)
     }
 
     /// Is this outpoint in the UTXO set?
@@ -148,8 +271,10 @@ impl Node {
             Reply::Answered(s) if s.is_empty() => Utxo::Null,
             Reply::Answered(s) => match serde_json::from_str::<serde_json::Value>(&s) {
                 Ok(serde_json::Value::Null) => Utxo::Null,
-                Ok(v) => extract_value_sats(&v).map_or(Utxo::Unanswered, Utxo::Unspent),
-                Err(_) => Utxo::Unanswered,
+                Ok(v) => {
+                    extract_value_sats(&v).map_or_else(|| unusable(Utxo::Unanswered), Utxo::Unspent)
+                }
+                Err(_) => unusable(Utxo::Unanswered),
             },
         }
     }
@@ -163,10 +288,13 @@ impl Node {
     pub fn median_time(&self) -> Option<u64> {
         // JSON, and only a non-negative integer counts (N5b): `1.7e9` is no MTP.
         let json = self.answer(&["getblockchaininfo"])?;
-        serde_json::from_str::<serde_json::Value>(&json)
-            .ok()?
-            .get("mediantime")?
-            .as_u64()
+        let t = serde_json::from_str::<serde_json::Value>(&json)
+            .ok()
+            .and_then(|v| v.get("mediantime")?.as_u64());
+        if t.is_none() {
+            helper_failed(&"gave a reply mt could not read");
+        }
+        t
     }
 
     /// Which chain this node is on.
@@ -186,7 +314,7 @@ impl Node {
             return ChainReply::NotSaid;
         };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return ChainReply::NotSaid;
+            return unusable(ChainReply::NotSaid);
         };
         match v.get("chain").and_then(serde_json::Value::as_str) {
             Some("main") => ChainReply::Known(bitcoin::Network::Bitcoin),
@@ -195,7 +323,7 @@ impl Node {
             Some("signet") => ChainReply::Known(bitcoin::Network::Signet),
             Some("regtest") => ChainReply::Known(bitcoin::Network::Regtest),
             Some(_) => ChainReply::Unrecognised,
-            None => ChainReply::NotSaid,
+            None => unusable(ChainReply::NotSaid),
         }
     }
 
@@ -213,11 +341,15 @@ impl Node {
     /// index", which reads UNKNOWN (§6a's fail-safe direction), because another
     /// synced index once made an unsynced txindex read as synced (bug hunt #5).
     pub fn has_txindex(&self) -> bool {
+        // `{}` (no txindex) is a real answer; a reply that is not JSON is not.
         self.answer(&["getindexinfo"]).is_some_and(|s| {
-            serde_json::from_str::<serde_json::Value>(s.trim()).is_ok_and(|v| {
-                v.get("txindex").and_then(|t| t.get("synced"))
-                    == Some(&serde_json::Value::Bool(true))
-            })
+            match serde_json::from_str::<serde_json::Value>(s.trim()) {
+                Ok(v) => {
+                    v.get("txindex").and_then(|t| t.get("synced"))
+                        == Some(&serde_json::Value::Bool(true))
+                }
+                Err(_) => unusable(false),
+            }
         })
     }
 
@@ -237,10 +369,10 @@ impl Node {
                     Some(c) => match c.as_u64() {
                         Some(0) => ParentState::InMempool,
                         Some(_) => ParentState::Confirmed,
-                        None => ParentState::Unanswered,
+                        None => unusable(ParentState::Unanswered),
                     },
                 },
-                _ => ParentState::Unanswered,
+                _ => unusable(ParentState::Unanswered),
             },
         }
     }
@@ -269,7 +401,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_binary_is_absence_not_failure() {
+    fn a_missing_binary_is_absence_not_a_node() {
         assert!(
             Node::find(Path::new("/nonexistent/bitcoin-cli")).is_none(),
             "an absent bitcoin-cli must yield None, never panic"

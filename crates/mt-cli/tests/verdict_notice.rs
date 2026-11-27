@@ -7,17 +7,22 @@
 //! and pin what the fix must not change. Spec: design/FIX_bh1119_mt_verdict_notice.md.
 
 mod common;
+use common::exit::{IO, NO, REPAIRED};
 
 use assert_cmd::Command;
 use std::io::Write;
 
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 const NO_NODE_HEAD: &str = "\nWARNING: no bitcoind reachable. mt read this transaction from the\n";
 const OK_EVEN: &str = "mt verify: OK — 6 chunks, set 0x2dcf2, transaction re-derives.";
 const MATCH_LINE: &str = "  --transaction matches, on the full txid.";
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
 
 fn corpus() -> serde_json::Value {
@@ -126,7 +131,14 @@ fn decode(extra: &[&str], text: &str, cli: &std::path::Path) -> std::process::Ou
 }
 
 fn decode_offline(extra: &[&str], text: &str) -> std::process::Output {
-    decode(extra, text, std::path::Path::new(OFFLINE))
+    let f = tmp(text);
+    mt().env("PATH", "/nonexistent")
+        .arg("decode")
+        .args(extra)
+        .arg("--in")
+        .arg(f.path())
+        .output()
+        .unwrap()
 }
 
 fn verify(text: &str, transaction: &std::path::Path) -> std::process::Output {
@@ -145,8 +157,19 @@ fn verify(text: &str, transaction: &std::path::Path) -> std::process::Output {
 fn assert_quiet_is_loud_after_report(text: &str) {
     let loud = decode_offline(&[], text);
     let quiet = decode_offline(&["--quiet"], text);
-    assert_eq!(loud.status.code(), Some(0), "{}", s(&loud.stderr));
-    assert_eq!(quiet.status.code(), Some(0), "{}", s(&quiet.stderr));
+    // 0 for a clean set, REPAIRED (16) for a corrected one; --quiet never
+    // changes it.
+    assert!(
+        matches!(loud.status.code(), Some(0 | REPAIRED)),
+        "{}",
+        s(&loud.stderr)
+    );
+    assert_eq!(
+        quiet.status.code(),
+        loud.status.code(),
+        "{}",
+        s(&quiet.stderr)
+    );
     assert_eq!(loud.stdout, quiet.stdout, "--quiet changed stdout");
     let l = s(&loud.stderr);
     let at = l
@@ -165,7 +188,7 @@ fn assert_quiet_is_loud_after_report(text: &str) {
 #[test]
 fn bh1119_mt_g_quiet_keeps_the_correction_notice() {
     let o = decode_offline(&["--quiet"], &corrected_even());
-    assert_eq!(o.status.code(), Some(0), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let e = s(&o.stderr);
     assert!(
         e.contains("\nCORRECTION APPLIED. 1 chunk needed repair:\n"),
@@ -202,7 +225,8 @@ fn bh1119_mt_g_quiet_keeps_the_transliteration_notice() {
 #[test]
 fn bh1119_mt_g_quiet_keeps_the_duplicate_notice() {
     let o = decode_offline(&["--quiet"], &duplicate_even());
-    assert_eq!(o.status.code(), Some(0), "{}", s(&o.stderr));
+    // The discarded copy is damaged and mt says to re-cut it: 16 (§2b item 2).
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let e = s(&o.stderr);
     assert!(
         e.contains("\nDUPLICATE RESOLVED. chunk 3 was present twice.\n"),
@@ -260,7 +284,7 @@ fn bh1119_mt_g_quiet_with_a_node_stays_silent_on_a_clean_set() {
 #[test]
 fn bh1119_mt_g_quiet_stdout_is_the_hex() {
     let o = decode_offline(&["--quiet"], &corrected_even());
-    assert_eq!(o.status.code(), Some(0), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     assert_eq!(s(&o.stdout), format!("{}\n", raw_of("even")));
 }
 
@@ -272,7 +296,7 @@ fn bh1119_mt_g_verify_mismatch_prints_no_ok() {
     let other = tmp(&raw_of("uneven"));
     let o = verify(&(strings_of("even").join("\n") + "\n"), other.path());
     let e = s(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{e}");
+    assert_eq!(o.status.code(), Some(NO), "{e}");
     assert!(
         !e.contains("mt verify: OK"),
         "OK printed before REFUSED:\n{e}"
@@ -291,7 +315,7 @@ fn bh1119_mt_g_verify_missing_transaction_prints_no_ok() {
         std::path::Path::new("/nonexistent/x.hex"),
     );
     let e = s(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{e}");
+    assert_eq!(o.status.code(), Some(IO), "{e}");
     assert!(
         !e.contains("mt verify: OK"),
         "OK printed before REFUSED:\n{e}"
@@ -329,7 +353,7 @@ fn bh1119_mt_g_verify_refusal_keeps_the_notices() {
     let other = tmp(&raw_of("uneven"));
     let o = verify(&corrected_even(), other.path());
     let e = s(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{e}");
+    assert_eq!(o.status.code(), Some(NO | REPAIRED), "{e}");
     assert!(
         !e.contains("mt verify: OK"),
         "OK printed before REFUSED:\n{e}"
@@ -360,7 +384,7 @@ fn bh1119_mt_g_verify_match_keeps_ok_notices_match_order() {
     let right = tmp(&raw_of("even"));
     let o = verify(&corrected_even(), right.path());
     let e = s(&o.stderr);
-    assert_eq!(o.status.code(), Some(0), "{e}");
+    assert_eq!(o.status.code(), Some(REPAIRED), "{e}");
     assert_eq!(e.matches("mt verify: OK").count(), 1, "{e}");
     assert!(e.starts_with(&format!("{OK_EVEN}\n")), "{e}");
     let c = e
@@ -377,7 +401,7 @@ fn bh1119_mt_g_verify_match_keeps_ok_notices_match_order() {
 fn bh1119_mt_g_quiet_with_a_node_keeps_the_notices() {
     let stub = common::node_stub(r#"{"value": 50.00000000, "scriptPubKey": {}}"#, &[]);
     let o = decode(&["--quiet"], &corrected_even(), stub.path());
-    assert_eq!(o.status.code(), Some(0), "{}", s(&o.stderr));
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let e = s(&o.stderr);
     assert!(
         e.starts_with("\nCORRECTION APPLIED. 1 chunk needed repair:\n"),
@@ -391,7 +415,8 @@ fn bh1119_mt_g_verify_refusal_keeps_the_set_notice() {
     let other = tmp(&raw_of("uneven"));
     let o = verify(&duplicate_even(), other.path());
     let e = s(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{e}");
+    // The damaged discarded copy adds 16 (§2b item 2), kept past the mismatch (R1).
+    assert_eq!(o.status.code(), Some(NO | REPAIRED), "{e}");
     let d = e
         .find("DUPLICATE RESOLVED.")
         .unwrap_or_else(|| panic!("dropped the duplicate notice:\n{e}"));

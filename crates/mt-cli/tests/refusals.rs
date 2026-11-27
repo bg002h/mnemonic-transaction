@@ -21,15 +21,17 @@ use bitcoin::consensus::{deserialize, serialize};
 use std::io::Write;
 
 mod common;
+use common::exit::{INVALID, NO, OK, REFUSED, REPAIRED, USAGE};
 use common::{fixture_txids, node_stub};
 
+/// `mt`, offline by default: no `bitcoin-cli` on the child's `PATH`, so a
+/// machine with one never sends it fixture txids. A test that wants a node
+/// names a stub with `--bitcoin-cli`.
 fn mt() -> Command {
-    Command::cargo_bin("mt").unwrap()
+    let mut c = Command::cargo_bin("mt").unwrap();
+    c.env("PATH", "/nonexistent");
+    c
 }
-
-/// The offline mechanism. Never `PATH`: that is process-global and would
-/// silently change neighbouring tests in the same run.
-const OFFLINE: &str = "/nonexistent/bitcoin-cli";
 
 fn base() -> serde_json::Value {
     let p = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p5_base.json");
@@ -99,29 +101,32 @@ fn hex_of(bytes: &[u8]) -> String {
     s
 }
 
-/// Run `mt encode` on a fixture file, offline, and return `(stdout, stderr, ok)`.
-fn encode(body: &str, extra: &[&str]) -> (String, String, bool) {
+/// Run `mt encode` on a fixture file, offline, and return `(stdout, stderr, rc)`.
+fn encode(body: &str, extra: &[&str]) -> (String, String, Option<i32>) {
     let f = tmp(body);
     let mut c = mt();
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c.arg("--in").arg(f.path()).output().unwrap();
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
+        out.status.code(),
     )
 }
 
-/// Assert a refusal fired, named its section, and produced NO artifact.
+/// Assert a refusal fired, named its section, exited with its exit-code
+/// class (mnemonic-engrave `SPEC_constellation_exit_codes.md` §3; the class is
+/// also the row's `class` in `refusals.toml`), and produced NO artifact.
 ///
 /// **The stdout clause is not incidental.** §1.1's documented pipeline pipes
 /// `mt`'s stdout onward, so a refusal that still printed strings would let a
 /// transaction that failed `mt`'s own checks reach the steel anyway.
-fn assert_refused(stdout: &str, stderr: &str, ok: bool, section: &str) {
-    assert!(
-        !ok,
-        "the run SUCCEEDED; expected a {section} refusal.\n{stderr}"
+fn assert_refused(stdout: &str, stderr: &str, rc: Option<i32>, class: i32, section: &str) {
+    assert_eq!(
+        rc,
+        Some(class),
+        "expected a {section} refusal, exit {class}.\n{stderr}"
     );
     assert!(
         stderr.contains(&format!("REFUSED — {section},")),
@@ -138,8 +143,8 @@ fn assert_refused(stdout: &str, stderr: &str, ok: bool, section: &str) {
 #[test]
 fn refuses_an_unfinalized_psbt() {
     let v = base();
-    let (out, err, ok) = encode(&s(&v, "unfinalized_psbt_b64"), &[]);
-    assert_refused(&out, &err, ok, "§8.1");
+    let (out, err, rc) = encode(&s(&v, "unfinalized_psbt_b64"), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.1");
     assert!(
         err.contains("PSBT_IN_FINAL_SCRIPTSIG") || err.contains("PSBT_IN_FINAL_SCRIPTWITNESS"),
         "§8.1 must refuse in the PSBT's OWN vocabulary: {err}"
@@ -154,8 +159,12 @@ fn refuses_an_unfinalized_psbt() {
 #[test]
 fn the_same_transaction_finalized_encodes() {
     let v = base();
-    let (out, err, ok) = encode(&s(&v, "finalized_psbt_b64"), &[]);
-    assert!(ok, "the clean base fixture does not encode: {err}");
+    let (out, err, rc) = encode(&s(&v, "finalized_psbt_b64"), &[]);
+    assert_eq!(
+        rc,
+        Some(OK),
+        "the clean base fixture does not encode: {err}"
+    );
     assert!(out.lines().count() > 1, "no strings on stdout");
     assert!(out.lines().all(|l| l.starts_with("mt1")));
 }
@@ -168,11 +177,11 @@ fn refuses_an_absurd_fee_rate() {
     // real outputs. Nothing else about it is wrong -- it is the same signed
     // transaction the control encodes.
     let v = base();
-    let (out, err, ok) = encode(
+    let (out, err, rc) = encode(
         &s(&v, "raw_hex"),
         &["--input-value", "0:100.0", "--input-value", "1:5.0"],
     );
-    assert_refused(&out, &err, ok, "§8.2b");
+    assert_refused(&out, &err, rc, INVALID, "§8.2b");
     assert!(err.contains("25,000"), "the ceiling is not named: {err}");
     assert!(
         err.contains("sat/vB"),
@@ -183,11 +192,11 @@ fn refuses_an_absurd_fee_rate() {
 #[test]
 fn refuses_outputs_that_exceed_inputs() {
     let v = base();
-    let (out, err, ok) = encode(
+    let (out, err, rc) = encode(
         &s(&v, "raw_hex"),
         &["--input-value", "0:0.001", "--input-value", "1:0.001"],
     );
-    assert_refused(&out, &err, ok, "§8.2b");
+    assert_refused(&out, &err, rc, INVALID, "§8.2b");
     assert!(
         err.contains("spends more than it takes in"),
         "expected SendingTooMuch, got: {err}"
@@ -202,8 +211,8 @@ fn refuses_a_duplicate_outpoint() {
     let v = base();
     let mut tx: bitcoin::Transaction = deserialize(&hex_to_bytes(&s(&v, "raw_hex"))).unwrap();
     tx.input[1].previous_output = tx.input[0].previous_output;
-    let (out, err, ok) = encode(&hex_of(&serialize(&tx)), &[]);
-    assert_refused(&out, &err, ok, "§8.2b");
+    let (out, err, rc) = encode(&hex_of(&serialize(&tx)), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2b");
     assert!(err.contains("repeats outpoint"), "got: {err}");
 }
 
@@ -214,8 +223,8 @@ fn refuses_an_empty_vin() {
     let v = base();
     let mut tx: bitcoin::Transaction = deserialize(&hex_to_bytes(&s(&v, "raw_hex"))).unwrap();
     tx.input.clear();
-    let (out, err, ok) = encode(&hex_of(&serialize(&tx)), &[]);
-    assert_refused(&out, &err, ok, "§8.2b");
+    let (out, err, rc) = encode(&hex_of(&serialize(&tx)), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2b");
     assert!(err.contains("0 inputs"), "got: {err}");
 }
 
@@ -235,7 +244,7 @@ fn a_low_fee_warns_and_does_not_refuse() {
     // make this test pass for the wrong reason.
     let half = sats_to_btc(claimed / 2);
     let rest = sats_to_btc(claimed - claimed / 2);
-    let (_, err, ok) = encode(
+    let (_, err, rc) = encode(
         &s(&v, "raw_hex"),
         &[
             "--input-value",
@@ -244,7 +253,7 @@ fn a_low_fee_warns_and_does_not_refuse() {
             &format!("1:{rest}"),
         ],
     );
-    assert!(ok, "a low fee must NOT refuse: {err}");
+    assert_eq!(rc, Some(OK), "a low fee must NOT refuse: {err}");
     assert!(
         err.contains("WARNING: fee rate is"),
         "no low-fee warning: {err}"
@@ -275,8 +284,8 @@ fn refuses_a_non_witness_utxo_that_does_not_hash_to_its_input() {
         prev.lock_time.to_consensus_u32().wrapping_add(1),
     );
 
-    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
-    assert_refused(&out, &err, ok, "§8.2d");
+    let (out, err, rc) = encode(&b64_encode(&psbt.serialize()), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2d");
     // "A mismatch is a refusal naming BOTH txids."
     let want = psbt.unsigned_tx.input[0].previous_output.txid.to_string();
     let got = psbt.inputs[0]
@@ -297,8 +306,8 @@ fn refuses_a_non_witness_utxo_that_does_not_hash_to_its_input() {
 #[test]
 fn a_matching_non_witness_utxo_is_reported_as_txid_bound() {
     let v = base();
-    let (_, err, ok) = encode(&s(&v, "finalized_psbt_b64"), &[]);
-    assert!(ok, "{err}");
+    let (_, err, rc) = encode(&s(&v, "finalized_psbt_b64"), &[]);
+    assert_eq!(rc, Some(OK), "{err}");
     assert!(
         err.contains("TXID-BOUND"),
         "a hash-verified value must not render as claimed: {err}"
@@ -319,8 +328,12 @@ fn a_witness_utxo_alone_is_reported_as_claimed() {
     for i in &mut psbt.inputs {
         i.non_witness_utxo = None;
     }
-    let (_, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
-    assert!(ok, "a witness_utxo-only PSBT must still encode: {err}");
+    let (_, err, rc) = encode(&b64_encode(&psbt.serialize()), &[]);
+    assert_eq!(
+        rc,
+        Some(OK),
+        "a witness_utxo-only PSBT must still encode: {err}"
+    );
     assert!(
         err.contains("PSBT-CLAIMED — unverified"),
         "an unchecked value rendered as verified: {err}"
@@ -335,8 +348,8 @@ fn a_witness_utxo_alone_is_reported_as_claimed() {
 
 #[test]
 fn refuses_unrecognised_input_naming_what_was_seen() {
-    let (out, err, ok) = encode("this is not a transaction at all", &[]);
-    assert_refused(&out, &err, ok, "§8.2e");
+    let (out, err, rc) = encode("this is not a transaction at all", &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2e");
     // "naming what was seen (first 8 bytes as hex, and the detected length),
     // never a bare 'invalid input'."
     assert!(
@@ -353,13 +366,8 @@ fn refuses_a_transaction_passed_as_a_command_line_argument() {
     let v = base();
     let f = tmp(&s(&v, "finalized_psbt_b64"));
     let out = mt()
-        .args([
-            "encode",
-            "--bitcoin-cli",
-            OFFLINE,
-            "--to-label",
-            &s(&v, "raw_hex"),
-        ])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--to-label", &s(&v, "raw_hex")])
         .arg("--in")
         .arg(f.path())
         .output()
@@ -368,7 +376,8 @@ fn refuses_a_transaction_passed_as_a_command_line_argument() {
     assert_refused(
         &String::from_utf8_lossy(&out.stdout),
         &err,
-        out.status.success(),
+        out.status.code(),
+        REFUSED,
         "§8.2f",
     );
     // THE REFUSAL MUST NOT ECHO IT. Printing the argument back would put the
@@ -390,11 +399,11 @@ fn refuses_a_transaction_passed_as_a_command_line_argument() {
 #[test]
 fn an_ordinary_label_is_not_mistaken_for_a_transaction() {
     let v = base();
-    let (_, err, ok) = encode(
+    let (_, err, rc) = encode(
         &s(&v, "finalized_psbt_b64"),
         &["--to-label", "cold storage, safe deposit box 12"],
     );
-    assert!(ok, "a plain label tripped §8.2f: {err}");
+    assert_eq!(rc, Some(OK), "a plain label tripped §8.2f: {err}");
 }
 
 /// **F-274 — the guard must NORMALISE before it CLASSIFIES.**
@@ -442,7 +451,8 @@ fn no_spelling_of_a_bearer_argument_reaches_stderr() {
             ] {
                 rows += 1;
                 let out = mt()
-                    .args([verb, "--bitcoin-cli", OFFLINE])
+                    .env("PATH", "/nonexistent")
+                    .args([verb])
                     .arg(&arg)
                     .output()
                     .unwrap();
@@ -465,8 +475,8 @@ fn no_spelling_of_a_bearer_argument_reaches_stderr() {
                 );
                 assert_eq!(
                     out.status.code(),
-                    Some(1),
-                    "{where_}: §8.2f is an mt refusal, so exit 1 and not clap's 2"
+                    Some(REFUSED),
+                    "{where_}: §8.2f is an mt refusal, so REFUSED (8) and not usage (64)"
                 );
             }
         }
@@ -535,7 +545,8 @@ fn the_argv_override_routes_material_through_the_private_path() {
     for (verb, tokens, file_body) in cases {
         let f = tmp(&file_body);
         let via_in = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -547,7 +558,8 @@ fn the_argv_override_routes_material_through_the_private_path() {
         );
 
         let via_argv = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--allow-argv-secret"])
             .args(&tokens)
             .output()
             .unwrap();
@@ -579,7 +591,8 @@ fn the_argv_override_routes_material_through_the_private_path() {
 fn the_argv_override_strips_the_material_from_the_argv_clap_sees() {
     let raw = corpus_vector()["raw_hex"].as_str().unwrap().to_string();
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--allow-argv-secret"])
         .arg(&raw)
         .arg("--nosuchflag")
         .output()
@@ -605,12 +618,14 @@ fn the_argv_override_strips_the_material_from_the_argv_clap_sees() {
 fn the_argv_override_alone_is_the_bare_invocation() {
     let raw = corpus_vector()["raw_hex"].as_str().unwrap().to_string();
     let plain = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .write_stdin(raw.clone())
         .output()
         .unwrap();
     let flagged = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--allow-argv-secret"])
         .write_stdin(raw)
         .output()
         .unwrap();
@@ -640,7 +655,8 @@ fn material_on_argv_beside_an_in_file_is_warned_about_not_dropped() {
     let f = tmp(&other);
 
     let out = mt()
-        .args(["encode", "--bitcoin-cli", OFFLINE, "--allow-argv-secret"])
+        .env("PATH", "/nonexistent")
+        .args(["encode", "--allow-argv-secret"])
         .arg(&raw)
         .arg("--in")
         .arg(f.path())
@@ -682,8 +698,8 @@ fn the_argv_override_is_documented_on_every_verb() {
 #[test]
 fn refuses_an_unsigned_raw_transaction() {
     let v = base();
-    let (out, err, ok) = encode(&s(&v, "unsigned_raw_hex"), &[]);
-    assert_refused(&out, &err, ok, "§8.3");
+    let (out, err, rc) = encode(&s(&v, "unsigned_raw_hex"), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.3");
     assert!(
         err.contains("empty scriptSig") && err.contains("empty witness"),
         "§8.3 must refuse in the RAW transaction's own vocabulary: {err}"
@@ -692,7 +708,11 @@ fn refuses_an_unsigned_raw_transaction() {
 
 // ── §8.5 / §6a — what a node says ───────────────────────────────────────────
 
-fn encode_with_node(body: &str, node: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
+fn encode_with_node(
+    body: &str,
+    node: &std::path::Path,
+    extra: &[&str],
+) -> (String, String, Option<i32>) {
     let f = tmp(body);
     let mut c = mt();
     c.args(["encode", "--bitcoin-cli"]).arg(node);
@@ -701,7 +721,7 @@ fn encode_with_node(body: &str, node: &std::path::Path, extra: &[&str]) -> (Stri
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
+        out.status.code(),
     )
 }
 
@@ -719,8 +739,8 @@ fn refuses_a_spent_input_whose_parent_confirmed() {
         "the fixture spends its own output; this stub could not model theft"
     );
     let stub = node_stub("", &conf);
-    let (out, err, ok) = encode_with_node(&s(&v, "raw_hex"), stub.path(), &[]);
-    assert_refused(&out, &err, ok, "§8.5");
+    let (out, err, rc) = encode_with_node(&s(&v, "raw_hex"), stub.path(), &[]);
+    assert_refused(&out, &err, rc, NO, "§8.5");
     assert!(
         err.contains("not in the UTXO set"),
         "§8.5 must say what it found: {err}"
@@ -737,9 +757,10 @@ fn an_unconfirmed_parent_is_not_a_spent_input() {
     // found, 0 confirmations: the parent is in the mempool
     let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 0u32)).collect();
     let stub = node_stub("", &conf);
-    let (_, err, ok) = encode_with_node(&s(&v, "raw_hex"), stub.path(), &[]);
-    assert!(
-        ok,
+    let (_, err, rc) = encode_with_node(&s(&v, "raw_hex"), stub.path(), &[]);
+    assert_eq!(
+        rc,
+        Some(OK),
         "a mempool-only parent was refused; §8.5 requires the parent CONFIRMED:\n{err}"
     );
     assert!(!err.contains("REFUSED"), "{err}");
@@ -751,12 +772,12 @@ fn refuses_a_value_that_disagrees_with_the_chain() {
     // The chain says 3.0 BTC; the operator asserts 4.0. mt cannot tell which is
     // wrong, so it refuses -- naming BOTH numbers.
     let stub = node_stub(r#"{"value": 3.00000000, "scriptPubKey": {}}"#, &[]);
-    let (out, err, ok) = encode_with_node(
+    let (out, err, rc) = encode_with_node(
         &s(&v, "raw_hex"),
         stub.path(),
         &["--input-value", "0:4.0", "--input-value", "1:4.0"],
     );
-    assert_refused(&out, &err, ok, "§6a");
+    assert_refused(&out, &err, rc, NO, "§6a");
     assert!(
         err.contains("4.00000000 BTC"),
         "the claim is missing: {err}"
@@ -773,12 +794,12 @@ fn refuses_a_value_that_disagrees_with_the_chain() {
 fn a_value_that_agrees_with_the_chain_is_accepted() {
     let v = base();
     let stub = node_stub(r#"{"value": 4.00000000, "scriptPubKey": {}}"#, &[]);
-    let (_, err, ok) = encode_with_node(
+    let (_, err, rc) = encode_with_node(
         &s(&v, "raw_hex"),
         stub.path(),
         &["--input-value", "0:4.0", "--input-value", "1:4.0"],
     );
-    assert!(ok, "an agreeing value was refused: {err}");
+    assert_eq!(rc, Some(OK), "an agreeing value was refused: {err}");
 }
 
 // ── §8.6 — the satisfaction must bind the outputs ───────────────────────────
@@ -786,8 +807,8 @@ fn a_value_that_agrees_with_the_chain_is_accepted() {
 #[test]
 fn refuses_a_signature_that_is_not_sighash_all() {
     let v = base();
-    let (out, err, ok) = encode(&s(&v, "sighash_none_psbt_b64"), &[]);
-    assert_refused(&out, &err, ok, "§8.6");
+    let (out, err, rc) = encode(&s(&v, "sighash_none_psbt_b64"), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.6");
     assert!(err.contains("0x02"), "the flag is not named: {err}");
     assert!(
         err.contains("SIGHASH_NONE"),
@@ -811,8 +832,8 @@ fn refuses_a_satisfaction_carrying_no_signature() {
         vec![0xcd; 143], // the leaf script
         control_block(1),
     ]);
-    let (out, err, ok) = encode(&hex_of(&serialize(&tx)), &[]);
-    assert_refused(&out, &err, ok, "§8.6");
+    let (out, err, rc) = encode(&hex_of(&serialize(&tx)), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.6");
     assert!(
         err.contains("no signature"),
         "expected §8.6(b), got what looks like (a): {err}"
@@ -835,9 +856,10 @@ fn a_control_block_is_not_counted_as_a_signature() {
     let mut tx: bitcoin::Transaction = deserialize(&hex_to_bytes(&s(&v, "raw_hex"))).unwrap();
     tx.input[0].witness =
         bitcoin::Witness::from_slice(&[vec![0xab; 32], vec![0xcd; 143], control_block(1)]);
-    let (_, err, ok) = encode(&hex_of(&serialize(&tx)), &[]);
-    assert!(
-        !ok,
+    let (_, err, rc) = encode(&hex_of(&serialize(&tx)), &[]);
+    assert_ne!(
+        rc,
+        Some(OK),
         "the 65-byte control block was counted as a signature:\n{err}"
     );
 }
@@ -868,8 +890,8 @@ fn refuses_over_the_chunk_ceiling() {
         bytes.len()
     );
 
-    let (out, err, ok) = encode(&hex_of(&bytes), &[]);
-    assert_refused(&out, &err, ok, "§8.7b");
+    let (out, err, rc) = encode(&hex_of(&bytes), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.7b");
     assert!(err.contains("32,768"), "the ceiling is not named: {err}");
     assert!(
         err.contains(&format!("{}", bytes.len().div_ceil(40)).replace_thousands()),
@@ -906,7 +928,7 @@ fn refuses_ms1_without_echoing_any_of_it() {
         let f = tmp(MS1);
         let out = mt().args([verb, "--in"]).arg(f.path()).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert!(!out.status.success(), "{verb} accepted ms1");
+        assert_eq!(out.status.code(), Some(INVALID), "{verb} accepted ms1");
         assert!(
             err.contains("REFUSED — §8.9,"),
             "{verb}: expected §8.9, got:\n{err}"
@@ -966,9 +988,10 @@ fn an_already_confirmed_transaction_is_not_reported_as_stolen() {
     conf.extend(parents.iter().map(|p| (&p[..16], 9u32)));
     let stub = node_stub("", &conf);
 
-    let (out, err, ok) = encode_with_node(&s(&v, "finalized_psbt_b64"), stub.path(), &[]);
-    assert!(
-        ok,
+    let (out, err, rc) = encode_with_node(&s(&v, "finalized_psbt_b64"), stub.path(), &[]);
+    assert_eq!(
+        rc,
+        Some(OK),
         "a CONFIRMED transaction was refused as though someone had stolen its inputs:\n{err}"
     );
     assert!(
@@ -1003,8 +1026,12 @@ fn a_node_that_cannot_find_an_outpoint_does_not_discard_the_psbt_record() {
     let conf: Vec<(&str, u32)> = parents.iter().map(|p| (&p[..16], 0u32)).collect();
     let stub = node_stub("", &conf);
 
-    let (_, with_node, ok) = encode_with_node(&s(&v, "finalized_psbt_b64"), stub.path(), &[]);
-    assert!(ok, "a mempool parent must not refuse: {with_node}");
+    let (_, with_node, rc) = encode_with_node(&s(&v, "finalized_psbt_b64"), stub.path(), &[]);
+    assert_eq!(
+        rc,
+        Some(OK),
+        "a mempool parent must not refuse: {with_node}"
+    );
     let (_, offline, _) = encode(&s(&v, "finalized_psbt_b64"), &[]);
 
     for (label, err) in [("offline", &offline), ("with a node", &with_node)] {
@@ -1045,7 +1072,7 @@ fn a_hostile_input_value_is_refused_by_name_and_never_panics() {
         "",
         "0x5",
     ] {
-        let (out, err, ok) = encode(
+        let (out, err, rc) = encode(
             &s(&v, "raw_hex"),
             &[
                 "--input-value",
@@ -1054,7 +1081,7 @@ fn a_hostile_input_value_is_refused_by_name_and_never_panics() {
                 "1:5.0",
             ],
         );
-        assert!(!ok, "{amount:?} was accepted");
+        assert_eq!(rc, Some(INVALID), "{amount:?} was accepted");
         assert!(
             !err.contains("panicked"),
             "{amount:?} PANICKED instead of refusing:\n{err}"
@@ -1113,8 +1140,8 @@ fn a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound() {
 
     // bughunt-1119 FIX-E (T16): the record proves the outpoint does not exist,
     // so encode now refuses outright; no row is printed under any heading.
-    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
-    assert_refused(&out, &err, ok, "§8.2d");
+    let (out, err, rc) = encode(&b64_encode(&psbt.serialize()), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2d");
     assert!(
         err.contains(&format!(
             "REFUSED — §8.2d, input 0 spends output {high} of {}, which has {} output(s)",
@@ -1141,11 +1168,11 @@ fn a_record_with_no_output_at_the_inputs_vout_is_not_txid_bound() {
 fn a_non_whitespace_separator_is_refused_before_anything_is_cut() {
     let v = base();
     for sep in ["-", ".", "|", "0"] {
-        let (out, err, ok) = encode(
+        let (out, err, rc) = encode(
             &s(&v, "raw_hex"),
             &["--group-size", "5", "--separator", sep],
         );
-        assert_refused(&out, &err, ok, "§1.1e");
+        assert_refused(&out, &err, rc, USAGE, "§1.1e");
         assert!(err.contains("is not whitespace"), "got: {err}");
     }
 }
@@ -1155,11 +1182,11 @@ fn a_non_whitespace_separator_is_refused_before_anything_is_cut() {
 fn whitespace_separators_round_trip() {
     let v = base();
     for sep in [" ", "\t", "  "] {
-        let (out, err, ok) = encode(
+        let (out, err, rc) = encode(
             &s(&v, "raw_hex"),
             &["--group-size", "5", "--separator", sep],
         );
-        assert!(ok, "separator {sep:?} was refused: {err}");
+        assert_eq!(rc, Some(OK), "separator {sep:?} was refused: {err}");
         assert!(out.contains(sep), "the separator did not reach stdout");
 
         // ...and mt must be able to read back what mt just produced.
@@ -1183,8 +1210,8 @@ fn whitespace_separators_round_trip() {
 #[test]
 fn an_input_value_index_that_names_no_input_is_refused() {
     let v = base();
-    let (out, err, ok) = encode(&s(&v, "raw_hex"), &["--input-value", "9:1.0"]);
-    assert_refused(&out, &err, ok, "§8.2c");
+    let (out, err, rc) = encode(&s(&v, "raw_hex"), &["--input-value", "9:1.0"]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2c");
     assert!(
         err.contains("this transaction has 2 input(s)"),
         "got: {err}"
@@ -1194,11 +1221,11 @@ fn an_input_value_index_that_names_no_input_is_refused() {
 #[test]
 fn a_repeated_input_value_index_is_refused() {
     let v = base();
-    let (out, err, ok) = encode(
+    let (out, err, rc) = encode(
         &s(&v, "raw_hex"),
         &["--input-value", "0:1.0", "--input-value", "0:2.0"],
     );
-    assert_refused(&out, &err, ok, "§8.2c");
+    assert_refused(&out, &err, rc, INVALID, "§8.2c");
     assert!(err.contains("more than once"), "got: {err}");
 }
 
@@ -1208,8 +1235,8 @@ fn a_repeated_input_value_index_is_refused() {
 #[test]
 fn a_value_contradicting_the_psbt_is_reported_not_swallowed() {
     let v = base();
-    let (_, err, ok) = encode(&s(&v, "finalized_psbt_b64"), &["--input-value", "0:9.5"]);
-    assert!(ok, "{err}");
+    let (_, err, rc) = encode(&s(&v, "finalized_psbt_b64"), &["--input-value", "0:9.5"]);
+    assert_eq!(rc, Some(OK), "{err}");
     let flat = err.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat.contains("disagrees with the PSBT, and mt used the PSBT"),
@@ -1234,7 +1261,8 @@ fn verify_transaction_accepts_a_psbt() {
     let strings = {
         let f = tmp(&s(&v, "finalized_psbt_b64"));
         let out = mt()
-            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["encode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1266,7 +1294,8 @@ fn verify_transaction_refuses_an_unfinalized_psbt() {
     let strings = {
         let f = tmp(&s(&v, "finalized_psbt_b64"));
         let out = mt()
-            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["encode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1300,7 +1329,8 @@ fn a_filename_beginning_mt1_is_not_mistaken_for_a_bearer_string() {
     let strings = {
         let f = tmp(&s(&v, "raw_hex"));
         let out = mt()
-            .args(["encode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["encode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1355,7 +1385,7 @@ fn a_real_mt1_string_on_the_command_line_is_still_refused() {
     let string = corpus["vectors"][0]["strings"][0].as_str().unwrap();
     let out = mt().args(["verify", string]).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(REFUSED));
     assert!(err.contains("REFUSED — §8.2f,"), "got: {err}");
     assert!(err.contains("an mt1 set"), "got: {err}");
 }
@@ -1377,8 +1407,8 @@ fn the_legend_prints_no_amount_when_it_cannot_know_one() {
     .unwrap();
     // The `even` vector has TWO outputs: 0.05 and 49.94998590.
     let hex = corpus["vectors"][0]["raw_hex"].as_str().unwrap();
-    let (_, err, ok) = encode(hex, &["--to", "alice-cold"]);
-    assert!(ok, "{err}");
+    let (_, err, rc) = encode(hex, &["--to", "alice-cold"]);
+    assert_eq!(rc, Some(OK), "{err}");
 
     assert!(
         err.contains("    TO alice-cold\n"),
@@ -1402,8 +1432,8 @@ fn the_legend_prints_no_amount_when_it_cannot_know_one() {
 #[test]
 fn the_legend_prints_the_amount_when_there_is_only_one_output() {
     let v = base();
-    let (_, err, ok) = encode(&s(&v, "raw_hex"), &["--to", "alice-cold"]);
-    assert!(ok, "{err}");
+    let (_, err, rc) = encode(&s(&v, "raw_hex"), &["--to", "alice-cold"]);
+    assert_eq!(rc, Some(OK), "{err}");
     assert!(
         err.contains("TO alice-cold  7.99900000 BTC"),
         "a single-output transaction must carry its amount:\n{err}"
@@ -1428,8 +1458,8 @@ fn refuses_a_psbt_input_with_no_utxo_record_and_no_supplied_value() {
     psbt.inputs[0].non_witness_utxo = None;
     psbt.inputs[0].witness_utxo = None;
 
-    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &[]);
-    assert_refused(&out, &err, ok, "§8.2c");
+    let (out, err, rc) = encode(&b64_encode(&psbt.serialize()), &[]);
+    assert_refused(&out, &err, rc, INVALID, "§8.2c");
     assert!(
         err.contains("carries no UTXO record and no supplied value"),
         "got: {err}"
@@ -1449,8 +1479,8 @@ fn supplying_the_missing_value_lets_that_psbt_encode() {
     psbt.inputs[0].non_witness_utxo = None;
     psbt.inputs[0].witness_utxo = None;
 
-    let (out, err, ok) = encode(&b64_encode(&psbt.serialize()), &["--input-value", "0:3.0"]);
-    assert!(ok, "the supplied value was not accepted: {err}");
+    let (out, err, rc) = encode(&b64_encode(&psbt.serialize()), &["--input-value", "0:3.0"]);
+    assert_eq!(rc, Some(OK), "the supplied value was not accepted: {err}");
     assert!(
         out.lines().all(|l| l.starts_with("mt1")),
         "no strings produced"
@@ -1470,8 +1500,8 @@ fn refuses_a_pasted_txid_by_name() {
     let txid = tx.compute_txid().to_string();
     assert_eq!(txid.len(), 64);
 
-    let (out, err, ok) = encode(&txid, &[]);
-    assert_refused(&out, &err, ok, "§10.10");
+    let (out, err, rc) = encode(&txid, &[]);
+    assert_refused(&out, &err, rc, INVALID, "§10.10");
     assert!(err.contains("transaction ID"), "got: {err}");
     assert!(
         err.contains("getrawtransaction"),
@@ -1514,7 +1544,8 @@ fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
     // caller actually receives did not parse at all. A test shaped to the
     // implementation instead of to the consumer.
     let out = mt()
-        .args(["decode", "--json", "--bitcoin-cli", OFFLINE, "--in"])
+        .env("PATH", "/nonexistent")
+        .args(["decode", "--json", "--in"])
         .arg(f.path())
         .output()
         .unwrap();
@@ -1539,12 +1570,17 @@ fn json_works_where_there_is_a_report_and_refuses_where_there_is_not() {
     // verify and encode: no report, so the flag must REFUSE rather than sit inert.
     for verb in ["verify", "encode"] {
         let out = mt()
-            .args([verb, "--json", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--json", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
         let err = String::from_utf8(out.stderr).unwrap();
-        assert!(!out.status.success(), "{verb} accepted --json silently");
+        assert_eq!(
+            out.status.code(),
+            Some(USAGE),
+            "{verb} accepted --json silently"
+        );
         assert!(err.contains("--json has no meaning"), "{verb}: {err}");
     }
 }
@@ -1560,12 +1596,13 @@ fn a_pasted_txid_is_named_on_every_verb() {
     for verb in ["decode", "verify", "inspect"] {
         let f = tmp(&txid);
         let out = mt()
-            .args([verb, "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args([verb, "--in"])
             .arg(f.path())
             .output()
             .unwrap();
         let err = String::from_utf8(out.stderr).unwrap();
-        assert!(!out.status.success(), "{verb} accepted a txid");
+        assert_eq!(out.status.code(), Some(INVALID), "{verb} accepted a txid");
         assert!(
             err.contains("REFUSED — §10.10,") && err.contains("transaction ID"),
             "{verb}: {err}"
@@ -1689,7 +1726,7 @@ fn a_damaged_character_reported_as_b_is_not_called_free() {
         .output()
         .unwrap();
     let err = String::from_utf8(out.stderr).unwrap();
-    assert!(out.status.success(), "{err}");
+    assert_eq!(out.status.code(), Some(REPAIRED), "{err}");
     assert!(
         err.contains("NEITHER reading checksummed on its own"),
         "mt did not say the repair came from the budget:\n{err}"
@@ -1715,7 +1752,8 @@ fn a_sibling_format_is_named_rather_than_called_malformed() {
         );
         let f = tmp(&body);
         let out = mt()
-            .args(["decode", "--bitcoin-cli", OFFLINE, "--in"])
+            .env("PATH", "/nonexistent")
+            .args(["decode", "--in"])
             .arg(f.path())
             .output()
             .unwrap();
@@ -1753,7 +1791,7 @@ fn a_sibling_format_is_named_rather_than_called_malformed() {
 /// the shared `encode()` helper cannot do -- it pipes, and a pipe is precisely
 /// the case that must NOT be refused.
 #[cfg(unix)]
-fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, bool) {
+fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, Option<i32>) {
     use std::os::unix::fs::PermissionsExt;
     let f = tmp(body);
     let dir = tempfile::tempdir().unwrap();
@@ -1762,7 +1800,7 @@ fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, bool) 
     std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode)).unwrap();
 
     let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"));
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c
         .arg("--in")
@@ -1774,7 +1812,7 @@ fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, bool) 
     (
         std::fs::metadata(&dest).unwrap().len(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
+        out.status.code(),
     )
 }
 
@@ -1782,8 +1820,8 @@ fn encode_to_file(body: &str, extra: &[&str], mode: u32) -> (u64, String, bool) 
 #[cfg(unix)]
 fn refuses_a_world_readable_stdout() {
     let v = base();
-    let (written, err, ok) = encode_to_file(&s(&v, "finalized_psbt_b64"), &[], 0o644);
-    assert_refused("", &err, ok, "§8.2h");
+    let (written, err, rc) = encode_to_file(&s(&v, "finalized_psbt_b64"), &[], 0o644);
+    assert_refused("", &err, rc, REFUSED, "§8.2h");
     assert_eq!(
         written, 0,
         "a refusal must produce NO artifact -- the strings are the engraving"
@@ -1799,12 +1837,12 @@ fn refuses_a_world_readable_stdout() {
 #[cfg(unix)]
 fn the_override_permits_a_world_readable_stdout() {
     let v = base();
-    let (written, err, ok) = encode_to_file(
+    let (written, err, rc) = encode_to_file(
         &s(&v, "finalized_psbt_b64"),
         &["--allow-world-readable"],
         0o644,
     );
-    assert!(ok, "the override must permit the write: {err}");
+    assert_eq!(rc, Some(OK), "the override must permit the write: {err}");
     assert!(written > 0, "the strings must actually be written");
 }
 
@@ -1818,8 +1856,12 @@ fn the_override_permits_a_world_readable_stdout() {
 #[cfg(unix)]
 fn does_not_refuse_an_owner_only_stdout() {
     let v = base();
-    let (written, err, ok) = encode_to_file(&s(&v, "finalized_psbt_b64"), &[], 0o600);
-    assert!(ok, "an owner-only file is exactly what we want: {err}");
+    let (written, err, rc) = encode_to_file(&s(&v, "finalized_psbt_b64"), &[], 0o600);
+    assert_eq!(
+        rc,
+        Some(OK),
+        "an owner-only file is exactly what we want: {err}"
+    );
     assert!(written > 0, "the strings must actually be written");
 }
 
@@ -1829,8 +1871,8 @@ fn does_not_refuse_an_owner_only_stdout() {
 #[test]
 fn does_not_refuse_a_pipe() {
     let v = base();
-    let (out, err, ok) = encode(&s(&v, "finalized_psbt_b64"), &[]);
-    assert!(ok, "a pipe is not a world-readable file: {err}");
+    let (out, err, rc) = encode(&s(&v, "finalized_psbt_b64"), &[]);
+    assert_eq!(rc, Some(OK), "a pipe is not a world-readable file: {err}");
     assert!(
         out.contains("mt1"),
         "the strings must still reach the pipe: {out}"
@@ -1844,10 +1886,10 @@ fn does_not_refuse_a_pipe() {
 // receive the bytes. Only the ANONYMOUS pipe behind `|` is 0600.
 
 #[cfg(unix)]
-fn encode_to_sink(body: &str, extra: &[&str], sink: std::fs::File) -> (String, bool) {
+fn encode_to_sink(body: &str, extra: &[&str], sink: std::fs::File) -> (String, Option<i32>) {
     let f = tmp(body);
     let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"));
-    c.args(["encode", "--bitcoin-cli", OFFLINE]);
+    c.env("PATH", "/nonexistent").args(["encode"]);
     c.args(extra);
     let out = c
         .arg("--in")
@@ -1858,7 +1900,7 @@ fn encode_to_sink(body: &str, extra: &[&str], sink: std::fs::File) -> (String, b
         .unwrap();
     (
         String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
+        out.status.code(),
     )
 }
 
@@ -1881,9 +1923,10 @@ fn refuses_a_world_readable_named_fifo() {
         .open(&p)
         .unwrap();
 
-    let (err, ok) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
-    assert!(
-        !ok,
+    let (err, rc) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
+    assert_eq!(
+        rc,
+        Some(REFUSED),
         "a 0666 named FIFO is readable by others and really leaks: {err}"
     );
 }
@@ -1899,8 +1942,12 @@ fn does_not_refuse_dev_null() {
         .write(true)
         .open("/dev/null")
         .unwrap();
-    let (err, ok) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
-    assert!(ok, "/dev/null is 0666 but persists nothing: {err}");
+    let (err, rc) = encode_to_sink(&s(&v, "finalized_psbt_b64"), &[], sink);
+    assert_eq!(
+        rc,
+        Some(OK),
+        "/dev/null is 0666 but persists nothing: {err}"
+    );
 }
 
 // ── P1 row 9 — the fd adoption ───────────────────────────────────────────────
@@ -1937,17 +1984,22 @@ fn refuses_a_group_writable_stdout_no_read_mask_can_see() {
     let v = base();
     let body = s(&v, "finalized_psbt_b64");
 
-    let (written, err, ok) = encode_to_file(&body, &[], 0o600);
-    assert!(ok, "the CONTROL: an owner-only stdout is permitted: {err}");
+    let (written, err, rc) = encode_to_file(&body, &[], 0o600);
+    assert_eq!(
+        rc,
+        Some(OK),
+        "the CONTROL: an owner-only stdout is permitted: {err}"
+    );
     assert_eq!(
         written, 796,
         "the control must produce the artifact, or the two rows below are \
          measuring an encode that writes nothing"
     );
 
-    let (written, err, ok) = encode_to_file(&body, &[], 0o620);
-    assert!(
-        !ok,
+    let (written, err, rc) = encode_to_file(&body, &[], 0o620);
+    assert_eq!(
+        rc,
+        Some(REFUSED),
         "0620 is GROUP-WRITABLE. mt refuses it and me permits it, and `0o620 & \
          0o044 == 0` is why -- if this ever passes, mt has adopted me's mask \
          along with the crate's mechanism: {err}"
@@ -1958,8 +2010,8 @@ fn refuses_a_group_writable_stdout_no_read_mask_can_see() {
         "the refusal must name the mode it measured: {err}"
     );
 
-    let (written, err, ok) = encode_to_file(&body, &[], 0o644);
-    assert!(!ok, "0644 is readable by everyone: {err}");
+    let (written, err, rc) = encode_to_file(&body, &[], 0o644);
+    assert_eq!(rc, Some(REFUSED), "0644 is readable by everyone: {err}");
     assert_eq!(written, 0, "a refusal must leave no artifact");
 }
 
@@ -1972,7 +2024,7 @@ fn refuses_a_group_writable_stdout_no_read_mask_can_see() {
 /// when `mt` opens the fifo to read. `mt` reads the input to EOF long before it
 /// looks at the mode, so there is no ordering hazard between the two.
 #[cfg(unix)]
-fn encode_from_fifo(body: &str, mode: u32) -> (String, bool) {
+fn encode_from_fifo(body: &str, mode: u32) -> (String, Option<i32>) {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1999,7 +2051,8 @@ fn encode_from_fifo(body: &str, mode: u32) -> (String, bool) {
     });
 
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .arg("--in")
         .arg(&p)
         .output()
@@ -2007,7 +2060,7 @@ fn encode_from_fifo(body: &str, mode: u32) -> (String, bool) {
     writer.join().unwrap();
     (
         String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
+        out.status.code(),
     )
 }
 
@@ -2032,9 +2085,10 @@ fn encode_from_fifo(body: &str, mode: u32) -> (String, bool) {
 #[cfg(unix)]
 fn a_world_readable_named_fifo_as_input_warns_and_does_not_refuse() {
     let v = base();
-    let (err, ok) = encode_from_fifo(&s(&v, "finalized_psbt_b64"), 0o666);
-    assert!(
-        ok,
+    let (err, rc) = encode_from_fifo(&s(&v, "finalized_psbt_b64"), 0o666);
+    assert_eq!(
+        rc,
+        Some(OK),
         "§8.2g WARNS about the input and never refuses it -- refusing an already \
          exposed file prevents nothing and blocks the operator's work: {err}"
     );
@@ -2056,8 +2110,8 @@ fn a_world_readable_named_fifo_as_input_warns_and_does_not_refuse() {
 #[cfg(unix)]
 fn an_owner_only_named_fifo_as_input_says_nothing() {
     let v = base();
-    let (err, ok) = encode_from_fifo(&s(&v, "finalized_psbt_b64"), 0o600);
-    assert!(ok, "an owner-only fifo is not an exposure: {err}");
+    let (err, rc) = encode_from_fifo(&s(&v, "finalized_psbt_b64"), 0o600);
+    assert_eq!(rc, Some(OK), "an owner-only fifo is not an exposure: {err}");
     assert!(
         !err.contains("0600"),
         "nothing about the input's mode should be said when no group or other \
@@ -2080,7 +2134,8 @@ fn a_world_readable_input_file_warns() {
     std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
 
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-        .args(["encode", "--bitcoin-cli", OFFLINE])
+        .env("PATH", "/nonexistent")
+        .args(["encode"])
         .arg("--in")
         .arg(f.path())
         .output()
@@ -2122,8 +2177,8 @@ fn the_stdout_refusal_says_what_the_mode_grants_not_what_the_rule_is_called() {
     let v = base();
     let body = s(&v, "finalized_psbt_b64");
 
-    let (_, err, ok) = encode_to_file(&body, &[], 0o620);
-    assert!(!ok, "0620 is refused: {err}");
+    let (_, err, rc) = encode_to_file(&body, &[], 0o620);
+    assert_ne!(rc, Some(OK), "0620 is refused: {err}");
     assert!(err.contains("0620"), "the mode it measured is named: {err}");
     assert!(
         !err.contains("grant read"),
@@ -2143,8 +2198,8 @@ fn the_stdout_refusal_says_what_the_mode_grants_not_what_the_rule_is_called() {
 
     // THE CONTROL, and it is the half that stops this becoming "never mention
     // reading": at 0644 the original sentence is TRUE and must survive.
-    let (_, err, ok) = encode_to_file(&body, &[], 0o644);
-    assert!(!ok, "0644 is refused: {err}");
+    let (_, err, rc) = encode_to_file(&body, &[], 0o644);
+    assert_ne!(rc, Some(OK), "0644 is refused: {err}");
     assert!(
         err.contains("read"),
         "0644 really does grant read to group and others: {err}"
@@ -2156,8 +2211,8 @@ fn the_stdout_refusal_says_what_the_mode_grants_not_what_the_rule_is_called() {
 
     // ...and at 0600 there is no message at all, so a wording that always fires
     // cannot pass either half above.
-    let (written, err, ok) = encode_to_file(&body, &[], 0o600);
-    assert!(ok, "0600 must not fire: {err}");
+    let (written, err, rc) = encode_to_file(&body, &[], 0o600);
+    assert_eq!(rc, Some(OK), "0600 must not fire: {err}");
     assert!(written > 0);
     assert!(!err.contains("8.2h"), "{err}");
 }
@@ -2173,23 +2228,24 @@ fn the_input_warning_says_what_the_mode_grants_not_what_the_rule_is_called() {
     use std::os::unix::fs::PermissionsExt;
     let v = base();
 
-    let warn_at = |mode: u32| -> (String, bool) {
+    let warn_at = |mode: u32| -> (String, Option<i32>) {
         let f = tmp(&s(&v, "finalized_psbt_b64"));
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(mode)).unwrap();
         let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("mt"))
-            .args(["encode", "--bitcoin-cli", OFFLINE])
+            .env("PATH", "/nonexistent")
+            .args(["encode"])
             .arg("--in")
             .arg(f.path())
             .output()
             .unwrap();
         (
             String::from_utf8_lossy(&out.stderr).into_owned(),
-            out.status.success(),
+            out.status.code(),
         )
     };
 
-    let (err, ok) = warn_at(0o620);
-    assert!(ok, "§8.2g warns and never refuses: {err}");
+    let (err, rc) = warn_at(0o620);
+    assert_eq!(rc, Some(OK), "§8.2g warns and never refuses: {err}");
     assert!(err.contains("0620"), "the mode it measured is named: {err}");
     assert!(
         !err.contains("grant read"),
@@ -2213,15 +2269,15 @@ fn the_input_warning_says_what_the_mode_grants_not_what_the_rule_is_called() {
     );
 
     // THE CONTROL: at 0644 the original sentence is true and must survive.
-    let (err, ok) = warn_at(0o644);
-    assert!(ok, "{err}");
+    let (err, rc) = warn_at(0o644);
+    assert_eq!(rc, Some(OK), "{err}");
     assert!(err.contains("0644"), "{err}");
     assert!(err.contains("read"), "{err}");
     assert!(err.contains("group and others"), "{err}");
 
     // ...and 0600 is silent.
-    let (err, ok) = warn_at(0o600);
-    assert!(ok, "{err}");
+    let (err, rc) = warn_at(0o600);
+    assert_eq!(rc, Some(OK), "{err}");
     assert!(
         !err.contains("0600"),
         "an owner-only input says nothing: {err}"

@@ -40,7 +40,11 @@
 
 use std::process::Command;
 
-const OFFLINE: &[&str] = &["--bitcoin-cli", "/nonexistent/bitcoin-cli"];
+mod common;
+use common::exit::INVALID;
+
+/// Offline: no `--bitcoin-cli`, and no `bitcoin-cli` on the child's `PATH`.
+const NO_NODE_PATH: &str = "/nonexistent";
 
 fn corpus() -> serde_json::Value {
     let p = concat!(
@@ -94,9 +98,8 @@ fn mt_paints_the_strings_across_a_real_terminal_and_exits_0() {
     let st = Command::new(script)
         .arg("-qec")
         .arg(format!(
-            "{} encode {} --in {}",
+            "env PATH={NO_NODE_PATH} {} encode --in {}",
             mt.display(),
-            OFFLINE.join(" "),
             input.display()
         ))
         .arg(&typescript)
@@ -141,7 +144,7 @@ fn every_reading_verb_still_refuses_empty_input_in_mts_own_words() {
     for verb in ["decode", "verify", "inspect"] {
         let out = Command::new(assert_cmd::cargo::cargo_bin("mt"))
             .arg(verb)
-            .args(OFFLINE)
+            .env("PATH", NO_NODE_PATH)
             .arg("--in")
             .arg(&empty)
             .output()
@@ -149,8 +152,8 @@ fn every_reading_verb_still_refuses_empty_input_in_mts_own_words() {
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         assert_eq!(
             out.status.code(),
-            Some(1),
-            "{verb}: mt's own empty-input refusal exits 1: {err}"
+            Some(INVALID),
+            "{verb}: mt's own empty-input refusal is INVALID (2): {err}"
         );
         assert!(
             err.contains("§1.1e") && err.contains("no strings found in the input"),
@@ -225,7 +228,7 @@ fn mts_own_reader_still_does_what_split_record_stream_cannot() {
         std::fs::write(&f, &text).unwrap();
         let out = Command::new(assert_cmd::cargo::cargo_bin("mt"))
             .arg("decode")
-            .args(OFFLINE)
+            .env("PATH", NO_NODE_PATH)
             .arg("--quiet")
             .arg("--in")
             .arg(&f)
