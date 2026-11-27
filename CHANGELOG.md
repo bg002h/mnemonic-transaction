@@ -14,7 +14,25 @@ Releases 0.1.0 and 0.1.1 are described by their tags (`mt-cli-v0.1.0`,
 
 ## mt-cli [Unreleased]
 
+### Added
+- **`--offline`** on `encode`, `decode` and `inspect` (Brian's ruling
+  2026-11-26, exit-code spec §2b item 1): mt runs no `bitcoin-cli`, not even
+  one on `PATH`, says no node was asked (`--offline: no node was asked` heads
+  the no-node warning; the `--json` entry reads `--offline: no node was asked;
+  nothing here is confirmed against the chain`) and exits as with no node (0
+  when nothing else failed). `--offline` with `--bitcoin-cli` is usage (64).
+  `verify --offline` is usage (64): verify never asks a node, the same as
+  `verify --bitcoin-cli`.
+
 ### Changed
+- **A damaged duplicate mt discards sets 16** (Brian's ruling 2026-11-26,
+  exit-code spec §2b item 2; 0 before). When a set holds a clean and a damaged
+  copy of one chunk, mt keeps the clean one and tells the operator to re-cut
+  the other, and 16 is set whenever mt says to re-engrave a plate. Two clean
+  copies stay 0. The `--json` duplicate entry gains `; the discarded copy
+  needed {d}: re-cut it` when the discarded copy needed corrections. The
+  per-verb `--help` bit line for `decode`, `verify` and `inspect` reads "16 a
+  correction was applied or a damaged copy needs re-cutting".
 - **Exit codes follow the constellation exit-code spec**
   (mnemonic-engrave `design/SPEC_constellation_exit_codes.md`, revision 5, all
   eleven decisions as recommended). BREAKING for scripts that branch on the
@@ -40,7 +58,7 @@ Releases 0.1.0 and 0.1.1 are described by their tags (`mt-cli-v0.1.0`,
   - **Offline is now "no `bitcoin-cli` at all"**: do not pass `--bitcoin-cli`
     and have none on `PATH`. Pointing `--bitcoin-cli` at a path that does not
     exist is no longer an offline switch; it is a named helper gone missing,
-    32. mt has no other offline flag (an open question for the spec).
+    32. (`--offline`, above, is the explicit switch.)
     Naming it, even as `--bitcoin-cli bitcoin-cli`, makes the node required.
     A `bitcoin-cli` found on `PATH` without the flag that fails stays a
     warning, 0. When a named helper sets 32, mt prints one stderr line naming

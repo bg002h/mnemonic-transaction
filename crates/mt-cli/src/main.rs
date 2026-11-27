@@ -69,12 +69,14 @@ const HELP_BITS_ENCODE: &str = "Exit status: 0, 64 or 101, or the sum of: 1 the 
 an input spent or contradicts a value; 2 the input is invalid; 8 refused; 32 a file, device or \
 helper failed.";
 const HELP_BITS_DECODE: &str = "Exit status: 0, 64 or 101, or the sum of: 2 the input is \
-invalid; 8 refused; 16 a correction was applied; 32 a file, device or helper failed.";
+invalid; 8 refused; 16 a correction was applied or a damaged copy needs re-cutting; 32 a file, \
+device or helper failed.";
 const HELP_BITS_VERIFY: &str = "Exit status: 0, 64 or 101, or the sum of: 1 --transaction \
-names another transaction; 2 the input is invalid; 8 refused; 16 a correction was applied; 32 a \
-file or device failed.";
+names another transaction; 2 the input is invalid; 8 refused; 16 a correction was applied or a \
+damaged copy needs re-cutting; 32 a file or device failed.";
 const HELP_BITS_INSPECT: &str = "Exit status: 0, 64 or 101, or the sum of: 2 the input is \
-invalid; 8 refused; 16 a correction was applied; 32 a file, device or helper failed.";
+invalid; 8 refused; 16 a correction was applied or a damaged copy needs re-cutting; 32 a file, \
+device or helper failed.";
 
 /// Arguments shared by the two reading verbs.
 #[derive(clap::Args)]
@@ -149,10 +151,17 @@ struct ReadArgs {
     /// required: a path you name that is missing, fails or does not answer
     /// adds 32 to the exit status (the report still prints). Without this
     /// flag a `bitcoin-cli` on `PATH` is used if it answers, and is a warning
-    /// if not. To run offline, do not pass this flag and have no `bitcoin-cli`
-    /// on `PATH`.
+    /// if not. To run offline, pass `--offline`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
+
+    /// Never ask a node: no `bitcoin-cli` is run, not even one on `PATH`
+    /// (`decode` and `inspect`; `verify` never asks a node and refuses it, 64).
+    ///
+    /// The run says the chain was not checked and exits as it would with no
+    /// node (0 when nothing else failed). Refused with `--bitcoin-cli` (64).
+    #[arg(long)]
+    offline: bool,
 }
 
 #[derive(clap::Args)]
@@ -315,10 +324,16 @@ struct EncodeArgs {
     /// required: a path you name that is missing, fails or does not answer
     /// adds 32 to the exit status (the strings still print). Without this
     /// flag a `bitcoin-cli` on `PATH` is used if it answers, and is a warning
-    /// if not. To run offline, do not pass this flag and have no `bitcoin-cli`
-    /// on `PATH`.
+    /// if not. To run offline, pass `--offline`.
     #[arg(long, value_name = "PATH", default_value = "bitcoin-cli")]
     bitcoin_cli: std::path::PathBuf,
+
+    /// Never ask a node: no `bitcoin-cli` is run, not even one on `PATH`.
+    ///
+    /// The run says the chain was not checked and exits as it would with no
+    /// node (0 when nothing else failed). Refused with `--bitcoin-cli` (64).
+    #[arg(long)]
+    offline: bool,
 }
 
 fn main() -> std::process::ExitCode {
@@ -403,6 +418,11 @@ fn main() -> std::process::ExitCode {
                 node::helper_named(p);
             }
         }
+        // `--offline` (§2b item 1): no `bitcoin-cli` runs. Each verb refuses it
+        // with `--bitcoin-cli`, and `verify` refuses it outright, before input.
+        if m.get_flag("offline") {
+            node::go_offline();
+        }
     }
     match cli.command {
         Command::Encode(args) => run(encode(args, intake.material)),
@@ -456,6 +476,7 @@ fn input_endpoint(
 fn encode(args: EncodeArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     let mut stderr = std::io::stderr();
     json_unsupported_guard(args.json, "encode")?;
+    offline_with_bitcoin_cli_guard(args.offline, node::is_named(), "encode")?;
     // A setting, judged from the command line alone, so before any input is
     // read (exit-code spec R2).
     separator_guard(&args.separator)?;
@@ -1363,10 +1384,36 @@ fn read_input_bytes(
 /// cover witness data, so a miscorrected signature is not caught by it; it
 /// could only fail to broadcast. A refusal after this point
 /// keeps the bit (R1), because the margin report still names the corrections.
-fn note_corrections(chunks: &[mt_codec::DecodedChunk]) {
-    if chunks.iter().any(|c| c.corrected > 0) {
+/// REPAIRED (16) when a chunk mt used was corrected (decision 5), and also
+/// when mt discarded a damaged copy of a chunk it holds clean: `set_notices`
+/// tells the operator to re-cut that plate, and 16 is set whenever mt says to
+/// re-engrave one (ruling 2026-11-26, exit-code spec §2b item 2). A clean
+/// duplicate (0 corrections) is §1.8's advice followed and sets nothing.
+fn note_corrections(set: &mt_codec::string_layer::pipeline::DecodedSet) {
+    if set.chunks.iter().any(|c| c.corrected > 0)
+        || set.duplicates.iter().any(|d| d.discarded_corrections > 0)
+    {
         out::note(Exit::REPAIRED);
     }
+}
+
+/// A duplicate's `--json` warning (§10.10b). A damaged discarded copy is the
+/// one plate mt says to re-cut, so its entry says so: it is why the run is 16.
+fn duplicate_warning(d: &mt_codec::string_layer::pipeline::Duplicate) -> String {
+    let mut w = format!(
+        "chunk {} was present twice; kept the copy needing {} corrections",
+        d.index + 1,
+        d.kept_corrections
+    );
+    if d.discarded_corrections > 0 {
+        use core::fmt::Write as _;
+        let _ = write!(
+            w,
+            "; the discarded copy needed {}: re-cut it",
+            d.discarded_corrections
+        );
+    }
+    w
 }
 
 /// The UTF-8 step of `read_input`.
@@ -1678,6 +1725,7 @@ fn set_notices(set: &mt_codec::string_layer::pipeline::DecodedSet, out: &mut imp
 
 fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     json_quiet_guard(args.json, args.quiet, "decode")?;
+    offline_with_bitcoin_cli_guard(args.offline, node::is_named(), "decode")?;
     transaction_unsupported_guard(args.transaction.as_deref(), "decode")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "decode")?;
     // §8.2i, after every command-line check: it stats files (R2).
@@ -1690,7 +1738,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     let read = read_strings::read(&text, "decode")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "decode", &e))?;
-    note_corrections(&set.chunks);
+    note_corrections(&set);
 
     // §1.1's LAST CHECK, before anything reaches stdout.
     content_id_guard(&set.bytes, &set.chunks, "decode")?;
@@ -1734,10 +1782,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
         if args.json {
             let mut warnings: Vec<String> = Vec::new();
             if node.is_none() {
-                warnings.push(
-                    "no bitcoind reachable: nothing here is confirmed against the chain"
-                        .to_string(),
-                );
+                warnings.push(node::no_node_json_warning());
             }
             for (pos, from, to) in printed_notes(&read) {
                 warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
@@ -1749,11 +1794,7 @@ fn decode(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
                 ));
             }
             for d in &set.duplicates {
-                warnings.push(format!(
-                    "chunk {} was present twice; kept the copy needing {} corrections",
-                    d.index + 1,
-                    d.kept_corrections
-                ));
+                warnings.push(duplicate_warning(d));
             }
             warnings.extend(correction_warnings(&set.chunks));
             // F-275 UNDER `--json`: the warning becomes DATA, inside the one
@@ -1849,12 +1890,13 @@ fn verify(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal>
     quiet_unsupported_guard(args.quiet, "verify")?;
     json_unsupported_guard(args.json, "verify")?;
     bitcoin_cli_unsupported_guard(node::is_named(), "verify")?;
+    offline_unsupported_guard(args.offline, "verify")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "verify")?;
     let text = read_input(&args.r#in, argv_material, "verify")?;
     let read = read_strings::read(&text, "verify")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "verify", &e))?;
-    note_corrections(&set.chunks);
+    note_corrections(&set);
 
     // ...AND the reassembled transaction re-derives that id. This is the check
     // the OK line has always claimed; until it existed, the claim was a
@@ -2076,8 +2118,7 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
         warnings.push(j.clone());
     }
     if node.is_none() {
-        warnings
-            .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
+        warnings.push(node::no_node_json_warning());
     }
     // THE LIMIT, STATED. `inspect` over scanned bytes sees the bytes and
     // nothing else: it cannot know they came off the plate they were meant to,
@@ -2145,6 +2186,7 @@ fn inspect_transaction(sniffed: input::Input, args: &ReadArgs) -> Result<(), Ref
 
 fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal> {
     quiet_unsupported_guard(args.quiet, "inspect")?;
+    offline_with_bitcoin_cli_guard(args.offline, node::is_named(), "inspect")?;
     transaction_unsupported_guard(args.transaction.as_deref(), "inspect")?;
     in_with_dash_guard(args.r#in.is_some(), args.stdin_dash.is_some(), "inspect")?;
     // §8.2i, after every command-line check: it stats files (R2).
@@ -2182,7 +2224,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
     let read = read_strings::read(&text, "inspect")?;
     let strings = read.strings.clone();
     let set = pipeline::decode(&strings).map_err(|e| explain_failure(&strings, "inspect", &e))?;
-    note_corrections(&set.chunks);
+    note_corrections(&set);
 
     content_id_guard(&set.bytes, &set.chunks, "inspect")?;
 
@@ -2205,8 +2247,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         warnings.push(w.headline.clone());
     }
     if node.is_none() {
-        warnings
-            .push("no bitcoind reachable: nothing here is confirmed against the chain".to_string());
+        warnings.push(node::no_node_json_warning());
     }
     for (pos, from, to) in printed_notes(&read) {
         warnings.push(format!("pos {pos}: you typed {from}, mt read it as {to}"));
@@ -2218,11 +2259,7 @@ fn inspect(args: ReadArgs, argv_material: Option<Vec<u8>>) -> Result<(), Refusal
         ));
     }
     for d in &set.duplicates {
-        warnings.push(format!(
-            "chunk {} was present twice; kept the copy needing {} corrections",
-            d.index + 1,
-            d.kept_corrections
-        ));
+        warnings.push(duplicate_warning(d));
     }
     warnings.extend(correction_warnings(&set.chunks));
 
@@ -2656,6 +2693,49 @@ fn bitcoin_cli_unsupported_guard(named: bool, verb: &str) -> Result<(), Refusal>
         "Run `mt inspect --bitcoin-cli <path>` to ask the node about the set, or drop \
          `--bitcoin-cli`.",
     ))
+}
+
+/// §10.10: `--offline` says never ask a node and a named `--bitcoin-cli`
+/// says the node is required (R9). Both on one command line contradict each
+/// other, judged without reading anything: usage (64).
+fn offline_with_bitcoin_cli_guard(offline: bool, named: bool, verb: &str) -> Result<(), Refusal> {
+    if !(offline && named) {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        Exit::USAGE,
+        verb,
+        "§10.10",
+        "--offline and --bitcoin-cli contradict each other",
+        "`--offline` tells mt never to ask a node, and naming `--bitcoin-cli` tells \
+         it the node is required. mt cannot do both, and will not pick one.",
+    )
+    .with_remedy(
+        "Drop `--bitcoin-cli` to run without a node, or drop `--offline` to ask the \
+         node you named.",
+    ))
+}
+
+/// §10.10: `verify` never asks a node (§1.1), so `--offline` there is a flag
+/// accepted and ignored. Refused as usage (64), the same as `verify
+/// --bitcoin-cli`.
+fn offline_unsupported_guard(offline: bool, verb: &str) -> Result<(), Refusal> {
+    if !offline {
+        return Ok(());
+    }
+    Err(Refusal::new(
+        Exit::USAGE,
+        verb,
+        "§10.10",
+        format!("--offline has no meaning for `{verb}`"),
+        format!(
+            "`{verb}` checks the strings themselves and never asks a node, so it is \
+             always offline and the flag would change nothing.\n\
+             \n\
+             mt refuses rather than accepting the flag and ignoring it."
+        ),
+    )
+    .with_remedy(format!("Drop `--offline`: `mt {verb}` never asks a node.")))
 }
 
 /// §10.10, T13 (I12): `--in <path>` together with the positional `-` names two

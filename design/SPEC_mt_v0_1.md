@@ -262,6 +262,13 @@ overturned an earlier assumption and are marked.
    > which is right — they engraved a duplicate on purpose and both are good.
    > As-typed: refuse, on a set with nothing wrong with it.
 
+   **A damaged copy `mt` discards still sets 16** (REPAIRED; Brian's ruling
+   2026-11-26, `SPEC_constellation_exit_codes.md` §2b item 2). When the copy
+   `mt` keeps is clean and the copy it discards needed corrections, no
+   corrected value is used, but `mt` tells the operator to re-cut the
+   discarded plate, and 16 is set whenever `mt` tells the operator to
+   re-engrave one. Two clean copies set nothing.
+
    **THE RULE IS OVER `n` CANDIDATES, NOT TWO, AND MAJORITY VOTE IS FORBIDDEN.**
    R6 adversarial I-7. Partition the candidates at an index by BCH-validity,
    then the valid ones by exact bytes; **accept only if exactly one distinct
@@ -810,8 +817,10 @@ overturned an earlier assumption and are marked.
          && bitcoin-cli sendrawtransaction "$(cat tx.hex)"
 
    Under `SPEC_constellation_exit_codes.md` a plate the BCH code corrected
-   exits **16** (REPAIRED) even when every check passes, so this one-liner
-   stops on a corrected set and does not broadcast it. To broadcast a set that
+   exits **16** (REPAIRED) even when every check passes, and so does a set
+   holding a damaged copy of a chunk that `mt` discards for a clean one,
+   because `mt` then tells the operator to re-cut that plate. This one-liner
+   therefore stops on such a set and does not broadcast it. To broadcast a set that
    verified with corrections, after reading the stderr report that names them,
    test the exit status with the repaired bit masked off:
 
@@ -1985,12 +1994,16 @@ what it could not check:
     characters by hand is not quick. Consider re-running with a node
     before you start.
 
-**Offline means no `bitcoin-cli` at all**: no `--bitcoin-cli` on the command
-line and none on `PATH`. That run prints the warning above and its exit status
-is unaffected (0 when every offline check passes). A `--bitcoin-cli` path the
-operator names that does not exist, cannot be started, fails, or gives a reply
-mt cannot read adds 32 (IO) per `SPEC_constellation_exit_codes.md` R9 (see
-(b1)); naming a missing path is not a way to go offline.
+**Offline means no `bitcoin-cli` is run**: either `--offline` (Brian's
+ruling 2026-11-26, `SPEC_constellation_exit_codes.md` §2b item 1), with which
+`mt` never runs `bitcoin-cli`, even one on `PATH`, or no `--bitcoin-cli` on
+the command line and none on `PATH`. That run prints the warning above (under
+`--offline` its headline says no node was asked, not that none was reachable)
+and its exit status is unaffected (0 when every offline check passes). A
+`--bitcoin-cli` path the operator names that does not exist, cannot be
+started, fails, or gives a reply mt cannot read adds 32 (IO) per
+`SPEC_constellation_exit_codes.md` R9 (see (b1)); naming a missing path is not
+a way to go offline. `--offline` together with `--bitcoin-cli` is usage (64).
 
 > **THAT WARNING IS ENCODE-SHAPED, AND THE RECOVERY PATH NEEDS ITS OWN.**
 > Operator ruling 2026-08-23 — *"warn about what cannot be confirmed"* — applied
@@ -3519,16 +3532,20 @@ signed PSBT.
        > yields **empty output and exit 0**, which is the `null` this spec's
        > liveness table reads.
        >
-       > **The only flag is `--bitcoin-cli <path>`**, for a binary not on
-       > `PATH`. With no `--bitcoin-cli`, a `bitcoin-cli` absent from `PATH`
-       > → §6a's no-node warning, unchanged, and the exit status is unaffected
-       > (0 when every offline check passes): that is the offline case. A
+       > **The flags are `--bitcoin-cli <path>`**, for a binary not on
+       > `PATH`, **and `--offline`** (Brian's ruling 2026-11-26), with which
+       > `mt` runs no `bitcoin-cli` at all, even one on `PATH`, and takes
+       > §6a's no-node path. With no `--bitcoin-cli`, a `bitcoin-cli` absent
+       > from `PATH` → §6a's no-node warning, unchanged, and the exit status is
+       > unaffected (0 when every offline check passes): that, and
+       > `--offline`, are the offline case. `--offline` with `--bitcoin-cli`
+       > is usage (64), judged from the command line alone. A
        > **named** `--bitcoin-cli` is a helper the operator asked for, so per
        > `SPEC_constellation_exit_codes.md` R9 it adds 32 (IO) when the path
        > does not exist or cannot be spawned, when it exits non-zero other
        > than with an RPC error reply mt already interprets, when it breaks
        > the pipe, or when its reply cannot be parsed. Naming a path that does
-       > not exist is therefore not an offline switch.
+       > not exist is therefore not an offline switch; `--offline` is.
        >
        > A **default** `bitcoin-cli`, found on `PATH` without being named,
        > that then fails (the node is down, the call errors, the reply cannot
@@ -3554,7 +3571,8 @@ signed PSBT.
        **Under `--json`, every notice is one single-line string in the
        `warnings` array, the same on `decode` and `inspect`.** A duplicate
        reads `chunk {n} was present twice; kept the copy needing {k}
-       corrections`. Each repaired chunk reads `chunk {n} needed {c} of 4
+       corrections`, with `; the discarded copy needed {d}: re-cut it`
+       appended when the discarded copy needed {d} ≥ 1 corrections. Each repaired chunk reads `chunk {n} needed {c} of 4
        corrections`, with `; NO MARGIN LEFT` appended when {c} ≥ 4, in the
        order of the prose margin report (most corrections first), after the
        duplicate entries and, in `decode`, before the stdout-mode headline; in `inspect`, §8.2b's output-range warning, when present, is the first entry;
@@ -3565,6 +3583,9 @@ signed PSBT.
        `inspect` or `verify` is refused** (§10.10, exit 64, usage), with or without
        `--json`: their output is their report.
        `mt verify --bitcoin-cli` is refused as usage (exit 64): verify never asks a node.
+       `mt verify --offline` is refused as usage (exit 64) for the same reason: verify is
+       always offline, and a flag it would accept and ignore is refused, as `--json`,
+       `--quiet` and `--bitcoin-cli` are there.
 
     **THE FLAG SPELLINGS — RULED 2026-08-23.** Operator-approved; sibling
     precedent taken verbatim wherever it exists, so an operator who knows `md`
@@ -3584,6 +3605,7 @@ signed PSBT.
     | `--transaction <psbt\|hex>` | on `verify` | §1.1's full-txid comparison |
     | `--json` | — | machine-readable report. `md` has it |
     | `--bitcoin-cli <path>` | a path | only for a binary not on `PATH` — see (b1) |
+    | `--offline` | — | `encode`, `decode`, `inspect`: never run `bitcoin-cli` — see (b1). Refused with `--bitcoin-cli`, and on `verify` (64) |
 
     > **Two spellings are deliberate departures, recorded so they are not read
     > as oversights.** `md verify` calls the equivalent of `--transaction`
@@ -3597,6 +3619,9 @@ signed PSBT.
     `0 = every check passed` is fixed in (b), and under that spec's decision 5
     it also means **no BCH correction was used**: a corrected set adds 16, summed
     with any other bit (a corrected set that then fails a check is 17 or 18).
+    16 is also set whenever `mt` tells the operator to re-engrave a plate, as
+    for a damaged copy it discards for a clean one (§1.1's duplicate rule;
+    Brian's ruling 2026-11-26).
     A flag combination that is wrong on the command line alone is usage (64),
     checked before input is read; a malformed input (a pasted txid, an
     unparseable PSBT) is 2; a check that came out no (`mt verify --transaction`

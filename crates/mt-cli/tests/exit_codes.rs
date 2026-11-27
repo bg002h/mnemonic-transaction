@@ -421,18 +421,20 @@ fn each_verb_help_states_its_bits() {
         (
             "decode",
             "Exit status: 0, 64 or 101, or the sum of: 2 the input is invalid; 8 refused; \
-             16 a correction was applied; 32 a file, device or helper failed.",
+             16 a correction was applied or a damaged copy needs re-cutting; 32 a file, \
+             device or helper failed.",
         ),
         (
             "verify",
             "Exit status: 0, 64 or 101, or the sum of: 1 --transaction names another \
-             transaction; 2 the input is invalid; 8 refused; 16 a correction was applied; \
-             32 a file or device failed.",
+             transaction; 2 the input is invalid; 8 refused; 16 a correction was applied \
+             or a damaged copy needs re-cutting; 32 a file or device failed.",
         ),
         (
             "inspect",
             "Exit status: 0, 64 or 101, or the sum of: 2 the input is invalid; 8 refused; \
-             16 a correction was applied; 32 a file, device or helper failed.",
+             16 a correction was applied or a damaged copy needs re-cutting; 32 a file, \
+             device or helper failed.",
         ),
     ] {
         let (code, out, _) = run(&[verb, "--help"], "");
@@ -561,4 +563,186 @@ fn a_mismatch_on_a_corrected_set_is_no_plus_repaired() {
         "",
     );
     assert_eq!(code, Some(NO | REPAIRED), "{err}");
+}
+
+// ── --offline (ruling 2026-11-26, exit-code spec §2b item 1) ────────────────
+
+/// A `bitcoin-cli` that answers `getblockcount` and records, in `marker`,
+/// that it ran. Shell builtins only: the child's `PATH` is the stub's dir.
+fn recording_helper(marker: &std::path::Path) -> (tempfile::TempDir, String) {
+    helper(&format!(
+        "#!/bin/sh\n: > '{}'\nverb=\"\"\nwhile read -r l; do [ -z \"$verb\" ] && verb=\"$l\"; done\n\
+         case \"$verb\" in getblockcount) echo 963832 ;; *) exit 1 ;; esac\n",
+        marker.display()
+    ))
+}
+
+/// `--offline`: mt never runs `bitcoin-cli`, even one on `PATH`, says the
+/// chain was not checked, and exits as with no node (0 here).
+#[test]
+fn offline_never_runs_a_bitcoin_cli_on_path() {
+    let set = strings("even").join("\n");
+    let raw = tmp(vector("even", "raw_hex").as_str().unwrap());
+    let rp = raw.path().to_str().unwrap();
+    for argv in [
+        &["decode"][..],
+        &["decode", "--quiet"],
+        &["decode", "--json"],
+        &["inspect"],
+        &["inspect", "--json"],
+        &["encode", "--in", rp],
+    ] {
+        let verb = argv[0];
+        let stdin = if verb == "encode" { "" } else { &set };
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("ran");
+        let (d, _) = recording_helper(&marker);
+        let path = d.path().to_str().unwrap();
+
+        // Control: without --offline the stub on PATH IS asked.
+        let (code, _, err) = run_with_path(path, argv, stdin);
+        assert_eq!(code, Some(OK), "mt {argv:?}: {err}");
+        assert!(
+            marker.exists(),
+            "mt {argv:?}: the control never ran the stub"
+        );
+        std::fs::remove_file(&marker).unwrap();
+
+        let mut with: Vec<&str> = argv.to_vec();
+        with.push("--offline");
+        let (code, out, err) = run_with_path(path, &with, stdin);
+        assert_eq!(code, Some(OK), "mt {with:?}: {err}");
+        assert!(!out.is_empty(), "mt {with:?} lost its output");
+        assert!(!marker.exists(), "mt {with:?} ran the bitcoin-cli on PATH");
+        assert!(
+            format!("{out}{err}").contains("--offline: no node was asked"),
+            "mt {with:?}: does not say the chain was not checked:\n{out}{err}"
+        );
+        assert!(
+            !format!("{out}{err}").contains("no bitcoind reachable"),
+            "mt {with:?}: says no node is reachable when it asked none:\n{out}{err}"
+        );
+    }
+}
+
+/// `--offline` keeps every other bit: a corrected set is still 16.
+#[test]
+fn offline_keeps_the_other_bits() {
+    let (code, _, err) = run(&["decode", "--offline"], &one_error_set());
+    assert_eq!(code, Some(REPAIRED), "{err}");
+}
+
+/// `--offline` with `--bitcoin-cli` names two contradicting node postures on
+/// the command line: usage (64), nothing runs.
+#[test]
+fn offline_with_a_named_bitcoin_cli_is_usage() {
+    let set = strings("even").join("\n");
+    let raw = tmp(vector("even", "raw_hex").as_str().unwrap());
+    let rp = raw.path().to_str().unwrap();
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("ran");
+    let (_d, cli) = recording_helper(&marker);
+    for argv in [
+        &["decode", "--offline", "--bitcoin-cli", &cli][..],
+        &["inspect", "--bitcoin-cli", &cli, "--offline"],
+        &["encode", "--offline", "--bitcoin-cli", &cli, "--in", rp],
+        &["decode", "--offline", "--bitcoin-cli", "bitcoin-cli"],
+    ] {
+        let stdin = if argv[0] == "encode" { "" } else { &set };
+        let (code, out, err) = run(argv, stdin);
+        assert_eq!(code, Some(USAGE), "mt {argv:?}: {err}");
+        assert!(out.is_empty(), "mt {argv:?} wrote stdout");
+        assert!(
+            err.contains("--offline and --bitcoin-cli"),
+            "mt {argv:?}: {err}"
+        );
+        assert!(!marker.exists(), "mt {argv:?} ran the named helper");
+    }
+}
+
+/// `verify` never asks a node, so `--offline` there is a flag accepted and
+/// ignored: usage (64), the same as `verify --bitcoin-cli`.
+#[test]
+fn verify_refuses_offline() {
+    let set = strings("even").join("\n");
+    let (code, out, err) = run(&["verify", "--offline"], &set);
+    assert_eq!(code, Some(USAGE), "{err}");
+    assert!(out.is_empty());
+    assert!(
+        err.contains("--offline has no meaning for `verify`"),
+        "{err}"
+    );
+}
+
+// ── 16: a damaged copy discarded (ruling 2026-11-26, §2b item 2) ────────────
+
+/// `even` plus a second copy of chunk 3 with one damaged character, in either
+/// order.
+fn damaged_duplicate_sets() -> [String; 2] {
+    let s = strings("even");
+    let mut c: Vec<char> = s[2].chars().collect();
+    c[45] = if c[45] == 'q' { 'p' } else { 'q' };
+    let bad: String = c.into_iter().collect();
+    let mut after = s.clone();
+    after.push(bad.clone());
+    let mut before = vec![bad];
+    before.extend(s.iter().cloned());
+    [after.join("\n"), before.join("\n")]
+}
+
+/// mt keeps the clean copy and tells the operator to re-cut the damaged one:
+/// 16, on every reading verb and in every output form.
+#[test]
+fn a_damaged_duplicate_mt_discards_sets_repaired() {
+    for set in damaged_duplicate_sets() {
+        for argv in [
+            &["decode"][..],
+            &["decode", "--quiet"],
+            &["decode", "--json"],
+            &["verify"],
+            &["inspect"],
+            &["inspect", "--json"],
+        ] {
+            let (code, out, err) = run(argv, &set);
+            assert_eq!(code, Some(REPAIRED), "mt {argv:?}: {err}");
+            assert!(!out.is_empty() || argv[0] == "verify", "mt {argv:?}");
+            if argv.contains(&"--json") {
+                // decode's report is on stderr (stdout carries the hex).
+                let json = if argv[0] == "decode" { &err } else { &out };
+                let doc: serde_json::Value = serde_json::from_str(json).unwrap();
+                let w: Vec<&str> = doc["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x.as_str().unwrap())
+                    .collect();
+                assert!(
+                    w.contains(
+                        &"chunk 3 was present twice; kept the copy needing 0 corrections; \
+                          the discarded copy needed 1: re-cut it"
+                    ),
+                    "mt {argv:?}: {w:?}"
+                );
+            } else {
+                assert!(
+                    err.contains("it is the one to re-cut"),
+                    "mt {argv:?}: {err}"
+                );
+            }
+        }
+    }
+}
+
+/// Two clean copies of one chunk are §1.8's advice followed: nothing to re-cut,
+/// so 0.
+#[test]
+fn a_clean_duplicate_stays_ok() {
+    let s = strings("even");
+    let mut lines = s.clone();
+    lines.push(s[2].clone());
+    let set = lines.join("\n");
+    for verb in ["decode", "verify", "inspect"] {
+        let (code, _, err) = run(&[verb], &set);
+        assert_eq!(code, Some(OK), "{verb}: {err}");
+    }
 }

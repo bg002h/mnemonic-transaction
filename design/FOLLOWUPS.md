@@ -334,7 +334,7 @@
 - **Companion:** mnemonic-engrave `design/FOLLOWUPS.md` (the io-lib publish).
 - **Status:** owed-to-build, blocked on the publish.
 
-### `mt-offline-switch` — no offline switch when `bitcoin-cli` is on `PATH` (open for Brian)
+### `mt-offline-switch` — no offline switch when `bitcoin-cli` is on `PATH` (resolved)
 
 - **Surfaced:** 2026-11-26, exit-code review I2 and the coordinator's R9 ruling.
 - **What:** a named `--bitcoin-cli` that is missing is now 32, so pointing it
@@ -345,7 +345,14 @@
   bitcoin-cli` makes the node required (32 on failure).
 - **Options:** `mt --offline`, or `--bitcoin-cli none`. Either is a flag change:
   toolkit manual, GUI mirror, help, and the exit-code spec §7d move with it.
-- **Status:** open, needs a ruling from Brian.
+- **Ruling:** Brian, 2026-11-26: add `mt --offline`. mt then runs no
+  `bitcoin-cli`, even one on `PATH`, says the chain was not checked and exits
+  as with no node. `--offline` with `--bitcoin-cli` is 64; `verify --offline`
+  is 64 (parity with `verify --bitcoin-cli`).
+- **Status:** resolved in mt-cli (this branch). Owed elsewhere: the toolkit
+  manual's mt chapter, the normative SPEC_mt in mnemonic-engrave, and the
+  exit-code spec's §2b/§7d/R9 text (engrave). mnemonic-gui has no mt schema
+  mirror to move.
 
 ### `spec-mt-resync-exit-codes` — re-sync SPEC_mt's exit-code text with mnemonic-engrave
 
@@ -360,7 +367,7 @@
   this copy's exit-code text back to engrave.
 - **Status:** owed-to-build.
 
-### `exit-codes-open-nits` — closed stdin is 2; a discarded damaged duplicate is 0 (open for Brian)
+### `exit-codes-open-nits` — closed stdin is 2 (open); a discarded damaged duplicate is 16 (resolved)
 
 - **Surfaced:** 2026-11-26, exit-code review N3 and N5 (left unfolded).
 - **Closed stdin (N3):** `mt decode <&-` reads as empty input, so 2 (decision 3).
@@ -370,4 +377,14 @@
   code is 0 (R6, "used"). mt still prints "DISCARDED the copy needing … it is
   the one to re-cut", and 16's action is "re-engrave". Journey C's
   `drawer-scrap` names an unreadable plate and exits 0 too.
-- **Status:** open, needs a ruling from Brian (exit-code spec rev 6 items 9, 20).
+- **Ruling (N5):** Brian, 2026-11-26: 16 is set whenever mt tells the operator
+  to re-engrave a plate, so the damaged discarded copy is 16; two clean copies
+  stay 0. Resolved in mt-cli (this branch); `scripts/journeys.sh` Journey C's
+  `drawer.txt` now asserts 16. **Not changed:** `drawer-scrap`'s unreadable
+  string stays 0. Its notice is conditional ("Do not discard the plate on this
+  message alone ... if it is one of THESE, re-cut it"): mt cannot tell which
+  chunk the string was or whether it belongs to the set, so it does not tell
+  the operator to re-engrave it. Flagged for Brian in case he reads the ruling
+  to cover it.
+- **Status:** N3 open, needs a ruling from Brian; N5 resolved (exit-code spec
+  rev 6 items 9, 20).

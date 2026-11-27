@@ -203,10 +203,15 @@ fi
 # ── C — miscut ───────────────────────────────────────────────────────────────
 say "JOURNEY C — a string re-cut, the drawer holding both"
 step "\$ mt verify < drawer.txt                   (chunk 3 present twice)"
-"$MT" verify --in "$WORK/drawer.txt" >"$WORK/c.out" 2>"$WORK/c.err"
+# mt keeps the clean copy and tells the operator to re-cut the damaged one, so
+# the run is 16 (exit-code spec §2b item 2, ruled 2026-11-26: 16 is set
+# whenever mt says to re-engrave a plate).
+rc=0
+"$MT" verify --in "$WORK/drawer.txt" >"$WORK/c.out" 2>"$WORK/c.err" || rc=$?
 sed 's/^/    | /' "$WORK/c.err"
 
 step "assertions:"
+code "$rc" 16 "exit 16: mt says to re-cut the damaged copy it discarded"
 have "$WORK/c.err" "DUPLICATE RESOLVED. chunk 3" "the duplicate is announced, by chunk"
 have "$WORK/c.err" "KEPT       the copy needing 0 of 4"      "says which copy it kept"
 have "$WORK/c.err" "DISCARDED  the copy needing 1 of 4"      "says which it DISCARDED, and why"

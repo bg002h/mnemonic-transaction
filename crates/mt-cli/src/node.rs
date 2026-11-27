@@ -24,6 +24,40 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static NAMED: OnceLock<PathBuf> = OnceLock::new();
 /// The one stderr line naming a failed helper has been printed.
 static SAID: AtomicBool = AtomicBool::new(false);
+/// `--offline` was given: no `bitcoin-cli` is ever run.
+static OFFLINE: AtomicBool = AtomicBool::new(false);
+
+/// `--offline` (ruling 2026-11-26, exit-code spec §2b item 1): from here on
+/// [`Node::find`] runs nothing and answers "no node", even with a
+/// `bitcoin-cli` on `PATH`. The run then takes the no-node path, and its
+/// warnings say no node was asked rather than that none was reachable.
+pub fn go_offline() {
+    OFFLINE.store(true, Ordering::Relaxed);
+}
+
+/// Was `--offline` given?
+pub fn is_offline() -> bool {
+    OFFLINE.load(Ordering::Relaxed)
+}
+
+/// The head of every no-node warning: under `--offline` mt asked no node,
+/// which is not the same statement as "none was reachable".
+pub fn no_node_headline() -> &'static str {
+    if is_offline() {
+        "--offline: no node was asked"
+    } else {
+        "no bitcoind reachable"
+    }
+}
+
+/// The no-node entry of a `--json` `warnings` array.
+pub fn no_node_json_warning() -> String {
+    if is_offline() {
+        "--offline: no node was asked; nothing here is confirmed against the chain".to_string()
+    } else {
+        "no bitcoind reachable: nothing here is confirmed against the chain".to_string()
+    }
+}
 
 /// The operator named `--bitcoin-cli` on the command line (exit-code spec R9),
 /// even as `--bitcoin-cli bitcoin-cli`: naming it makes the node required.
@@ -132,6 +166,10 @@ impl Node {
     /// and an absent node is an absent answer, not a bad one. (A NAMED helper
     /// that is absent still adds IO to the exit code, R9.)
     pub fn find(cli: &Path) -> Option<Self> {
+        // `--offline`: nothing is run, not even a `bitcoin-cli` on `PATH`.
+        if is_offline() {
+            return None;
+        }
         let node = Self {
             cli: cli.to_path_buf(),
         };

@@ -607,6 +607,22 @@ test  = "verify_refuses_a_named_bitcoin_cli"
 check = "src/main.rs::bitcoin_cli_unsupported_guard"
 class = "USAGE"
 
+# `--offline` (ruling 2026-11-26, exit-code spec §2b item 1) never asks a node;
+# a named --bitcoin-cli makes the node required (R9). Both on one command line
+# is usage. And `verify` never asks a node, so --offline there is accepted and
+# ignored: usage, like --bitcoin-cli on verify.
+[[refusal]]
+spec  = "§10.10"
+test  = "offline_with_a_named_bitcoin_cli_is_usage"
+check = "src/main.rs::offline_with_bitcoin_cli_guard"
+class = "USAGE"
+
+[[refusal]]
+spec  = "§10.10"
+test  = "verify_refuses_offline"
+check = "src/main.rs::offline_unsupported_guard"
+class = "USAGE"
+
 # The existing --json/--quiet refusal keeps precedence over both new ones.
 [[refusal]]
 spec  = "§10.10"

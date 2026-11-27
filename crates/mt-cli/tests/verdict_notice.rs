@@ -225,7 +225,8 @@ fn bh1119_mt_g_quiet_keeps_the_transliteration_notice() {
 #[test]
 fn bh1119_mt_g_quiet_keeps_the_duplicate_notice() {
     let o = decode_offline(&["--quiet"], &duplicate_even());
-    assert_eq!(o.status.code(), Some(0), "{}", s(&o.stderr));
+    // The discarded copy is damaged and mt says to re-cut it: 16 (§2b item 2).
+    assert_eq!(o.status.code(), Some(REPAIRED), "{}", s(&o.stderr));
     let e = s(&o.stderr);
     assert!(
         e.contains("\nDUPLICATE RESOLVED. chunk 3 was present twice.\n"),
@@ -414,7 +415,8 @@ fn bh1119_mt_g_verify_refusal_keeps_the_set_notice() {
     let other = tmp(&raw_of("uneven"));
     let o = verify(&duplicate_even(), other.path());
     let e = s(&o.stderr);
-    assert_eq!(o.status.code(), Some(NO), "{e}");
+    // The damaged discarded copy adds 16 (§2b item 2), kept past the mismatch (R1).
+    assert_eq!(o.status.code(), Some(NO | REPAIRED), "{e}");
     let d = e
         .find("DUPLICATE RESOLVED.")
         .unwrap_or_else(|| panic!("dropped the duplicate notice:\n{e}"));

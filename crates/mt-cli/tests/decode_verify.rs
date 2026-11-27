@@ -412,7 +412,14 @@ fn a_duplicate_keeps_the_healthier_copy_and_says_which_it_dropped() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "a duplicate must not fail the set");
+    // Not a failure: the set verifies. But mt tells the operator to re-cut
+    // the damaged copy it discarded, so the run is 16 (exit-code spec §2b
+    // item 2, ruled 2026-11-26).
+    assert_eq!(
+        out.status.code(),
+        Some(16),
+        "a damaged duplicate is 16, never a failure"
+    );
     let err = String::from_utf8(out.stderr).unwrap();
 
     assert!(err.contains("DUPLICATE RESOLVED. chunk 3"), "got: {err}");
@@ -446,7 +453,11 @@ fn the_healthier_copy_wins_whichever_arrives_first() {
         .arg(f.path())
         .output()
         .unwrap();
-    assert!(out.status.success());
+    assert_eq!(
+        out.status.code(),
+        Some(16),
+        "the damaged copy is re-cut: 16"
+    );
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(
         err.contains("KEPT       the copy needing 0 of 4"),

@@ -33,11 +33,12 @@ Otherwise the sum (1 to 63) of: 1 a check said no (`verify --transaction` names
 another transaction, a node proves an input spent or disagrees with a value);
 2 an input is invalid; 8 refused (bearer material on the command line, a
 world-readable stdout, an output that is one of the inputs); 16 a correction was
-applied (the output is the same, and a plate is damaged); 32 a file or helper
+applied, or mt discarded a damaged copy of a chunk and tells you to re-cut it
+(the output is the same, and a plate is damaged); 32 a file or helper
 failed (an input that cannot be read, an output that cannot be written, a
-`--bitcoin-cli` you named that is missing, fails or does not answer; no
-`bitcoin-cli` at all, none named and none on `PATH`, is the offline path and
-stays 0). A script that accepts a corrected plate tests
+`--bitcoin-cli` you named that is missing, fails or does not answer; `--offline`,
+or no `bitcoin-cli` at all, none named and none on `PATH`, is the offline path
+and stays 0). A script that accepts a corrected plate tests
 `[ $(( rc & ~16 )) -eq 0 ]`.
 
 Input comes from a **file or stdin, never an argument**: an argument lands in
@@ -53,8 +54,8 @@ cargo build
 PATH=/nonexistent ./target/debug/mt encode --in tx.hex
 ```
 
-With no `bitcoin-cli` to be found (no `--bitcoin-cli`, none on `PATH`) `mt`
-takes the **offline** path, which is the constellation's normal posture, and
+With `--offline`, or with no `bitcoin-cli` to be found (no `--bitcoin-cli`,
+none on `PATH`), `mt` takes the **offline** path, which is the constellation's normal posture, and
 exits 0 with a warning. With a real `bitcoin-cli` on `PATH`, `mt` consults it
 automatically and asks the operator for nothing — `bitcoin-cli` already holds
 the RPC URL, the cookie, the network and the wallet. A `--bitcoin-cli PATH`
@@ -63,7 +64,10 @@ answer, `mt` still prints its output, says so on one stderr line
 (`mt: --bitcoin-cli <path>: …`) and adds 32 to the exit status. Naming it, even
 as `--bitcoin-cli bitcoin-cli`, is how to make the node required. A
 `bitcoin-cli` found on `PATH` without the flag that fails is a warning only.
-`verify` never asks a node and refuses `--bitcoin-cli` (64).
+`--offline` keeps `mt` from running any `bitcoin-cli`, even one on `PATH` (one
+that may talk to a remote node): the run says no node was asked and exits as
+with no node. `--offline` with `--bitcoin-cli` is refused (64).
+`verify` never asks a node and refuses `--bitcoin-cli` and `--offline` (64).
 `mt` supports Bitcoin Core 0.21 or newer, with -txindex for full node checks.
 
 ## Verifying the tool, not just running it

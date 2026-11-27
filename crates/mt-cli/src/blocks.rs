@@ -393,7 +393,11 @@ pub fn redirected_output_warning(
 /// yet and the choice is still open.
 pub fn encode_no_node_warning() -> crate::refusal::Warning {
     crate::refusal::Warning::new(
-        "no bitcoind reachable — mt could not check the chain before you cut.",
+        if crate::node::is_offline() {
+            "--offline: no node was asked — mt did not check the chain before you cut."
+        } else {
+            "no bitcoind reachable — mt could not check the chain before you cut."
+        },
         "These are the questions a node would have answered, and mt has NOT:\n\
          \n\
          \x20 - are these inputs still unspent, or did something else take them?\n\
